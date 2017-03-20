@@ -39,7 +39,7 @@
 #define O_CLOEXEC 0x1000000
 #elif defined(__linux__)
 // Copied from '/usr/include/asm-generic/fcntl.h'.
-#define O_CLOEXEC 02000000
+#include<fcntl.h>
 #elif defined(__sun)
 // Not defined on Solaris, taking a spare flag.
 #define O_CLOEXEC 0x1000000
