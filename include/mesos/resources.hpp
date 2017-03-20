@@ -34,6 +34,7 @@
 #include <stout/error.hpp>
 #include <stout/foreach.hpp>
 #include <stout/hashmap.hpp>
+#include <stout/json.hpp>
 #include <stout/lambda.hpp>
 #include <stout/option.hpp>
 #include <stout/try.hpp>
@@ -61,6 +62,77 @@ namespace mesos {
 // +=, -=, etc.).
 class Resources
 {
+private:
+  // An internal abstraction to facilitate managing shared resources.
+  // It allows 'Resources' to group identical shared resource objects
+  // together into a single 'Resource_' object and tracked by its internal
+  // counter. Non-shared resource objects are not grouped.
+  //
+  // The rest of the private section is below the public section. We
+  // need to define Resource_ first because the public typedefs below
+  // depend on it.
+  class Resource_
+  {
+  public:
+    /*implicit*/ Resource_(const Resource& _resource)
+      : resource(_resource),
+        sharedCount(None())
+    {
+      // Setting the counter to 1 to denote "one copy" of the shared resource.
+      if (resource.has_shared()) {
+        sharedCount = 1;
+      }
+    }
+
+    // By implicitly converting to Resource we are able to keep Resource_
+    // logic internal and expose only the protobuf object.
+    operator const Resource&() const { return resource; }
+
+    // Check whether this Resource_ object corresponds to a shared resource.
+    bool isShared() const { return sharedCount.isSome(); }
+
+    // Validates this Resource_ object.
+    Option<Error> validate() const;
+
+    // Check whether this Resource_ object is empty.
+    bool isEmpty() const;
+
+    // The `Resource_` arithmetic, comparison operators and `contains()`
+    // method require the wrapped `resource` protobuf to have the same
+    // sharedness.
+    //
+    // For shared resources, the `resource` protobuf needs to be equal,
+    // and only the shared counters are adjusted or compared.
+    // For non-shared resources, the shared counters are none and the
+    // semantics of the Resource_ object's operators/contains() method
+    // are the same as those of the Resource objects.
+
+    // Checks if this Resource_ is a superset of the given Resource_.
+    bool contains(const Resource_& that) const;
+
+    // The arithmetic operators, viz. += and -= assume that the corresponding
+    // Resource objects are addable or subtractable already.
+    Resource_& operator+=(const Resource_& that);
+    Resource_& operator-=(const Resource_& that);
+
+    bool operator==(const Resource_& that) const;
+    bool operator!=(const Resource_& that) const;
+
+    // Friend classes and functions for access to private members.
+    friend class Resources;
+    friend std::ostream& operator<<(
+        std::ostream& stream, const Resource_& resource_);
+
+  private:
+    // The protobuf Resource that is being managed.
+    Resource resource;
+
+    // The counter for grouping shared 'resource' objects, None if the
+    // 'resource' is non-shared. This is an int so as to support arithmetic
+    // operations involving subtraction.
+    Option<int> sharedCount;
+  };
+
 public:
   /**
    * Returns a Resource with the given name, value, and role.
@@ -82,12 +154,11 @@ public:
   /**
    * Parses Resources from an input string.
    *
-   * Parses Resources from text in the form of a JSON array. If that fails,
-   * parses text in the form "name(role):value;name:value;...". Any resource
-   * that doesn't specify a role is assigned to the provided default role. See
-   * the `Resource` protobuf definition for precise JSON formatting.
-   *
-   * Example JSON: [{"name":cpus","type":"SCALAR","scalar":{"value":8}}]
+   * Parses Resources from text in the form of a JSON array or as a simple
+   * string in the form of "name(role):value;name:value;...". i.e., this
+   * method calls `fromJSON()` or `fromSimpleString()` and validates the
+   * resulting `vector<Resource>` before converting it to a `Resources`
+   * object.
    *
    * @param text The input string.
    * @param defaultRole The default role.
@@ -95,6 +166,66 @@ public:
    *     successful, or an Error otherwise.
    */
   static Try<Resources> parse(
+      const std::string& text,
+      const std::string& defaultRole = "*");
+
+  /**
+   * Parses an input JSON array into a vector of Resource objects.
+   *
+   * Parses into a vector of Resource objects from a JSON array. Any
+   * resource that doesn't specify a role is assigned to the provided
+   * default role. See the `Resource` protobuf definition for precise
+   * JSON formatting.
+   *
+   * Example JSON: [{"name":"cpus","type":"SCALAR","scalar":{"value":8}}]
+   *
+   * NOTE: The `Resource` objects in the result vector may not be valid
+   * semantically (i.e., they may not pass `Resources::validate()`). This
+   * is to allow additional handling of the parsing results in some cases.
+   *
+   * @param resourcesJSON The input JSON array.
+   * @param defaultRole The default role.
+   * @return A `Try` which contains the parsed vector of Resource objects
+   *     if parsing was successful, or an Error otherwise.
+   */
+  static Try<std::vector<Resource>> fromJSON(
+      const JSON::Array& resourcesJSON,
+      const std::string& defaultRole = "*");
+
+  /**
+   * Parses an input text string into a vector of Resource objects.
+   *
+   * Parses into a vector of Resource objects from text. Any resource that
+   * doesn't specify a role is assigned to the provided default role.
+   *
+   * Example text: name(role):value;name:value;...
+   *
+   * NOTE: The `Resource` objects in the result vector may not be valid
+   * semantically (i.e., they may not pass `Resources::validate()`). This
+   * is to allow additional handling of the parsing results in some cases.
+   *
+   * @param text The input text string.
+   * @param defaultRole The default role.
+   * @return A `Try` which contains the parsed vector of Resource objects
+   *     if parsing was successful, or an Error otherwise.
+   */
+  static Try<std::vector<Resource>> fromSimpleString(
+      const std::string& text,
+      const std::string& defaultRole = "*");
+
+  /**
+   * Parse an input string into a vector of Resource objects.
+   *
+   * Parses into a vector of Resource objects from either JSON or plain
+   * text. If the string is well-formed JSON it is assumed to be JSON,
+   * otherwise plain text. Any resource that doesn't specify a role is
+   * assigned to the provided default role.
+   *
+   * NOTE: The `Resource` objects in the result vector may not be valid
+   * semantically (i.e., they may not pass `Resources::validate()`). This
+   * is to allow additional handling of the parsing results in some cases.
+   */
+  static Try<std::vector<Resource>> fromString(
       const std::string& text,
       const std::string& defaultRole = "*");
 
@@ -163,6 +294,9 @@ public:
   // Tests if the given Resource object is revocable.
   static bool isRevocable(const Resource& resource);
 
+  // Tests if the given Resource object is shared.
+  static bool isShared(const Resource& resource);
+
   // Returns the summed up Resources given a hashmap<Key, Resources>.
   //
   // NOTE: While scalar resources such as "cpus" sum correctly,
@@ -217,6 +351,23 @@ public:
   // Checks if this Resources contains the given Resource.
   bool contains(const Resource& that) const;
 
+  // Count the Resource objects that match the specified value.
+  //
+  // NOTE:
+  // - For a non-shared resource the count can be at most 1 because all
+  //   non-shared Resource objects in Resources are unique.
+  // - For a shared resource the count can be greater than 1.
+  // - If the resource is not in the Resources object, the count is 0.
+  size_t count(const Resource& that) const;
+
+  // Allocates the resources to the given role (by setting the
+  // `AllocationInfo.role`). Any existing allocation will be
+  // over-written.
+  void allocate(const std::string& role);
+
+  // Unallocates the resources.
+  void unallocate();
+
   // Filter resources based on the given predicate.
   Resources filter(
       const lambda::function<bool(const Resource&)>& predicate) const;
@@ -241,6 +392,16 @@ public:
   // Returns the non-revocable resources, effectively !revocable().
   Resources nonRevocable() const;
 
+  // Returns the shared resources.
+  Resources shared() const;
+
+  // Returns the non-shared resources.
+  Resources nonShared() const;
+
+  // Returns the per-role allocations within these resource objects.
+  // This must be called only when the resources are allocated!
+  hashmap<std::string, Resources> allocations() const;
+
   // Returns a Resources object with the same amount of each resource
   // type as these Resources, but with all Resource objects marked as
   // the specified (role, reservation) pair. This is used to cross
@@ -248,16 +409,22 @@ public:
   // If the optional ReservationInfo is given, the resource's
   // 'reservation' field is set. Otherwise, the resource's
   // 'reservation' field is cleared.
-  Resources flatten(
-      const std::string& role = "*",
+  // Returns an Error when the role is invalid or the reservation
+  // is set when the role is '*'.
+  Try<Resources> flatten(
+      const std::string& role,
       const Option<Resource::ReservationInfo>& reservation = None()) const;
 
+  // Equivalent to `flatten("*")` except it returns a Resources directly
+  // because the result is always a valid in this case.
+  Resources flatten() const;
+
   // Returns a Resources object that contains all the scalar resources
-  // in this object, but with their ReservationInfo and DiskInfo
-  // omitted. Note that the `role` and RevocableInfo, if any, are
-  // preserved. Because we clear ReservationInfo but preserve `role`,
-  // this means that stripping a dynamically reserved resource makes
-  // it effectively statically reserved.
+  // in this object, but with their ReservationInfo, AllocationInfo,
+  // and DiskInfo omitted. Note that the `role` and RevocableInfo,
+  // if any, are preserved. Because we clear ReservationInfo but
+  // preserve `role`, this means that stripping a dynamically
+  // reserved resource makes it effectively statically reserved.
   //
   // This is intended for code that would like to aggregate together
   // Resource values without regard for metadata like whether the
@@ -338,22 +505,17 @@ public:
   // NOTE: Non-`const` `iterator`, `begin()` and `end()` are __intentionally__
   // defined with `const` semantics in order to prevent mutable access to the
   // `Resource` objects within `resources`.
-  typedef google::protobuf::RepeatedPtrField<Resource>::const_iterator
-  iterator;
-
-  typedef google::protobuf::RepeatedPtrField<Resource>::const_iterator
-  const_iterator;
+  typedef std::vector<Resource_>::const_iterator iterator;
+  typedef std::vector<Resource_>::const_iterator const_iterator;
 
   const_iterator begin()
   {
-    using google::protobuf::RepeatedPtrField;
-    return static_cast<const RepeatedPtrField<Resource>&>(resources).begin();
+    return static_cast<const std::vector<Resource_>&>(resources).begin();
   }
 
   const_iterator end()
   {
-    using google::protobuf::RepeatedPtrField;
-    return static_cast<const RepeatedPtrField<Resource>&>(resources).end();
+    return static_cast<const std::vector<Resource_>&>(resources).end();
   }
 
   const_iterator begin() const { return resources.begin(); }
@@ -361,13 +523,15 @@ public:
 
   // Using this operator makes it easy to copy a resources object into
   // a protocol buffer field.
-  operator const google::protobuf::RepeatedPtrField<Resource>&() const;
+  // Note that the google::protobuf::RepeatedPtrField<Resource> is
+  // generated at runtime.
+  operator const google::protobuf::RepeatedPtrField<Resource>() const;
 
   bool operator==(const Resources& that) const;
   bool operator!=(const Resources& that) const;
 
   // NOTE: If any error occurs (e.g., input Resource is not valid or
-  // the first operand is not a superset of the second oprand while
+  // the first operand is not a superset of the second operand while
   // doing subtraction), the semantics is as though the second operand
   // was actually just an empty resource (as though you didn't do the
   // operation at all).
@@ -381,6 +545,9 @@ public:
   Resources& operator-=(const Resource& that);
   Resources& operator-=(const Resources& that);
 
+  friend std::ostream& operator<<(
+      std::ostream& stream, const Resource_& resource_);
+
 private:
   // Similar to 'contains(const Resource&)' but skips the validity
   // check. This can be used to avoid the performance overhead of
@@ -389,15 +556,34 @@ private:
   //
   // TODO(jieyu): Measure performance overhead of validity check to
   // ensure this is warranted.
-  bool _contains(const Resource& that) const;
+  bool _contains(const Resource_& that) const;
 
   // Similar to the public 'find', but only for a single Resource
   // object. The target resource may span multiple roles, so this
   // returns Resources.
   Option<Resources> find(const Resource& target) const;
 
-  google::protobuf::RepeatedPtrField<Resource> resources;
+  // Validation-free versions of += and -= `Resource_` operators.
+  // These can be used when `r` is already validated.
+  //
+  // NOTE: `Resource` objects are implicitly converted to `Resource_`
+  // objects, so here the API can also accept a `Resource` object.
+  void add(const Resource_& r);
+  void subtract(const Resource_& r);
+
+  Resources operator+(const Resource_& that) const;
+  Resources& operator+=(const Resource_& that);
+
+  Resources operator-(const Resource_& that) const;
+  Resources& operator-=(const Resource_& that);
+
+  std::vector<Resource_> resources;
 };
+
+
+std::ostream& operator<<(
+    std::ostream& stream,
+    const Resources::Resource_& resource);
 
 
 std::ostream& operator<<(std::ostream& stream, const Resource& resource);

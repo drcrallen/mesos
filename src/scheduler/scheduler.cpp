@@ -14,14 +14,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#ifndef __WINDOWS__
 #include <dlfcn.h>
+#endif // __WINDOWS__
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef __WINDOWS__
 #include <unistd.h>
+#endif // __WINDOWS__
 
+#ifndef __WINDOWS__
 #include <arpa/inet.h>
+#endif // __WINDOWS__
 
 #include <iostream>
 #include <memory>
@@ -48,6 +54,11 @@
 #include <process/process.hpp>
 #include <process/protobuf.hpp>
 
+#include <process/metrics/gauge.hpp>
+#include <process/metrics/metrics.hpp>
+
+#include <process/ssl/flags.hpp>
+
 #include <stout/check.hpp>
 #include <stout/duration.hpp>
 #include <stout/error.hpp>
@@ -70,12 +81,13 @@
 
 #include "local/local.hpp"
 
-#include "logging/flags.hpp"
 #include "logging/logging.hpp"
 
 #include "master/validation.hpp"
 
 #include "messages/messages.hpp"
+
+#include "scheduler/flags.hpp"
 
 using namespace mesos;
 using namespace mesos::internal;
@@ -136,28 +148,18 @@ public:
       const lambda::function<void()>& disconnected,
       const lambda::function<void(const queue<Event>&)>& received,
       const Option<Credential>& _credential,
-      const Option<shared_ptr<MasterDetector>>& _detector)
+      const Option<shared_ptr<MasterDetector>>& _detector,
+      const Flags& _flags)
     : ProcessBase(ID::generate("scheduler")),
       state(DISCONNECTED),
+      metrics(*this),
       contentType(_contentType),
       callbacks {connected, disconnected, received},
       credential(_credential),
-      local(false)
+      local(false),
+      flags(_flags)
   {
     GOOGLE_PROTOBUF_VERIFY_VERSION;
-
-    // Load any flags from the environment (we use local::Flags in the
-    // event we run in 'local' mode, since it inherits
-    // logging::Flags). In the future, just as the TODO in
-    // local/main.cpp discusses, we'll probably want a way to load
-    // master::Flags and slave::Flags as well.
-    local::Flags flags;
-
-    Try<flags::Warnings> load = flags.load("MESOS_");
-
-    if (load.isError()) {
-      EXIT(EXIT_FAILURE) << "Failed to load flags: " << load.error();
-    }
 
     // Initialize libprocess (done here since at some point we might
     // want to use flags to initialize libprocess).
@@ -177,11 +179,6 @@ public:
       logging::initialize("mesos", flags);
     } else {
       VLOG(1) << "Disabling initialization of GLOG logging";
-    }
-
-    // Log any flag warnings (after logging is initialized).
-    foreach (const flags::Warning& warning, load->warnings) {
-      LOG(WARNING) << warning.message;
     }
 
     LOG(INFO) << "Version: " << MESOS_VERSION;
@@ -315,12 +312,17 @@ protected:
       .onAny(defer(self(), &MesosProcess::detected, lambda::_1));
   }
 
-  void connect()
+  void connect(const UUID& _connectionId)
   {
+    // It is possible that a new master was detected while we were waiting
+    // to establish a connection with the old master.
+    if (connectionId != _connectionId) {
+      VLOG(1) << "Ignoring connection attempt from stale connection";
+      return;
+    }
+
     CHECK_EQ(DISCONNECTED, state);
     CHECK_SOME(master);
-
-    connectionId = UUID::random();
 
     state = CONNECTING;
 
@@ -453,13 +455,10 @@ protected:
       string scheme = "http";
 
 #ifdef USE_SSL_SOCKET
-      Option<string> value;
-
-      value = os::getenv("SSL_ENABLED");
-      if (value.isSome() && (value.get() == "1" || value.get() == "true")) {
+      if (process::network::openssl::flags().enabled) {
         scheme = "https";
       }
-#endif
+#endif // USE_SSL_SOCKET
 
       master = ::URL(
         scheme,
@@ -470,7 +469,17 @@ protected:
 
       LOG(INFO) << "New master detected at " << upid;
 
-      connect();
+      connectionId = UUID::random();
+
+      // Wait for a random duration between 0 and `flags.connectionDelayMax`
+      // before (re-)connecting with the master.
+      Duration delay = flags.connectionDelayMax * ((double) os::random()
+                       / RAND_MAX);
+
+      VLOG(1) << "Waiting for " << delay << " before initiating a "
+              << "re-(connection) attempt with the master";
+
+      process::delay(delay, self(), &MesosProcess::connect, connectionId.get());
     }
 
     // Keep detecting masters.
@@ -548,7 +557,12 @@ protected:
       // Responses to SUBSCRIBE calls should always include a stream ID.
       CHECK(response->headers.contains("Mesos-Stream-Id"));
 
-      streamId = UUID::fromString(response->headers.at("Mesos-Stream-Id"));
+      Try<UUID> uuid =
+        UUID::fromString(response->headers.at("Mesos-Stream-Id"));
+
+      CHECK_SOME(uuid);
+
+      streamId = uuid.get();
 
       read();
 
@@ -629,7 +643,7 @@ protected:
     }
 
     // This could happen if the master failed over after sending an event.
-    if (!event->isSome()) {
+    if (event->isNone()) {
       const string error = "End-Of-File received from master. The master "
                            "closed the event stream";
       LOG(ERROR) << error;
@@ -711,6 +725,46 @@ private:
     UNREACHABLE();
   }
 
+  struct Metrics
+  {
+    Metrics(const MesosProcess& mesosProcess)
+      : event_queue_messages(
+          "scheduler/event_queue_messages",
+          defer(mesosProcess, &MesosProcess::_event_queue_messages)),
+        event_queue_dispatches(
+          "scheduler/event_queue_dispatches",
+          defer(mesosProcess,
+                &MesosProcess::_event_queue_dispatches))
+    {
+      // TODO(dhamon): When we start checking the return value of 'add' we may
+      // get failures in situations where multiple SchedulerProcesses are active
+      // (ie, the fault tolerance tests). At that point we'll need MESOS-1285 to
+      // be fixed and to use self().id in the metric name.
+      process::metrics::add(event_queue_messages);
+      process::metrics::add(event_queue_dispatches);
+    }
+
+    ~Metrics()
+    {
+      process::metrics::remove(event_queue_messages);
+      process::metrics::remove(event_queue_dispatches);
+    }
+
+    // Process metrics.
+    process::metrics::Gauge event_queue_messages;
+    process::metrics::Gauge event_queue_dispatches;
+  } metrics;
+
+  double _event_queue_messages()
+  {
+    return static_cast<double>(eventCount<MessageEvent>());
+  }
+
+  double _event_queue_dispatches()
+  {
+    return static_cast<double>(eventCount<DispatchEvent>());
+  }
+
   // There can be multiple simulataneous ongoing (re-)connection attempts with
   // the master (e.g., the master failed over while an attempt was in progress).
   // This helps us in uniquely identifying the current connection instance and
@@ -728,6 +782,7 @@ private:
   queue<Event> events;
   Option<::URL> master;
   Option<UUID> streamId;
+  const Flags flags;
 
   // Master detection future.
   process::Future<Option<mesos::MasterInfo>> detection;
@@ -743,6 +798,19 @@ Mesos::Mesos(
     const Option<Credential>& credential,
     const Option<shared_ptr<MasterDetector>>& detector)
 {
+  Flags flags;
+
+  Try<flags::Warnings> load = flags.load("MESOS_");
+
+  if (load.isError()) {
+    EXIT(EXIT_FAILURE) << "Failed to load flags: " << load.error();
+  }
+
+  // Log any flag warnings (after logging is initialized).
+  foreach (const flags::Warning& warning, load->warnings) {
+    LOG(WARNING) << warning.message;
+  }
+
   process = new MesosProcess(
       master,
       contentType,
@@ -750,7 +818,8 @@ Mesos::Mesos(
       disconnected,
       received,
       credential,
-      detector);
+      detector,
+      flags);
 
   spawn(process);
 }

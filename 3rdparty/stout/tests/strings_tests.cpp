@@ -435,7 +435,7 @@ TEST(StringsTest, SplitNWithMultipleDelims)
 
 TEST(StringsTest, Pairs)
 {
-  map<string, vector<string> > pairs = strings::pairs("one=1,two=2", ",", "=");
+  map<string, vector<string>> pairs = strings::pairs("one=1,two=2", ",", "=");
   ASSERT_EQ(2u, pairs.size());
   ASSERT_EQ(1u, pairs.count("one"));
   ASSERT_EQ(1u, pairs["one"].size());
@@ -445,7 +445,7 @@ TEST(StringsTest, Pairs)
   EXPECT_EQ("2", pairs["two"].front());
 
   pairs = strings::pairs("foo=1;bar=2;baz;foo=3;bam=1=2", ";&", "=");
-  ASSERT_EQ(2, pairs.size());
+  ASSERT_EQ(2u, pairs.size());
   ASSERT_EQ(1u, pairs.count("foo"));
   ASSERT_EQ(2u, pairs["foo"].size());
   ASSERT_EQ("1", pairs["foo"].front());

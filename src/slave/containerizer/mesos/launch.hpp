@@ -17,9 +17,14 @@
 #ifndef __MESOS_CONTAINERIZER_LAUNCH_HPP__
 #define __MESOS_CONTAINERIZER_LAUNCH_HPP__
 
+#include <string>
+
 #include <stout/json.hpp>
 #include <stout/option.hpp>
 #include <stout/subcommand.hpp>
+
+#include <mesos/mesos.hpp>
+
 
 namespace mesos {
 namespace internal {
@@ -30,20 +35,23 @@ class MesosContainerizerLaunch : public Subcommand
 public:
   static const std::string NAME;
 
-  struct Flags : public flags::FlagsBase
+  struct Flags : public virtual flags::FlagsBase
   {
     Flags();
 
-    Option<JSON::Object> command;
-    Option<std::string> sandbox;
-    Option<std::string> working_directory;
-#ifndef __WINDOWS__
-    Option<std::string> rootfs;
-    Option<std::string> user;
-#endif // __WINDOWS__
+    Option<JSON::Object> launch_info;
+#ifdef __WINDOWS__
+    Option<HANDLE> pipe_read;
+    Option<HANDLE> pipe_write;
+#else
     Option<int> pipe_read;
     Option<int> pipe_write;
-    Option<JSON::Object> commands; // Additional preparation commands.
+    Option<std::string> runtime_directory;
+#endif // __WINDOWS__
+#ifdef __linux__
+    Option<pid_t> namespace_mnt_target;
+    bool unshare_namespace_mnt;
+#endif // __linux__
   };
 
   MesosContainerizerLaunch() : Subcommand(NAME) {}

@@ -49,6 +49,7 @@
 #include <stout/strings.hpp>
 #include <stout/utils.hpp>
 
+#include <stout/os/constants.hpp>
 #include <stout/os/exists.hpp>
 #include <stout/os/realpath.hpp>
 #include <stout/os/stat.hpp>
@@ -70,6 +71,7 @@
 #include "linux/routing/handle.hpp"
 
 #include "linux/routing/link/link.hpp"
+#include "linux/routing/link/veth.hpp"
 
 #include "linux/routing/queueing/fq_codel.hpp"
 #include "linux/routing/queueing/htb.hpp"
@@ -124,8 +126,8 @@ namespace slave {
 static const uint16_t MIN_EPHEMERAL_PORTS_SIZE = 16;
 
 // Linux traffic control is a combination of queueing disciplines,
-// filters and classes organized as a tree for the ingress (tx) and
-// egress (rx) flows for each interface. Each container provides two
+// filters and classes organized as a tree for the ingress (rx) and
+// egress (tx) flows for each interface. Each container provides two
 // networking interfaces, a virtual eth0 and a loopback interface. The
 // flow of packets from the external network to container is shown
 // below:
@@ -161,7 +163,7 @@ static const uint16_t MIN_EPHEMERAL_PORTS_SIZE = 16;
 // network flows along the reverse path [4,5,6]. Loopback traffic is
 // directed to the corresponding Ethernet interface, either [7,10] or
 // [8,9] where the same destination port routing can be applied as to
-// external traffic. We use traffic control filters at several of the
+// external traffic. We use traffic control filters on several of the
 // interfaces to create these packet paths.
 //
 // Linux provides only a very simple topology for ingress interfaces.
@@ -393,25 +395,25 @@ const char* PortMappingUpdate::NAME = "update";
 
 PortMappingUpdate::Flags::Flags()
 {
-  add(&eth0_name,
+  add(&Flags::eth0_name,
       "eth0_name",
       "The name of the public network interface (e.g., eth0)");
 
-  add(&lo_name,
+  add(&Flags::lo_name,
       "lo_name",
       "The name of the loopback network interface (e.g., lo)");
 
-  add(&pid,
+  add(&Flags::pid,
       "pid",
       "The pid of the process whose namespaces we will enter");
 
-  add(&ports_to_add,
+  add(&Flags::ports_to_add,
       "ports_to_add",
       "A collection of port ranges (formatted as a JSON object)\n"
       "for which to add IP filters. E.g.,\n"
       "--ports_to_add={\"range\":[{\"begin\":4,\"end\":8}]}");
 
-  add(&ports_to_remove,
+  add(&Flags::ports_to_remove,
       "ports_to_remove",
       "A collection of port ranges (formatted as a JSON object)\n"
       "for which to remove IP filters. E.g.,\n"
@@ -657,26 +659,26 @@ const char* PortMappingStatistics::NAME = "statistics";
 
 PortMappingStatistics::Flags::Flags()
 {
-  add(&eth0_name,
+  add(&Flags::eth0_name,
       "eth0_name",
       "The name of the public network interface (e.g., eth0)");
 
-  add(&pid,
+  add(&Flags::pid,
       "pid",
       "The pid of the process whose namespaces we will enter");
 
-  add(&enable_socket_statistics_summary,
+  add(&Flags::enable_socket_statistics_summary,
       "enable_socket_statistics_summary",
       "Whether to collect socket statistics summary for this container\n",
       false);
 
-  add(&enable_socket_statistics_details,
+  add(&Flags::enable_socket_statistics_details,
       "enable_socket_statistics_details",
       "Whether to collect socket statistics details (e.g., TCP RTT)\n"
       "for this container.",
       false);
 
-  add(&enable_snmp_statistics,
+  add(&Flags::enable_snmp_statistics,
       "enable_snmp_statistics",
       "Whether to collect SNMP statistics details (e.g., TCPRetransSegs)\n"
       "for this container.",
@@ -1586,35 +1588,47 @@ Try<Isolator*> PortMappingIsolatorProcess::create(const Flags& flags)
   Option<Bytes> egressRateLimitPerContainer;
   if (flags.egress_rate_limit_per_container.isSome()) {
     // Read host physical link speed from /sys/class/net/eth0/speed.
-    // This value is in MBits/s.
-    Try<string> value =
-      os::read(path::join("/sys/class/net", eth0.get(), "speed"));
+    // This value is in MBits/s. Some distribution does not support
+    // reading speed (depending on the driver). If that's the case,
+    // simply print warnings.
+    const string eth0SpeedPath =
+      path::join("/sys/class/net", eth0.get(), "speed");
 
-    if (value.isError()) {
-      return Error(
-          "Failed to read " +
-          path::join("/sys/class/net", eth0.get(), "speed") +
-          ": " + value.error());
-    }
+    if (!os::exists(eth0SpeedPath)) {
+      LOG(WARNING) << "Cannot determine link speed of " << eth0.get()
+                   << ": '" << eth0SpeedPath << "' does not exist";
+    } else {
+      Try<string> value = os::read(eth0SpeedPath);
+      if (value.isError()) {
+        // NOTE: Even if the speed file exists, the read might fail if
+        // the driver does not support reading the speed. Therefore,
+        // we print a warning here, instead of failing.
+        LOG(WARNING) << "Cannot determine link speed of " << eth0.get()
+                     << ": Failed to read '" << eth0SpeedPath
+                     << "': " << value.error();
+      } else {
+        Try<uint64_t> hostLinkSpeed =
+          numify<uint64_t>(strings::trim(value.get()));
 
-    Try<uint64_t> hostLinkSpeed = numify<uint64_t>(strings::trim(value.get()));
-    CHECK_SOME(hostLinkSpeed);
+        CHECK_SOME(hostLinkSpeed);
 
-    // It could be possible that the nic driver doesn't support
-    // reporting physical link speed. In that case, report error.
-    if (hostLinkSpeed.get() == 0xFFFFFFFF) {
-      return Error(
-          "Network Isolator failed to determine link speed for " + eth0.get());
-    }
-
-    // Convert host link speed to Bytes/s for comparason.
-    if (hostLinkSpeed.get() * 1000000 / 8 <
-        flags.egress_rate_limit_per_container.get().bytes()) {
-      return Error(
-          "The given egress traffic limit for containers " +
-          stringify(flags.egress_rate_limit_per_container.get().bytes()) +
-          " Bytes/s is greater than the host link speed " +
-          stringify(hostLinkSpeed.get() * 1000000 / 8) + " Bytes/s");
+        // It could be possible that the nic driver doesn't support
+        // reporting physical link speed. In that case, report error.
+        if (hostLinkSpeed.get() == 0xFFFFFFFF) {
+          LOG(WARNING) << "Link speed reporting is not supported for '"
+                       << eth0.get() + "'";
+        } else {
+          // Convert host link speed to Bytes/s for comparason.
+          if (hostLinkSpeed.get() * 1000000 / 8 <
+              flags.egress_rate_limit_per_container.get().bytes()) {
+            return Error(
+                "The given egress traffic limit for containers " +
+                stringify(flags.egress_rate_limit_per_container.get().bytes()) +
+                " Bytes/s is greater than the host link speed " +
+                stringify(hostLinkSpeed.get() * 1000000 / 8) + " Bytes/s");
+          }
+        }
+      }
     }
 
     if (flags.egress_rate_limit_per_container.get() != Bytes(0)) {
@@ -1877,24 +1891,25 @@ Try<Isolator*> PortMappingIsolatorProcess::create(const Flags& flags)
   // each container. This is important because when we unmount the
   // network namespace handles on the host, those handles will be
   // unmounted in the containers as well, but NOT vice versa.
+  const string portMappingBindMountRoot = PORT_MAPPING_BIND_MOUNT_ROOT();
+
+  // We create the bind mount directory if it does not exist.
+  Try<Nothing> mkdir = os::mkdir(portMappingBindMountRoot);
+  if (mkdir.isError()) {
+    return Error(
+        "Failed to create the bind mount root directory at '" +
+        portMappingBindMountRoot + "': " + mkdir.error());
+  }
 
   // We need to get the realpath for the bind mount root since on some
   // Linux distribution, The bind mount root (i.e., /var/run/netns)
   // might contain symlink.
-  Result<string> bindMountRoot = os::realpath(PORT_MAPPING_BIND_MOUNT_ROOT());
+  Result<string> bindMountRoot = os::realpath(portMappingBindMountRoot);
   if (!bindMountRoot.isSome()) {
     return Error(
         "Failed to get realpath for bind mount root '" +
         PORT_MAPPING_BIND_MOUNT_ROOT() + "': " +
         (bindMountRoot.isError() ? bindMountRoot.error() : "Not found"));
-  }
-
-  // We first create the bind mount directory if it does not exist.
-  Try<Nothing> mkdir = os::mkdir(bindMountRoot.get());
-  if (mkdir.isError()) {
-    return Error(
-        "Failed to create the bind mount root directory at " +
-        bindMountRoot.get() + ": " + mkdir.error());
   }
 
   // Now, check '/proc/self/mounts' to see if the bind mount root has
@@ -2513,14 +2528,15 @@ Future<Option<ContainerLaunchInfo>> PortMappingIsolatorProcess::prepare(
             << executorInfo.executor_id() << "'";
 
   ContainerLaunchInfo launchInfo;
-  launchInfo.add_commands()->set_value(scripts(infos[containerId]));
+  launchInfo.add_pre_exec_commands()->set_value(scripts(infos[containerId]));
 
   // NOTE: the port mapping isolator itself doesn't require mount
   // namespace. However, if mount namespace is enabled because of
   // other isolators, we need to set mount sharing accordingly for
   // PORT_MAPPING_BIND_MOUNT_ROOT to avoid races described in
   // MESOS-1558. So we turn on mount namespace here for consistency.
-  launchInfo.set_namespaces(CLONE_NEWNET | CLONE_NEWNS);
+  launchInfo.add_clone_namespaces(CLONE_NEWNET);
+  launchInfo.add_clone_namespaces(CLONE_NEWNS);
 
   return launchInfo;
 }
@@ -2591,14 +2607,14 @@ Future<Nothing> PortMappingIsolatorProcess::isolate(
             << linker << "' -> '" << target << "'";
 
   // Create a virtual ethernet pair for this container.
-  Try<bool> createVethPair = link::create(veth(pid), eth0, pid);
+  Try<bool> createVethPair = link::veth::create(veth(pid), eth0, pid);
   if (createVethPair.isError()) {
     return Failure(
         "Failed to create virtual ethernet pair: " +
         createVethPair.error());
   }
 
-  // We can not reuse the existing veth pair, because one of them is
+  // We cannot reuse the existing veth pair, because one of them is
   // still inside another container.
   if (!createVethPair.get()) {
     return Failure(
@@ -3076,11 +3092,10 @@ Future<Nothing> PortMappingIsolatorProcess::update(
   Try<Subprocess> s = subprocess(
       path::join(flags.launcher_dir, "mesos-network-helper"),
       argv,
-      Subprocess::PATH("/dev/null"),
+      Subprocess::PATH(os::DEV_NULL),
       Subprocess::FD(STDOUT_FILENO),
       Subprocess::FD(STDERR_FILENO),
-      NO_SETSID,
-      update.flags);
+      &update.flags);
 
   if (s.isError()) {
     return Failure("Failed to launch update subcommand: " + s.error());
@@ -3203,11 +3218,10 @@ Future<ResourceStatistics> PortMappingIsolatorProcess::usage(
   Try<Subprocess> s = subprocess(
       path::join(flags.launcher_dir, "mesos-network-helper"),
       argv,
-      Subprocess::PATH("/dev/null"),
+      Subprocess::PATH(os::DEV_NULL),
       Subprocess::PIPE(),
       Subprocess::FD(STDERR_FILENO),
-      NO_SETSID,
-      statistics.flags);
+      &statistics.flags);
 
   if (s.isError()) {
     return Failure("Failed to launch the statistics subcommand: " + s.error());

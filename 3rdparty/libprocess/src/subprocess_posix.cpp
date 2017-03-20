@@ -31,7 +31,6 @@
 #include <stout/os/strerror.hpp>
 #include <stout/strings.hpp>
 #include <stout/try.hpp>
-#include <stout/unreachable.hpp>
 
 using std::map;
 using std::string;
@@ -96,54 +95,6 @@ Subprocess::IO Subprocess::PATH(const string& path)
 
         OutputFileDescriptors fds;
         fds.write = open.get();
-        return fds;
-      });
-}
-
-
-Subprocess::IO Subprocess::FD(int fd, IO::FDType type)
-{
-  return Subprocess::IO(
-      [fd, type]() -> Try<InputFileDescriptors> {
-        int prepared_fd = -1;
-        switch (type) {
-          case IO::DUPLICATED:
-            prepared_fd = ::dup(fd);
-            break;
-          case IO::OWNED:
-            prepared_fd = fd;
-            break;
-
-          // NOTE: By not setting a default we leverage the compiler
-          // errors when the enumeration is augmented to find all
-          // the cases we need to provide. Same for below.
-        }
-
-        if (prepared_fd == -1) {
-          return ErrnoError("Failed to dup");
-        }
-
-        InputFileDescriptors fds;
-        fds.read = prepared_fd;
-        return fds;
-      },
-      [fd, type]() -> Try<OutputFileDescriptors> {
-        int prepared_fd = -1;
-        switch (type) {
-          case IO::DUPLICATED:
-            prepared_fd = ::dup(fd);
-            break;
-          case IO::OWNED:
-            prepared_fd = fd;
-            break;
-        }
-
-        if (prepared_fd == -1) {
-          return ErrnoError("Failed to dup");
-        }
-
-        OutputFileDescriptors fds;
-        fds.write = prepared_fd;
         return fds;
       });
 }

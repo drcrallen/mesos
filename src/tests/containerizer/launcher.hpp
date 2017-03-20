@@ -65,14 +65,18 @@ public:
           const process::Subprocess::IO& in,
           const process::Subprocess::IO& out,
           const process::Subprocess::IO& err,
-          const Option<flags::FlagsBase>& flags,
-          const Option<std::map<std::string, std::string> >& env,
-          const Option<int>& namespaces,
-          std::vector<process::Subprocess::Hook> parentHooks));
+          const flags::FlagsBase* flags,
+          const Option<std::map<std::string, std::string>>& env,
+          const Option<int>& enterNamespaces,
+          const Option<int>& cloneNamespaces));
 
   MOCK_METHOD1(
       destroy,
       process::Future<Nothing>(const ContainerID& containerId));
+
+  MOCK_METHOD1(
+      status,
+      process::Future<ContainerStatus>(const ContainerID& containerId));
 
   process::Owned<slave::Launcher> real;
 };

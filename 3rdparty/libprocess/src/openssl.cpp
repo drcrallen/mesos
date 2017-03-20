@@ -19,14 +19,19 @@
 #include <openssl/ssl.h>
 #include <openssl/x509v3.h>
 
+#include <map>
 #include <mutex>
 #include <string>
 #include <thread>
 
 #include <process/once.hpp>
 
-#include <stout/flags.hpp>
+#include <process/ssl/flags.hpp>
 
+#include <stout/os.hpp>
+#include <stout/strings.hpp>
+
+using std::map;
 using std::ostringstream;
 using std::string;
 
@@ -78,6 +83,12 @@ Flags::Flags()
       "require_cert",
       "Whether or not to require peer certificates. Requiring a peer "
       "certificate implies verifying it.",
+      false);
+
+  add(&Flags::verify_ipadd,
+      "verify_ipadd",
+      "Enable IP address verification in subject alternative name certificate "
+      "extension.",
       false);
 
   add(&Flags::verification_depth,
@@ -275,6 +286,9 @@ string error_string(unsigned long code)
 // this function, it is not visible. This is the preferred behavior as
 // we do not want applications changing these settings while they are
 // running (this would be undefined behavior).
+// NOTE: This does not change the configuration of existing sockets, such
+// as the server socket spawned during libprocess initialization.
+// See `reinitialize` in `process.cpp`.
 void reinitialize()
 {
   // Wipe out and recreate the default flags.
@@ -282,12 +296,32 @@ void reinitialize()
   // change environment variables and call `reinitialize`.
   *ssl_flags = Flags();
 
-  // Load all the flags prefixed by SSL_ from the environment. See
-  // comment at top of openssl.hpp for a full list.
-  Try<flags::Warnings> load = ssl_flags->load("SSL_");
+  // Load all the flags prefixed by LIBPROCESS_SSL_ from the
+  // environment. See comment at top of openssl.hpp for a full list.
+  //
+  // NOTE: We used to look for environment variables prefixed by SSL_.
+  // To be backward compatible, we interpret environment variables
+  // prefixed with either SSL_ and LIBPROCESS_SSL_ where the latter
+  // one takes precedence. See details in MESOS-5863.
+  map<string, Option<string>> environment_ssl =
+      ssl_flags->extract("SSL_");
+  map<string, Option<string>> environments =
+      ssl_flags->extract("LIBPROCESS_SSL_");
+  foreachpair (
+      const string& key, const Option<string>& value, environment_ssl) {
+    if (environments.count(key) > 0 && environments.at(key) != value) {
+      LOG(WARNING) << "Mismatched values for SSL environment variables "
+                   << "SSL_" << key << " and "
+                   << "LIBPROCESS_SSL_" << key;
+    }
+  }
+  environments.insert(environment_ssl.begin(), environment_ssl.end());
+
+  Try<flags::Warnings> load = ssl_flags->load(environments);
   if (load.isError()) {
     EXIT(EXIT_FAILURE)
-      << "Failed to load flags from environment variables (prefixed by SSL_):"
+      << "Failed to load flags from environment variables "
+      << "prefixed by LIBPROCESS_SSL_ or SSL_ (deprecated): "
       << load.error();
   }
 
@@ -371,42 +405,50 @@ void reinitialize()
 
   // Now do some validation of the flags/environment variables.
   if (ssl_flags->key_file.isNone()) {
-    EXIT(EXIT_FAILURE) << "SSL requires key! NOTE: Set path with SSL_KEY_FILE";
+    EXIT(EXIT_FAILURE)
+      << "SSL requires key! NOTE: Set path with LIBPROCESS_SSL_KEY_FILE";
   }
 
   if (ssl_flags->cert_file.isNone()) {
     EXIT(EXIT_FAILURE)
-      << "SSL requires certificate! NOTE: Set path with SSL_CERT_FILE";
+      << "SSL requires certificate! NOTE: Set path with "
+      << "LIBPROCESS_SSL_CERT_FILE";
   }
 
   if (ssl_flags->ca_file.isNone()) {
-    VLOG(2) << "CA file path is unspecified! NOTE: "
-            << "Set CA file path with SSL_CA_FILE=<filepath>";
+    LOG(INFO) << "CA file path is unspecified! NOTE: "
+              << "Set CA file path with LIBPROCESS_SSL_CA_FILE=<filepath>";
   }
 
   if (ssl_flags->ca_dir.isNone()) {
-    VLOG(2) << "CA directory path unspecified! NOTE: "
-            << "Set CA directory path with SSL_CA_DIR=<dirpath>";
+    LOG(INFO) << "CA directory path unspecified! NOTE: "
+              << "Set CA directory path with LIBPROCESS_SSL_CA_DIR=<dirpath>";
   }
 
   if (!ssl_flags->verify_cert) {
-    VLOG(2) << "Will not verify peer certificate!\n"
-            << "NOTE: Set SSL_VERIFY_CERT=1 to enable peer certificate "
-            << "verification";
+    LOG(INFO) << "Will not verify peer certificate!\n"
+              << "NOTE: Set LIBPROCESS_SSL_VERIFY_CERT=1 to enable "
+              << "peer certificate verification";
   }
 
   if (!ssl_flags->require_cert) {
-    VLOG(2) << "Will only verify peer certificate if presented!\n"
-            << "NOTE: Set SSL_REQUIRE_CERT=1 to require peer certificate "
-            << "verification";
+    LOG(INFO) << "Will only verify peer certificate if presented!\n"
+              << "NOTE: Set LIBPROCESS_SSL_REQUIRE_CERT=1 to require "
+              << "peer certificate verification";
+  }
+
+  if (ssl_flags->verify_ipadd) {
+    LOG(INFO) << "Will use IP address verification in subject alternative name "
+              << "certificate extension.";
   }
 
   if (ssl_flags->require_cert && !ssl_flags->verify_cert) {
     // Requiring a certificate implies that is should be verified.
     ssl_flags->verify_cert = true;
 
-    VLOG(2) << "SSL_REQUIRE_CERT implies peer certificate verification.\n"
-            << "SSL_VERIFY_CERT set to true";
+    LOG(INFO) << "LIBPROCESS_SSL_REQUIRE_CERT implies "
+              << "peer certificate verification.\n"
+              << "LIBPROCESS_SSL_VERIFY_CERT set to true";
   }
 
   // Initialize OpenSSL if we've been asked to do verification of peer
@@ -425,7 +467,7 @@ void reinitialize()
       if (SSL_CTX_load_verify_locations(ctx, ca_file, ca_dir) != 1) {
         unsigned long error = ERR_get_error();
         EXIT(EXIT_FAILURE)
-          << "Could not load CA file and/or directory ("
+          << "Could not load CA file and/or directory (OpenSSL error #"
           << stringify(error)  << "): "
           << error_string(error) << " -> "
           << (ca_file != nullptr ? (stringify("FILE: ") + ca_file) : "")
@@ -433,18 +475,41 @@ void reinitialize()
       }
 
       if (ca_file != nullptr) {
-        VLOG(2) << "Using CA file: " << ca_file;
+        LOG(INFO) << "Using CA file: " << ca_file;
       }
       if (ca_dir != nullptr) {
-        VLOG(2) << "Using CA dir: " << ca_dir;
+        LOG(INFO) << "Using CA dir: " << ca_dir;
       }
     } else {
       if (SSL_CTX_set_default_verify_paths(ctx) != 1) {
         EXIT(EXIT_FAILURE) << "Could not load default CA file and/or directory";
       }
 
-      VLOG(2) << "Using default CA file '" << X509_get_default_cert_file()
-              << "' and/or directory '" << X509_get_default_cert_dir() << "'";
+      // For getting the defaults for ca-directory and/or ca-file from
+      // openssl, we have to mimic parts of its logic; if the user has
+      // set the openssl-specific environment variable, use that one -
+      // if the user has not set that variable, use the compiled in
+      // defaults.
+      string ca_dir;
+
+      const map<string, string> environment = os::environment();
+
+      if (environment.count(X509_get_default_cert_dir_env()) > 0) {
+        ca_dir = environment.at(X509_get_default_cert_dir_env());
+      } else {
+        ca_dir = X509_get_default_cert_dir();
+      }
+
+      string ca_file;
+
+      if (environment.count(X509_get_default_cert_file_env()) > 0) {
+        ca_file = environment.at(X509_get_default_cert_file_env());
+      } else {
+        ca_file = X509_get_default_cert_file();
+      }
+
+      LOG(INFO) << "Using default CA file '" << ca_file
+                << "' and/or directory '" << ca_dir << "'";
     }
 
     // Set SSL peer verification callback.
@@ -465,7 +530,10 @@ void reinitialize()
   if (SSL_CTX_use_certificate_chain_file(
           ctx,
           ssl_flags->cert_file.get().c_str()) != 1) {
-    EXIT(EXIT_FAILURE) << "Could not load cert file";
+    unsigned long error = ERR_get_error();
+    EXIT(EXIT_FAILURE)
+      << "Could not load cert file '" << ssl_flags->cert_file.get() << "' "
+      << "(OpenSSL error #" << stringify(error) << "): " << error_string(error);
   }
 
   // Set private key.
@@ -473,19 +541,27 @@ void reinitialize()
           ctx,
           ssl_flags->key_file.get().c_str(),
           SSL_FILETYPE_PEM) != 1) {
-    EXIT(EXIT_FAILURE) << "Could not load key file";
+    unsigned long error = ERR_get_error();
+    EXIT(EXIT_FAILURE)
+      << "Could not load key file '" << ssl_flags->key_file.get() << "' "
+      << "(OpenSSL error #" << stringify(error) << "): " << error_string(error);
   }
 
   // Validate key.
   if (SSL_CTX_check_private_key(ctx) != 1) {
+    unsigned long error = ERR_get_error();
     EXIT(EXIT_FAILURE)
-      << "Private key does not match the certificate public key";
+      << "Private key does not match the certificate public key "
+      << "(OpenSSL error #" << stringify(error) << "): " << error_string(error);
   }
 
   VLOG(2) << "Using ciphers: " << ssl_flags->ciphers;
 
   if (SSL_CTX_set_cipher_list(ctx, ssl_flags->ciphers.c_str()) == 0) {
-    EXIT(EXIT_FAILURE) << "Could not set ciphers: " << ssl_flags->ciphers;
+    unsigned long error = ERR_get_error();
+    EXIT(EXIT_FAILURE)
+      << "Could not set ciphers '" << ssl_flags->ciphers << "' "
+      << "(OpenSSL error #" << stringify(error) << "): " << error_string(error);
   }
 
   // Clear all the protocol options. They will be reset if needed
@@ -543,7 +619,10 @@ SSL_CTX* context()
 }
 
 
-Try<Nothing> verify(const SSL* const ssl, const Option<string>& hostname)
+Try<Nothing> verify(
+    const SSL* const ssl,
+    const Option<string>& hostname,
+    const Option<net::IP>& ip)
 {
   // Return early if we don't need to verify.
   if (!ssl_flags->verify_cert) {
@@ -565,7 +644,7 @@ Try<Nothing> verify(const SSL* const ssl, const Option<string>& hostname)
     return Error("Could not verify peer certificate");
   }
 
-  if (hostname.isNone()) {
+  if (!ssl_flags->verify_ipadd && hostname.isNone()) {
     X509_free(cert);
     return ssl_flags->require_cert
       ? Error("Cannot verify peer certificate: peer hostname unknown")
@@ -589,24 +668,62 @@ Try<Nothing> verify(const SSL* const ssl, const Option<string>& hostname)
     for (int i = 0; i < san_names_num; i++) {
       const GENERAL_NAME* current_name = sk_GENERAL_NAME_value(san_names, i);
 
-      if (current_name->type == GEN_DNS) {
-        // Current name is a DNS name, let's check it.
-        const string dns_name =
-          reinterpret_cast<char*>(ASN1_STRING_data(current_name->d.dNSName));
+      switch(current_name->type) {
+        case GEN_DNS: {
+          if (hostname.isSome()) {
+            // Current name is a DNS name, let's check it.
+            const string dns_name =
+              reinterpret_cast<char*>(ASN1_STRING_data(
+                  current_name->d.dNSName));
 
-        // Make sure there isn't an embedded NUL character in the DNS name.
-        const size_t length = ASN1_STRING_length(current_name->d.dNSName);
-        if (length != dns_name.length()) {
-          sk_GENERAL_NAME_pop_free(san_names, GENERAL_NAME_free);
-          X509_free(cert);
-          return Error(
-            "X509 certificate malformed: embedded NUL character in DNS name");
-        } else { // Compare expected hostname with the DNS name.
-          if (hostname.get() == dns_name) {
-            sk_GENERAL_NAME_pop_free(san_names, GENERAL_NAME_free);
-            X509_free(cert);
-            return Nothing();
+            // Make sure there isn't an embedded NUL character in the DNS name.
+            const size_t length = ASN1_STRING_length(current_name->d.dNSName);
+            if (length != dns_name.length()) {
+              sk_GENERAL_NAME_pop_free(san_names, GENERAL_NAME_free);
+              X509_free(cert);
+              return Error(
+                  "X509 certificate malformed: "
+                  "embedded NUL character in DNS name");
+            } else {
+              VLOG(2) << "Matching dNSName(" << i << "): " << dns_name;
+
+              // Compare expected hostname with the DNS name.
+              if (hostname.get() == dns_name) {
+                sk_GENERAL_NAME_pop_free(san_names, GENERAL_NAME_free);
+                X509_free(cert);
+
+                VLOG(2) << "dNSName match found for " << hostname.get();
+
+                return Nothing();
+              }
+            }
           }
+          break;
+        }
+        case GEN_IPADD: {
+          if (ssl_flags->verify_ipadd && ip.isSome()) {
+            // Current name is an IPAdd, let's check it.
+            const ASN1_OCTET_STRING* current_ipadd = current_name->d.iPAddress;
+
+            if (current_ipadd->type == V_ASN1_OCTET_STRING &&
+                current_ipadd->data != nullptr &&
+                current_ipadd->length == sizeof(uint32_t)) {
+              const net::IP ip_add(ntohl(
+                  *reinterpret_cast<uint32_t*>(current_ipadd->data)));
+
+              VLOG(2) << "Matching iPAddress(" << i << "): " << ip_add;
+
+              if (ip.get() == ip_add) {
+                sk_GENERAL_NAME_pop_free(san_names, GENERAL_NAME_free);
+                X509_free(cert);
+
+                VLOG(2) << "iPAddress match found for " << ip.get();
+
+                return Nothing();
+              }
+            }
+          }
+          break;
         }
       }
     }
@@ -614,34 +731,52 @@ Try<Nothing> verify(const SSL* const ssl, const Option<string>& hostname)
     sk_GENERAL_NAME_pop_free(san_names, GENERAL_NAME_free);
   }
 
-  // If we still haven't verified the hostname, try doing it via
-  // the certificate subject name.
-  X509_NAME* name = X509_get_subject_name(cert);
+  if (hostname.isSome()) {
+    // If we still haven't verified the hostname, try doing it via
+    // the certificate subject name.
+    X509_NAME* name = X509_get_subject_name(cert);
 
-  if (name != nullptr) {
-    char text[_POSIX_HOST_NAME_MAX] {};
+    if (name != nullptr) {
+      char text[_POSIX_HOST_NAME_MAX] {};
 
-    if (X509_NAME_get_text_by_NID(
-            name,
-            NID_commonName,
-            text,
-            sizeof(text)) > 0) {
-      if (hostname.get() != text) {
+      if (X509_NAME_get_text_by_NID(
+              name,
+              NID_commonName,
+              text,
+              sizeof(text)) > 0) {
+        VLOG(2) << "Matching common name: " << text;
+
+        if (hostname.get() != text) {
+          X509_free(cert);
+          return Error(
+            "Presented Certificate Name: " + stringify(text) +
+            " does not match peer hostname name: " + hostname.get());
+        }
+
+        VLOG(2) << "Common name match found for " << hostname.get();
+
         X509_free(cert);
-        return Error(
-          "Presented Certificate Name: " + stringify(text) +
-          " does not match peer hostname name: " + hostname.get());
+        return Nothing();
       }
-
-      X509_free(cert);
-      return Nothing();
     }
   }
 
   // If we still haven't exited, we haven't verified it, and we give up.
   X509_free(cert);
+
+  std::vector<string> details;
+
+  if (hostname.isSome()) {
+    details.push_back("hostname " + hostname.get());
+  }
+
+  if (ip.isSome()) {
+    details.push_back("IP " + stringify(ip.get()));
+  }
+
   return Error(
-    "Could not verify presented certificate with hostname " + hostname.get());
+      "Could not verify presented certificate with " +
+      strings::join(", ", details));
 }
 
 } // namespace openssl {

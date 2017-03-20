@@ -84,7 +84,8 @@ class ShutdownProcess : public Process<ShutdownProcess>
 {
 public:
   explicit ShutdownProcess(const Duration& _gracePeriod)
-    : gracePeriod(_gracePeriod) {}
+    : ProcessBase(ID::generate("exec-shutdown")),
+      gracePeriod(_gracePeriod) {}
 
 protected:
   virtual void initialize()
@@ -283,7 +284,12 @@ protected:
 
     // Update the slave link.
     slave = from;
-    link(slave);
+
+    // We force a reconnect here to avoid sending on a stale "half-open"
+    // socket. We do not detect a disconnection in some cases when the
+    // connection is terminated by a netfilter module e.g., iptables
+    // running on the agent (see MESOS-5332).
+    link(slave, RemoteConnection::RECONNECT);
 
     // Re-register with slave.
     ReregisterExecutorMessage message;
@@ -291,16 +297,12 @@ protected:
     message.mutable_framework_id()->MergeFrom(frameworkId);
 
     // Send all unacknowledged updates.
-    // TODO(vinod): Use foreachvalue instead once LinkedHashmap
-    // supports it.
-    foreach (const StatusUpdate& update, updates.values()) {
+    foreachvalue (const StatusUpdate& update, updates) {
       message.add_updates()->MergeFrom(update);
     }
 
     // Send all unacknowledged tasks.
-    // TODO(vinod): Use foreachvalue instead once LinkedHashmap
-    // supports it.
-    foreach (const TaskInfo& task, tasks.values()) {
+    foreachvalue (const TaskInfo& task, tasks) {
       message.add_tasks()->MergeFrom(task);
     }
 
@@ -358,20 +360,23 @@ protected:
       const TaskID& taskId,
       const string& uuid)
   {
+    Try<UUID> uuid_ = UUID::fromBytes(uuid);
+    CHECK_SOME(uuid_);
+
     if (aborted.load()) {
       VLOG(1) << "Ignoring status update acknowledgement "
-              << UUID::fromBytes(uuid) << " for task " << taskId
+              << uuid_.get() << " for task " << taskId
               << " of framework " << frameworkId
               << " because the driver is aborted!";
       return;
     }
 
     VLOG(1) << "Executor received status update acknowledgement "
-            << UUID::fromBytes(uuid) << " for task " << taskId
+            << uuid_.get() << " for task " << taskId
             << " of framework " << frameworkId;
 
     // Remove the corresponding update.
-    updates.erase(UUID::fromBytes(uuid));
+    updates.erase(uuid_.get());
 
     // Remove the corresponding task.
     tasks.erase(taskId);
@@ -600,6 +605,7 @@ private:
 MesosExecutorDriver::MesosExecutorDriver(mesos::Executor* _executor)
   : executor(_executor),
     process(nullptr),
+    latch(nullptr),
     status(DRIVER_NOT_STARTED)
 {
   GOOGLE_PROTOBUF_VERIFY_VERSION;
@@ -615,11 +621,11 @@ MesosExecutorDriver::MesosExecutorDriver(mesos::Executor* _executor)
     return;
   }
 
-  // Initialize Latch.
-  latch = new Latch();
-
   // Initialize libprocess.
   process::initialize();
+
+  // Initialize Latch.
+  latch = new Latch();
 
   // Initialize logging.
   if (flags.initialize_driver_logging) {

@@ -33,6 +33,7 @@ ZOOKEEPER_JAR = 3rdparty/zookeeper-$(ZOOKEEPER_VERSION)/zookeeper-$(ZOOKEEPER_VE
 LIBPROCESS = 3rdparty/libprocess
 STOUT = 3rdparty/stout
 BOOST = 3rdparty/boost-$(BOOST_VERSION)
+ELFIO = 3rdparty/elfio-$(ELFIO_VERSION)
 GLOG = 3rdparty/glog-$(GLOG_VERSION)
 GMOCK = 3rdparty/gmock-$(GMOCK_VERSION)
 GTEST = $(GMOCK)/gtest
@@ -84,21 +85,42 @@ EXTRA_DIST =
 PHONY_TARGETS =
 LDADD =
 
+AM_LDFLAGS =
+
 # Use -Wl,--as-needed to AM_LDFLAGS since we link against all the
 # libraries programs may depend upon, not the exact one. --as-needed
 # causes the linker to only link to the ones a program actually uses,
 # not the full list on the command line.
 if OS_LINUX
-AM_LDFLAGS=-Wl,--as-needed
+AM_LDFLAGS += -Wl,--as-needed
 endif
 
 # Add compiler and linker flags for pthreads.
 AM_CXXFLAGS = $(PTHREAD_CFLAGS)
+
+# Enable common (and some language specific) warnings.
+AM_CXXFLAGS += -Wall
+# Warn when a comparison is made between signed and unsigned values.
+AM_CXXFLAGS += -Wsign-compare
+# Warn about use of format functions that can produce security issues.
+AM_CXXFLAGS += -Wformat-security
+
+# We will also have much more hardened/secured binaries and libraries.
+if ENABLE_HARDENING
+# Produce position independent executables so that we better take advantage of ASLR.
+AM_LDFLAGS += -pie
+# Protect many of the functions with stack guards
+# (either -fstack-protector-strong or -fstack-protector depending on compiler support).
+AM_CXXFLAGS += @STACK_PROTECTOR@
+# Produce position independent code when appropriate.
+AM_CXXFLAGS += -fPIC -fPIE
+endif
+
 AM_LIBS = $(PTHREAD_LIBS)
 
 # Setup CPPFLAGS that are used for most source files.
 MESOS_CPPFLAGS = $(AM_CPPFLAGS)
-MESOS_CPPFLAGS += -Wall -Werror
+MESOS_CPPFLAGS += -Werror
 MESOS_CPPFLAGS += -DLIBDIR=\"$(libdir)\"
 MESOS_CPPFLAGS += -DPKGLIBEXECDIR=\"$(pkglibexecdir)\"
 MESOS_CPPFLAGS += -DPKGDATADIR=\"$(pkgdatadir)\"
@@ -130,6 +152,10 @@ if WITH_BUNDLED_BOOST
 MESOS_CPPFLAGS += -isystem ../$(BOOST)
 endif
 
+if WITH_BUNDLED_ELFIO
+MESOS_CPPFLAGS += -I../$(ELFIO)
+endif
+
 if WITH_BUNDLED_GLOG
 MESOS_CPPFLAGS += -I../$(GLOG)/src
 LIB_GLOG = ../$(GLOG)/libglog.la
@@ -145,7 +171,7 @@ MESOS_CPPFLAGS += -I../$(LEVELDB)/include
 # the installed libmesos.la file to include leveldb in
 # 'dependency_libs' (via '-L../3rdparty/leveldb -lleveldb').
 
-LIB_LEVELDB = ../$(LEVELDB)/libleveldb.a
+LIB_LEVELDB = ../$(LEVELDB)/out-static/libleveldb.a
 else
 LIB_LEVELDB = -lleveldb
 LDADD += -lleveldb
@@ -187,21 +213,6 @@ LIB_ZOOKEEPER = -lzookeeper_mt
 LDADD += -lzookeeper_mt
 endif
 
-# Introduced for NVIDIA GPU support (we needed to
-# introspect shared library dependencies).
-if OS_LINUX
-LIB_ELF = -lelf
-LDADD += -lelf
-endif
-
-# TODO(hausdorff): Remove our hard dependency on SASL, as some platforms
-# (namely Windows) will not support it in the forseeable future. As a
-# stop-gap, we conditionally compile the code in libmesos that depends on
-# SASL, by always setting `HAS_AUTHENTICATION` on non-Windows platforms, and
-# never setting it on Windows platforms. This means that non-Windows builds
-# of libmesos will still take a hard dependency on SASL, while Windows builds
-# won't. Currently, the dependency is still assumed throughout the tests,
-# though the plan is to remove this hard dependency as well. See MESOS-5450.
 MESOS_CPPFLAGS += -DHAS_AUTHENTICATION=1
 
 # README: we build the Mesos library out of a collection of
@@ -214,28 +225,29 @@ MESOS_CPPFLAGS += -DHAS_AUTHENTICATION=1
 
 ACLS_PROTO = $(top_srcdir)/include/mesos/authorizer/acls.proto
 AGENT_PROTO = $(top_srcdir)/include/mesos/agent/agent.proto
-ALLOCATOR_PROTO = $(top_srcdir)/include/mesos/master/allocator.proto
+ALLOCATOR_PROTO = $(top_srcdir)/include/mesos/allocator/allocator.proto
 APPC_SPEC_PROTO = $(top_srcdir)/include/mesos/appc/spec.proto
 AUTHENTICATION_PROTO = $(top_srcdir)/include/mesos/authentication/authentication.proto
 AUTHORIZATION_PROTO = $(top_srcdir)/include/mesos/authorizer/authorizer.proto
-CONTAINERIZER_PROTO = $(top_srcdir)/include/mesos/containerizer/containerizer.proto
+CONTAINERIZER_PROTO = $(top_srcdir)/include/mesos/slave/containerizer.proto
 DOCKER_SPEC_PROTO = $(top_srcdir)/include/mesos/docker/spec.proto
 DOCKER_V1_PROTO = $(top_srcdir)/include/mesos/docker/v1.proto
 DOCKER_V2_PROTO = $(top_srcdir)/include/mesos/docker/v2.proto
 EXECUTOR_PROTO = $(top_srcdir)/include/mesos/executor/executor.proto
 FETCHER_PROTO = $(top_srcdir)/include/mesos/fetcher/fetcher.proto
+HOOK_PROTO = $(top_srcdir)/include/mesos/module/hook.proto
 MAINTENANCE_PROTO = $(top_srcdir)/include/mesos/maintenance/maintenance.proto
 MASTER_PROTO = $(top_srcdir)/include/mesos/master/master.proto
 MESOS_PROTO = $(top_srcdir)/include/mesos/mesos.proto
 MODULE_PROTO = $(top_srcdir)/include/mesos/module/module.proto
+OCI_SPEC_PROTO = $(top_srcdir)/include/mesos/oci/spec.proto
 QUOTA_PROTO = $(top_srcdir)/include/mesos/quota/quota.proto
 SCHEDULER_PROTO = $(top_srcdir)/include/mesos/scheduler/scheduler.proto
 STATE_PROTO = $(top_srcdir)/include/mesos/state/state.proto
-ISOLATOR_PROTO = $(top_srcdir)/include/mesos/slave/isolator.proto
 OVERSUBSCRIPTION_PROTO = $(top_srcdir)/include/mesos/slave/oversubscription.proto
 URI_PROTO = $(top_srcdir)/include/mesos/uri/uri.proto
 V1_AGENT_PROTO = $(top_srcdir)/include/mesos/v1/agent/agent.proto
-V1_ALLOCATOR_PROTO = $(top_srcdir)/include/mesos/v1/master/allocator.proto
+V1_ALLOCATOR_PROTO = $(top_srcdir)/include/mesos/v1/allocator/allocator.proto
 V1_EXECUTOR_PROTO = $(top_srcdir)/include/mesos/v1/executor/executor.proto
 V1_MAINTENANCE_PROTO = $(top_srcdir)/include/mesos/v1/maintenance/maintenance.proto
 V1_MASTER_PROTO = $(top_srcdir)/include/mesos/v1/master/master.proto
@@ -249,6 +261,8 @@ CXX_PROTOS =								\
   ../include/mesos/mesos.pb.h						\
   ../include/mesos/agent/agent.pb.cc					\
   ../include/mesos/agent/agent.pb.h					\
+  ../include/mesos/allocator/allocator.pb.cc				\
+  ../include/mesos/allocator/allocator.pb.h				\
   ../include/mesos/appc/spec.pb.cc					\
   ../include/mesos/appc/spec.pb.h					\
   ../include/mesos/authentication/authentication.pb.cc			\
@@ -257,8 +271,6 @@ CXX_PROTOS =								\
   ../include/mesos/authorizer/acls.pb.h					\
   ../include/mesos/authorizer/authorizer.pb.cc				\
   ../include/mesos/authorizer/authorizer.pb.h				\
-  ../include/mesos/containerizer/containerizer.pb.cc			\
-  ../include/mesos/containerizer/containerizer.pb.h			\
   ../include/mesos/docker/spec.pb.cc					\
   ../include/mesos/docker/spec.pb.h					\
   ../include/mesos/docker/v1.pb.cc					\
@@ -271,18 +283,20 @@ CXX_PROTOS =								\
   ../include/mesos/fetcher/fetcher.pb.h					\
   ../include/mesos/maintenance/maintenance.pb.cc			\
   ../include/mesos/maintenance/maintenance.pb.h				\
-  ../include/mesos/master/allocator.pb.cc				\
-  ../include/mesos/master/allocator.pb.h				\
   ../include/mesos/master/master.pb.cc					\
   ../include/mesos/master/master.pb.h					\
+  ../include/mesos/module/hook.pb.cc					\
+  ../include/mesos/module/hook.pb.h					\
   ../include/mesos/module/module.pb.cc					\
   ../include/mesos/module/module.pb.h					\
+  ../include/mesos/oci/spec.pb.cc					\
+  ../include/mesos/oci/spec.pb.h					\
   ../include/mesos/quota/quota.pb.cc					\
   ../include/mesos/quota/quota.pb.h					\
   ../include/mesos/scheduler/scheduler.pb.cc				\
   ../include/mesos/scheduler/scheduler.pb.h				\
-  ../include/mesos/slave/isolator.pb.cc					\
-  ../include/mesos/slave/isolator.pb.h					\
+  ../include/mesos/slave/containerizer.pb.cc				\
+  ../include/mesos/slave/containerizer.pb.h				\
   ../include/mesos/slave/oversubscription.pb.cc				\
   ../include/mesos/slave/oversubscription.pb.h				\
   ../include/mesos/state/state.pb.cc					\
@@ -293,12 +307,12 @@ CXX_PROTOS =								\
   ../include/mesos/v1/mesos.pb.h					\
   ../include/mesos/v1/agent/agent.pb.cc					\
   ../include/mesos/v1/agent/agent.pb.h					\
+  ../include/mesos/v1/allocator/allocator.pb.cc				\
+  ../include/mesos/v1/allocator/allocator.pb.h				\
   ../include/mesos/v1/executor/executor.pb.cc				\
   ../include/mesos/v1/executor/executor.pb.h				\
   ../include/mesos/v1/maintenance/maintenance.pb.cc			\
   ../include/mesos/v1/maintenance/maintenance.pb.h			\
-  ../include/mesos/v1/master/allocator.pb.cc				\
-  ../include/mesos/v1/master/allocator.pb.h				\
   ../include/mesos/v1/master/master.pb.cc				\
   ../include/mesos/v1/master/master.pb.h				\
   ../include/mesos/v1/quota/quota.pb.cc					\
@@ -330,21 +344,31 @@ CXX_STATE_PROTOS =							\
 
 JAVA_PROTOS =								\
   java/generated/org/apache/mesos/Protos.java				\
-  java/generated/org/apache/mesos/containerizer/Protos.java
+  java/generated/org/apache/mesos/executor/Protos.java			\
+  java/generated/org/apache/mesos/scheduler/Protos.java
 
 PYTHON_PROTOS =								\
-  python/interface/src/mesos/interface/mesos_pb2.py			\
-  python/interface/src/mesos/interface/containerizer_pb2.py
+  python/interface/src/mesos/interface/mesos_pb2.py
 
 V1_JAVA_PROTOS =							\
   java/generated/org/apache/mesos/v1/Protos.java			\
+  java/generated/org/apache/mesos/v1/agent/Protos.java			\
+  java/generated/org/apache/mesos/v1/allocator/Protos.java		\
   java/generated/org/apache/mesos/v1/executor/Protos.java		\
+  java/generated/org/apache/mesos/v1/maintenance/Protos.java		\
+  java/generated/org/apache/mesos/v1/master/Protos.java			\
+  java/generated/org/apache/mesos/v1/quota/Protos.java			\
   java/generated/org/apache/mesos/v1/scheduler/Protos.java
 
-V1_PYTHON_PROTOS =							\
-  python/interface/src/mesos/v1/interface/mesos_pb2.py			\
+V1_PYTHON_PROTOS =                                                      \
+  python/interface/src/mesos/v1/interface/agent_pb2.py                  \
+  python/interface/src/mesos/v1/interface/allocator_pb2.py              \
+  python/interface/src/mesos/v1/interface/executor_pb2.py               \
+  python/interface/src/mesos/v1/interface/maintenance_pb2.py            \
+  python/interface/src/mesos/v1/interface/master_pb2.py                 \
+  python/interface/src/mesos/v1/interface/mesos_pb2.py                  \
+  python/interface/src/mesos/v1/interface/quota_pb2.py                  \
   python/interface/src/mesos/v1/interface/scheduler_pb2.py
-
 
 BUILT_SOURCES +=							\
   $(CXX_LOG_PROTOS)							\
@@ -374,10 +398,6 @@ CLEANFILES +=								\
 
 
 # Targets for generating Java protocol buffer code.
-java/generated/org/apache/mesos/containerizer/Protos.java: $(CONTAINERIZER_PROTO)
-	$(MKDIR_P) $(@D)
-	$(PROTOC) $(PROTOCFLAGS) --java_out=java/generated $^
-
 java/generated/org/apache/mesos/executor/Protos.java: $(EXECUTOR_PROTO)
 	$(MKDIR_P) $(@D)
 	$(PROTOC) $(PROTOCFLAGS) --java_out=java/generated $^
@@ -398,6 +418,26 @@ java/generated/org/apache/mesos/v1/executor/Protos.java: $(V1_EXECUTOR_PROTO)
 	$(MKDIR_P) $(@D)
 	$(PROTOC) $(PROTOCFLAGS) --java_out=java/generated $^
 
+java/generated/org/apache/mesos/v1/quota/Protos.java: $(V1_QUOTA_PROTO)
+	$(MKDIR_P) $(@D)
+	$(PROTOC) $(PROTOCFLAGS) --java_out=java/generated $^
+
+java/generated/org/apache/mesos/v1/agent/Protos.java: $(V1_AGENT_PROTO)
+	$(MKDIR_P) $(@D)
+	$(PROTOC) $(PROTOCFLAGS) --java_out=java/generated $^
+
+java/generated/org/apache/mesos/v1/allocator/Protos.java: $(V1_ALLOCATOR_PROTO)
+	$(MKDIR_P) $(@D)
+	$(PROTOC) $(PROTOCFLAGS) --java_out=java/generated $^
+
+java/generated/org/apache/mesos/v1/maintenance/Protos.java: $(V1_MAINTENANCE_PROTO)
+	$(MKDIR_P) $(@D)
+	$(PROTOC) $(PROTOCFLAGS) --java_out=java/generated $^
+
+java/generated/org/apache/mesos/v1/master/Protos.java: $(V1_MASTER_PROTO)
+	$(MKDIR_P) $(@D)
+	$(PROTOC) $(PROTOCFLAGS) --java_out=java/generated $^
+
 java/generated/org/apache/mesos/v1/Protos.java: $(V1_MESOS_PROTO)
 	$(MKDIR_P) $(@D)
 	$(PROTOC) $(PROTOCFLAGS) --java_out=java/generated $^
@@ -412,12 +452,6 @@ java/generated/org/apache/mesos/v1/scheduler/Protos.java: $(V1_SCHEDULER_PROTO)
 # has to get patched using sed, removing the leading 'mesos.'
 # namespace qualifier due to the flat hierachy in the resulting
 # mesos.interface egg. See MESOS-1750 for more.
-python/interface/src/mesos/interface/containerizer_pb2.py: $(CONTAINERIZER_PROTO)
-	$(MKDIR_P) $(@D)
-	$(PROTOC) -I$(top_srcdir)/include/mesos/containerizer $(PROTOCFLAGS)	\
-		--python_out=python/interface/src/mesos/interface $^
-	$(SED) -i.bak 's/mesos\.mesos_pb2/mesos_pb2/' $@ && rm $@.bak
-
 python/interface/src/mesos/interface/executor_pb2.py: $(EXECUTOR_PROTO)
 	$(MKDIR_P) $(@D)
 	$(PROTOC) -I$(top_srcdir)/include/mesos/executor $(PROTOCFLAGS)		\
@@ -435,9 +469,33 @@ python/interface/src/mesos/interface/scheduler_pb2.py: $(SCHEDULER_PROTO)
 		--python_out=python/interface/src/mesos/interface $^
 	$(SED) -i.bak 's/mesos\.mesos_pb2/mesos_pb2/' $@ && rm $@.bak
 
+python/interface/src/mesos/v1/interface/agent_pb2.py: $(V1_AGENT_PROTO)
+	$(MKDIR_P) $(@D)
+	$(PROTOC) -I$(top_srcdir)/include/mesos/v1/agent $(PROTOCFLAGS)		\
+		--python_out=python/interface/src/mesos/v1/interface $^
+	$(SED) -i.bak 's/mesos\.mesos_pb2/mesos_pb2/' $@ && rm $@.bak
+
+python/interface/src/mesos/v1/interface/allocator_pb2.py: $(V1_ALLOCATOR_PROTO)
+	$(MKDIR_P) $(@D)
+	$(PROTOC) -I$(top_srcdir)/include/mesos/v1/allocator $(PROTOCFLAGS)	\
+		--python_out=python/interface/src/mesos/v1/interface $^
+	$(SED) -i.bak 's/mesos\.mesos_pb2/mesos_pb2/' $@ && rm $@.bak
+
 python/interface/src/mesos/v1/interface/executor_pb2.py: $(V1_EXECUTOR_PROTO)
 	$(MKDIR_P) $(@D)
 	$(PROTOC) -I$(top_srcdir)/include/mesos/v1/executor $(PROTOCFLAGS)	\
+		--python_out=python/interface/src/mesos/v1/interface $^
+	$(SED) -i.bak 's/mesos\.mesos_pb2/mesos_pb2/' $@ && rm $@.bak
+
+python/interface/src/mesos/v1/interface/maintenance_pb2.py: $(V1_MAINTENANCE_PROTO)
+	$(MKDIR_P) $(@D)
+	$(PROTOC) -I$(top_srcdir)/include/mesos/v1/maintenance $(PROTOCFLAGS)	\
+		--python_out=python/interface/src/mesos/v1/interface $^
+	$(SED) -i.bak 's/mesos\.mesos_pb2/mesos_pb2/' $@ && rm $@.bak
+
+python/interface/src/mesos/v1/interface/master_pb2.py: $(V1_MASTER_PROTO)
+	$(MKDIR_P) $(@D)
+	$(PROTOC) -I$(top_srcdir)/include/mesos/v1/master $(PROTOCFLAGS)	\
 		--python_out=python/interface/src/mesos/v1/interface $^
 	$(SED) -i.bak 's/mesos\.mesos_pb2/mesos_pb2/' $@ && rm $@.bak
 
@@ -445,6 +503,12 @@ python/interface/src/mesos/v1/interface/mesos_pb2.py: $(V1_MESOS_PROTO)
 	$(MKDIR_P) $(@D)
 	$(PROTOC) -I$(top_srcdir)/include/mesos/v1 $(PROTOCFLAGS)		\
 		--python_out=python/interface/src/mesos/v1/interface $^
+
+python/interface/src/mesos/v1/interface/quota_pb2.py: $(V1_QUOTA_PROTO)
+	$(MKDIR_P) $(@D)
+	$(PROTOC) -I$(top_srcdir)/include/mesos/v1/quota $(PROTOCFLAGS)		\
+		--python_out=python/interface/src/mesos/v1/interface $^
+	$(SED) -i.bak 's/mesos\.mesos_pb2/mesos_pb2/' $@ && rm $@.bak
 
 python/interface/src/mesos/v1/interface/scheduler_pb2.py: $(V1_SCHEDULER_PROTO)
 	$(MKDIR_P) $(@D)
@@ -471,6 +535,15 @@ nodist_pkginclude_HEADERS =						\
   ../include/mesos/version.hpp						\
   ../include/mesos/mesos.pb.h
 
+allocatordir = $(pkgincludedir)/allocator
+
+allocator_HEADERS =								\
+  $(top_srcdir)/include/mesos/allocator/allocator.hpp				\
+  $(top_srcdir)/include/mesos/allocator/allocator.proto
+
+nodist_allocator_HEADERS =							\
+  ../include/mesos/allocator/allocator.pb.h
+
 appcdir = $(pkgincludedir)/appc
 
 appc_HEADERS =								\
@@ -487,7 +560,9 @@ authentication_HEADERS =						\
   $(top_srcdir)/include/mesos/authentication/authentication.hpp		\
   $(top_srcdir)/include/mesos/authentication/authentication.proto	\
   $(top_srcdir)/include/mesos/authentication/authenticator.hpp		\
-  $(top_srcdir)/include/mesos/authentication/http/basic_authenticator_factory.hpp
+  $(top_srcdir)/include/mesos/authentication/secret_generator.hpp	\
+  $(top_srcdir)/include/mesos/authentication/http/basic_authenticator_factory.hpp	\
+  $(top_srcdir)/include/mesos/authentication/http/combined_authenticator.hpp
 
 nodist_authentication_HEADERS =						\
   ../include/mesos/authentication/authentication.pb.h
@@ -503,15 +578,6 @@ authorizer_HEADERS =							\
 nodist_authorizer_HEADERS =						\
   ../include/mesos/authorizer/acls.pb.h					\
   ../include/mesos/authorizer/authorizer.pb.h
-
-containerizerdir = $(pkgincludedir)/containerizer
-
-containerizer_HEADERS =							\
-  $(top_srcdir)/include/mesos/containerizer/containerizer.hpp		\
-  $(top_srcdir)/include/mesos/containerizer/containerizer.proto
-
-nodist_containerizer_HEADERS =						\
-  ../include/mesos/containerizer/containerizer.pb.h
 
 dockerdir = $(pkgincludedir)/docker
 
@@ -563,15 +629,12 @@ nodist_maintenance_HEADERS =						\
 masterdir = $(pkgincludedir)/master
 
 master_HEADERS =							\
-  $(top_srcdir)/include/mesos/master/allocator.hpp			\
-  $(top_srcdir)/include/mesos/master/allocator.proto			\
   $(top_srcdir)/include/mesos/master/contender.hpp			\
   $(top_srcdir)/include/mesos/master/detector.hpp			\
   $(top_srcdir)/include/mesos/master/master.hpp				\
   $(top_srcdir)/include/mesos/master/master.proto
 
 nodist_master_HEADERS =							\
-  ../include/mesos/master/allocator.pb.h				\
   ../include/mesos/master/master.pb.h
 
 moduledir = $(pkgincludedir)/module
@@ -584,6 +647,7 @@ module_HEADERS =							\
   $(top_srcdir)/include/mesos/module/authorizer.hpp			\
   $(top_srcdir)/include/mesos/module/container_logger.hpp		\
   $(top_srcdir)/include/mesos/module/hook.hpp				\
+  $(top_srcdir)/include/mesos/module/hook.proto				\
   $(top_srcdir)/include/mesos/module/http_authenticator.hpp		\
   $(top_srcdir)/include/mesos/module/isolator.hpp			\
   $(top_srcdir)/include/mesos/module/module.hpp				\
@@ -591,10 +655,21 @@ module_HEADERS =							\
   $(top_srcdir)/include/mesos/module/qos_controller.hpp			\
   $(top_srcdir)/include/mesos/module/resource_estimator.hpp		\
   $(top_srcdir)/include/mesos/module/contender.hpp			\
-  $(top_srcdir)/include/mesos/module/detector.hpp
+  $(top_srcdir)/include/mesos/module/detector.hpp			\
+  $(top_srcdir)/include/mesos/module/secret_generator.hpp
 
 nodist_module_HEADERS =							\
+  ../include/mesos/module/hook.pb.h					\
   ../include/mesos/module/module.pb.h
+
+ocidir = $(pkgincludedir)/oci
+
+oci_HEADERS =								\
+  $(top_srcdir)/include/mesos/oci/spec.hpp				\
+  $(top_srcdir)/include/mesos/oci/spec.proto
+
+nodist_oci_HEADERS =							\
+  ../include/mesos/oci/spec.pb.h
 
 quotadir = $(pkgincludedir)/quota
 
@@ -618,10 +693,10 @@ agentdir = $(pkgincludedir)/agent
 
 agent_HEADERS =								\
   $(top_srcdir)/include/mesos/agent/agent.hpp				\
-  $(top_srcdir)/include/mesos/agent/agent.proto			\
+  $(top_srcdir)/include/mesos/agent/agent.proto				\
   $(top_srcdir)/include/mesos/slave/container_logger.hpp		\
+  $(top_srcdir)/include/mesos/slave/containerizer.hpp			\
   $(top_srcdir)/include/mesos/slave/isolator.hpp			\
-  $(top_srcdir)/include/mesos/slave/isolator.proto			\
   $(top_srcdir)/include/mesos/slave/oversubscription.hpp		\
   $(top_srcdir)/include/mesos/slave/oversubscription.proto		\
   $(top_srcdir)/include/mesos/slave/qos_controller.hpp			\
@@ -629,7 +704,7 @@ agent_HEADERS =								\
 
 nodist_agent_HEADERS =							\
   ../include/mesos/agent/agent.pb.h					\
-  ../include/mesos/slave/isolator.pb.h					\
+  ../include/mesos/slave/containerizer.pb.h				\
   ../include/mesos/slave/oversubscription.pb.h
 
 statedir = $(pkgincludedir)/state
@@ -680,6 +755,14 @@ v1agent_HEADERS =							\
 nodist_v1agent_HEADERS =						\
   ../include/mesos/v1/agent/agent.pb.h
 
+v1allocatordir = $(pkgincludedir)/v1/allocator
+
+v1allocator_HEADERS =							\
+  $(top_srcdir)/include/mesos/v1/allocator/allocator.proto
+
+nodist_v1allocator_HEADERS =						\
+  ../include/mesos/v1/allocator/allocator.pb.h
+
 v1executordir = $(pkgincludedir)/v1/executor
 
 v1executor_HEADERS =							\
@@ -701,12 +784,10 @@ nodist_v1maintenance_HEADERS =						\
 v1masterdir = $(pkgincludedir)/v1/master
 
 v1master_HEADERS =							\
-  $(top_srcdir)/include/mesos/v1/master/allocator.proto			\
   $(top_srcdir)/include/mesos/v1/master/master.hpp			\
   $(top_srcdir)/include/mesos/v1/master/master.proto
 
 nodist_v1master_HEADERS =						\
-  ../include/mesos/v1/master/allocator.pb.h				\
   ../include/mesos/v1/master/master.pb.h
 
 v1quotadir = $(pkgincludedir)/v1/quota
@@ -715,7 +796,7 @@ v1quota_HEADERS =							\
   $(top_srcdir)/include/mesos/v1/quota/quota.proto
 
 nodist_v1quota_HEADERS =						\
-  ../include/mesos/v1/master/allocator.pb.h
+  ../include/mesos/v1/quota/quota.pb.h
 
 v1schedulerdir = $(pkgincludedir)/v1/scheduler
 
@@ -763,9 +844,12 @@ libmesos_no_3rdparty_la_SOURCES +=					\
   authentication/cram_md5/authenticator.cpp				\
   authentication/cram_md5/auxprop.cpp					\
   authentication/http/basic_authenticator_factory.cpp			\
+  authentication/http/combined_authenticator.cpp			\
   authorizer/acls.cpp							\
   authorizer/authorizer.cpp						\
   authorizer/local/authorizer.cpp					\
+  checks/checker.cpp							\
+  checks/health_checker.cpp						\
   common/attributes.cpp							\
   common/command_utils.cpp						\
   common/http.cpp							\
@@ -774,6 +858,7 @@ libmesos_no_3rdparty_la_SOURCES +=					\
   common/resources_utils.cpp						\
   common/roles.cpp							\
   common/type_utils.cpp							\
+  common/validation.cpp							\
   common/values.cpp							\
   docker/docker.cpp							\
   docker/spec.cpp							\
@@ -812,6 +897,8 @@ libmesos_no_3rdparty_la_SOURCES +=					\
   master/detector/zookeeper.cpp						\
   messages/messages.cpp							\
   module/manager.cpp							\
+  oci/spec.cpp								\
+  posix/rlimits.cpp							\
   sched/sched.cpp							\
   scheduler/scheduler.cpp						\
   slave/constants.cpp							\
@@ -832,23 +919,28 @@ libmesos_no_3rdparty_la_SOURCES +=					\
   slave/containerizer/composing.cpp					\
   slave/containerizer/containerizer.cpp					\
   slave/containerizer/docker.cpp					\
-  slave/containerizer/external_containerizer.cpp			\
   slave/containerizer/fetcher.cpp					\
   slave/containerizer/mesos/containerizer.cpp				\
   slave/containerizer/mesos/isolator.cpp				\
   slave/containerizer/mesos/launch.cpp					\
   slave/containerizer/mesos/launcher.cpp				\
   slave/containerizer/mesos/mount.cpp					\
-  slave/containerizer/mesos/isolators/filesystem/posix.cpp		\
+  slave/containerizer/mesos/paths.cpp					\
+  slave/containerizer/mesos/utils.cpp					\
+  slave/containerizer/mesos/io/switchboard.cpp				\
   slave/containerizer/mesos/isolators/docker/volume/driver.cpp		\
   slave/containerizer/mesos/isolators/docker/volume/paths.cpp		\
+  slave/containerizer/mesos/isolators/filesystem/posix.cpp		\
   slave/containerizer/mesos/isolators/network/cni/paths.cpp		\
   slave/containerizer/mesos/isolators/network/cni/spec.cpp		\
   slave/containerizer/mesos/isolators/posix/disk.cpp			\
+  slave/containerizer/mesos/isolators/posix/rlimits.cpp			\
+  slave/containerizer/mesos/isolators/volume/sandbox_path.cpp		\
   slave/containerizer/mesos/provisioner/backend.cpp			\
   slave/containerizer/mesos/provisioner/paths.cpp			\
   slave/containerizer/mesos/provisioner/provisioner.cpp			\
   slave/containerizer/mesos/provisioner/store.cpp			\
+  slave/containerizer/mesos/provisioner/utils.cpp			\
   slave/containerizer/mesos/provisioner/appc/cache.cpp			\
   slave/containerizer/mesos/provisioner/appc/fetcher.cpp		\
   slave/containerizer/mesos/provisioner/appc/paths.cpp			\
@@ -885,6 +977,8 @@ libmesos_no_3rdparty_la_SOURCES +=					\
   authentication/cram_md5/authenticator.hpp				\
   authentication/cram_md5/auxprop.hpp					\
   authorizer/local/authorizer.hpp					\
+  checks/checker.hpp							\
+  checks/health_checker.hpp						\
   common/build.hpp							\
   common/command_utils.hpp						\
   common/http.hpp							\
@@ -893,6 +987,7 @@ libmesos_no_3rdparty_la_SOURCES +=					\
   common/recordio.hpp							\
   common/resources_utils.hpp						\
   common/status_utils.hpp						\
+  common/validation.hpp							\
   credentials/credentials.hpp						\
   docker/docker.hpp							\
   docker/executor.hpp							\
@@ -936,8 +1031,11 @@ libmesos_no_3rdparty_la_SOURCES +=					\
   messages/flags.hpp							\
   messages/messages.hpp							\
   module/manager.hpp							\
+  posix/rlimits.hpp							\
   sched/constants.hpp							\
   sched/flags.hpp							\
+  scheduler/constants.hpp						\
+  scheduler/flags.hpp							\
   slave/constants.hpp							\
   slave/flags.hpp							\
   slave/gc.hpp								\
@@ -953,28 +1051,34 @@ libmesos_no_3rdparty_la_SOURCES +=					\
   slave/containerizer/composing.hpp					\
   slave/containerizer/containerizer.hpp					\
   slave/containerizer/docker.hpp					\
-  slave/containerizer/external_containerizer.hpp			\
   slave/containerizer/fetcher.hpp					\
+  slave/containerizer/mesos/constants.hpp				\
   slave/containerizer/mesos/containerizer.hpp				\
   slave/containerizer/mesos/isolator.hpp				\
   slave/containerizer/mesos/launch.hpp					\
   slave/containerizer/mesos/launcher.hpp				\
   slave/containerizer/mesos/mount.hpp					\
+  slave/containerizer/mesos/paths.hpp					\
+  slave/containerizer/mesos/utils.hpp					\
+  slave/containerizer/mesos/io/switchboard.hpp				\
   slave/containerizer/mesos/isolators/posix.hpp				\
   slave/containerizer/mesos/isolators/filesystem/posix.hpp		\
   slave/containerizer/mesos/isolators/filesystem/windows.hpp		\
   slave/containerizer/mesos/isolators/posix/disk.hpp			\
+  slave/containerizer/mesos/isolators/posix/rlimits.hpp			\
   slave/containerizer/mesos/isolators/docker/volume/driver.hpp		\
   slave/containerizer/mesos/isolators/docker/volume/paths.hpp		\
   slave/containerizer/mesos/isolators/docker/volume/state.hpp		\
   slave/containerizer/mesos/isolators/network/cni/paths.hpp		\
   slave/containerizer/mesos/isolators/network/cni/spec.hpp		\
-  slave/containerizer/mesos/isolators/network/cni/spec.hpp		\
+  slave/containerizer/mesos/isolators/volume/sandbox_path.hpp		\
   slave/containerizer/mesos/isolators/windows.hpp			\
   slave/containerizer/mesos/provisioner/backend.hpp			\
+  slave/containerizer/mesos/provisioner/constants.hpp			\
   slave/containerizer/mesos/provisioner/paths.hpp			\
   slave/containerizer/mesos/provisioner/provisioner.hpp			\
   slave/containerizer/mesos/provisioner/store.hpp			\
+  slave/containerizer/mesos/provisioner/utils.hpp			\
   slave/containerizer/mesos/provisioner/appc/cache.hpp			\
   slave/containerizer/mesos/provisioner/appc/fetcher.hpp		\
   slave/containerizer/mesos/provisioner/appc/paths.hpp			\
@@ -989,22 +1093,31 @@ libmesos_no_3rdparty_la_SOURCES +=					\
   slave/containerizer/mesos/provisioner/docker/store.hpp		\
   slave/qos_controllers/noop.hpp					\
   slave/resource_estimators/noop.hpp					\
+  tests/active_user_test_helper.hpp					\
   tests/allocator.hpp							\
   tests/cluster.hpp							\
   tests/containerizer.hpp						\
   tests/environment.hpp							\
   tests/flags.hpp							\
+  tests/health_check_test_helper.hpp					\
+  tests/kill_policy_test_helper.hpp					\
   tests/limiter.hpp							\
   tests/mesos.hpp							\
+  tests/mock_docker.hpp							\
+  tests/mock_slave.hpp							\
+  tests/mock_registrar.hpp						\
   tests/module.hpp							\
+  tests/resources_utils.hpp						\
   tests/script.hpp							\
   tests/utils.hpp							\
   tests/zookeeper.hpp							\
   tests/zookeeper_test_server.hpp					\
+  tests/containerizer/capabilities_test_helper.hpp			\
   tests/containerizer/docker_archive.hpp				\
   tests/containerizer/isolator.hpp					\
   tests/containerizer/launcher.hpp					\
   tests/containerizer/memory_test_helper.hpp				\
+  tests/containerizer/mock_containerizer.hpp				\
   tests/containerizer/rootfs.hpp					\
   tests/containerizer/setns_test_helper.hpp				\
   tests/containerizer/store.hpp						\
@@ -1019,65 +1132,102 @@ libmesos_no_3rdparty_la_SOURCES +=					\
   uri/schemes/hdfs.hpp							\
   uri/schemes/http.hpp							\
   usage/usage.hpp							\
+  v1/parse.hpp								\
   version/version.hpp							\
   watcher/whitelist_watcher.hpp
 
-MESOS_LINUX_FILES =							\
-  linux/cgroups.cpp							\
-  linux/fs.cpp								\
-  linux/ldcache.cpp							\
-  linux/perf.cpp							\
-  linux/systemd.cpp							\
-  slave/containerizer/mesos/linux_launcher.cpp				\
-  slave/containerizer/mesos/isolators/cgroups/cpushare.cpp		\
-  slave/containerizer/mesos/isolators/cgroups/devices.cpp		\
-  slave/containerizer/mesos/isolators/cgroups/mem.cpp			\
-  slave/containerizer/mesos/isolators/cgroups/net_cls.cpp		\
-  slave/containerizer/mesos/isolators/cgroups/perf_event.cpp		\
-  slave/containerizer/mesos/isolators/docker/runtime.cpp		\
-  slave/containerizer/mesos/isolators/docker/volume/isolator.cpp	\
-  slave/containerizer/mesos/isolators/filesystem/linux.cpp		\
-  slave/containerizer/mesos/isolators/filesystem/shared.cpp		\
-  slave/containerizer/mesos/isolators/gpu/nvidia.cpp			\
-  slave/containerizer/mesos/isolators/gpu/nvml.cpp			\
-  slave/containerizer/mesos/isolators/namespaces/pid.cpp		\
-  slave/containerizer/mesos/isolators/network/cni/cni.cpp		\
-  slave/containerizer/mesos/provisioner/backends/aufs.cpp		\
-  slave/containerizer/mesos/provisioner/backends/bind.cpp		\
+MESOS_LINUX_FILES =									\
+  linux/capabilities.cpp								\
+  linux/cgroups.cpp									\
+  linux/fs.cpp										\
+  linux/ldcache.cpp									\
+  linux/ldd.cpp										\
+  linux/perf.cpp									\
+  linux/systemd.cpp									\
+  slave/containerizer/mesos/linux_launcher.cpp						\
+  slave/containerizer/mesos/isolators/appc/runtime.cpp					\
+  slave/containerizer/mesos/isolators/cgroups/cgroups.cpp				\
+  slave/containerizer/mesos/isolators/cgroups/subsystem.cpp				\
+  slave/containerizer/mesos/isolators/cgroups/subsystems/blkio.cpp			\
+  slave/containerizer/mesos/isolators/cgroups/subsystems/cpu.cpp			\
+  slave/containerizer/mesos/isolators/cgroups/subsystems/cpuacct.cpp			\
+  slave/containerizer/mesos/isolators/cgroups/subsystems/cpuset.cpp			\
+  slave/containerizer/mesos/isolators/cgroups/subsystems/devices.cpp			\
+  slave/containerizer/mesos/isolators/cgroups/subsystems/hugetlb.cpp			\
+  slave/containerizer/mesos/isolators/cgroups/subsystems/memory.cpp			\
+  slave/containerizer/mesos/isolators/cgroups/subsystems/net_cls.cpp			\
+  slave/containerizer/mesos/isolators/cgroups/subsystems/net_prio.cpp			\
+  slave/containerizer/mesos/isolators/cgroups/subsystems/perf_event.cpp			\
+  slave/containerizer/mesos/isolators/cgroups/subsystems/pids.cpp			\
+  slave/containerizer/mesos/isolators/docker/runtime.cpp				\
+  slave/containerizer/mesos/isolators/docker/volume/isolator.cpp			\
+  slave/containerizer/mesos/isolators/filesystem/linux.cpp				\
+  slave/containerizer/mesos/isolators/filesystem/shared.cpp				\
+  slave/containerizer/mesos/isolators/gpu/allocator.cpp					\
+  slave/containerizer/mesos/isolators/gpu/isolator.cpp					\
+  slave/containerizer/mesos/isolators/gpu/nvml.cpp					\
+  slave/containerizer/mesos/isolators/gpu/volume.cpp					\
+  slave/containerizer/mesos/isolators/linux/capabilities.cpp				\
+  slave/containerizer/mesos/isolators/namespaces/ipc.cpp				\
+  slave/containerizer/mesos/isolators/namespaces/pid.cpp				\
+  slave/containerizer/mesos/isolators/network/cni/cni.cpp				\
+  slave/containerizer/mesos/isolators/network/cni/plugins/port_mapper/port_mapper.cpp	\
+  slave/containerizer/mesos/isolators/volume/image.cpp					\
+  slave/containerizer/mesos/provisioner/backends/aufs.cpp				\
+  slave/containerizer/mesos/provisioner/backends/bind.cpp				\
   slave/containerizer/mesos/provisioner/backends/overlay.cpp
 
-MESOS_LINUX_FILES +=							\
-  linux/cgroups.hpp							\
-  linux/fs.hpp								\
-  linux/ldcache.hpp							\
-  linux/ns.hpp								\
-  linux/perf.hpp							\
-  linux/sched.hpp							\
-  linux/systemd.hpp							\
-  slave/containerizer/mesos/linux_launcher.hpp				\
-  slave/containerizer/mesos/isolators/cgroups/constants.hpp		\
-  slave/containerizer/mesos/isolators/cgroups/cpushare.hpp		\
-  slave/containerizer/mesos/isolators/cgroups/devices.hpp		\
-  slave/containerizer/mesos/isolators/cgroups/mem.hpp			\
-  slave/containerizer/mesos/isolators/cgroups/net_cls.hpp		\
-  slave/containerizer/mesos/isolators/cgroups/perf_event.hpp		\
-  slave/containerizer/mesos/isolators/docker/runtime.hpp		\
-  slave/containerizer/mesos/isolators/docker/volume/isolator.hpp	\
-  slave/containerizer/mesos/isolators/filesystem/linux.hpp		\
-  slave/containerizer/mesos/isolators/filesystem/shared.hpp		\
-  slave/containerizer/mesos/isolators/gpu/nvidia.hpp 			\
-  slave/containerizer/mesos/isolators/gpu/nvml.hpp			\
-  slave/containerizer/mesos/isolators/namespaces/pid.hpp		\
-  slave/containerizer/mesos/isolators/network/cni/cni.hpp		\
-  slave/containerizer/mesos/provisioner/backends/aufs.hpp		\
-  slave/containerizer/mesos/provisioner/backends/bind.hpp		\
+MESOS_LINUX_FILES +=									\
+  linux/capabilities.hpp								\
+  linux/cgroups.hpp									\
+  linux/fs.hpp										\
+  linux/ldcache.hpp									\
+  linux/ldd.hpp										\
+  linux/ns.hpp										\
+  linux/perf.hpp									\
+  linux/sched.hpp									\
+  linux/systemd.hpp									\
+  slave/containerizer/mesos/linux_launcher.hpp						\
+  slave/containerizer/mesos/isolators/appc/runtime.hpp					\
+  slave/containerizer/mesos/isolators/cgroups/cgroups.hpp				\
+  slave/containerizer/mesos/isolators/cgroups/constants.hpp				\
+  slave/containerizer/mesos/isolators/cgroups/subsystem.hpp				\
+  slave/containerizer/mesos/isolators/cgroups/subsystems/blkio.hpp			\
+  slave/containerizer/mesos/isolators/cgroups/subsystems/cpu.hpp			\
+  slave/containerizer/mesos/isolators/cgroups/subsystems/cpuacct.hpp			\
+  slave/containerizer/mesos/isolators/cgroups/subsystems/cpuset.hpp			\
+  slave/containerizer/mesos/isolators/cgroups/subsystems/devices.hpp			\
+  slave/containerizer/mesos/isolators/cgroups/subsystems/hugetlb.hpp			\
+  slave/containerizer/mesos/isolators/cgroups/subsystems/memory.hpp			\
+  slave/containerizer/mesos/isolators/cgroups/subsystems/net_cls.hpp			\
+  slave/containerizer/mesos/isolators/cgroups/subsystems/net_prio.hpp			\
+  slave/containerizer/mesos/isolators/cgroups/subsystems/perf_event.hpp			\
+  slave/containerizer/mesos/isolators/cgroups/subsystems/pids.hpp			\
+  slave/containerizer/mesos/isolators/docker/runtime.hpp				\
+  slave/containerizer/mesos/isolators/docker/volume/isolator.hpp			\
+  slave/containerizer/mesos/isolators/filesystem/linux.hpp				\
+  slave/containerizer/mesos/isolators/filesystem/shared.hpp				\
+  slave/containerizer/mesos/isolators/gpu/allocator.hpp					\
+  slave/containerizer/mesos/isolators/gpu/components.hpp				\
+  slave/containerizer/mesos/isolators/gpu/isolator.hpp					\
+  slave/containerizer/mesos/isolators/gpu/nvidia.hpp					\
+  slave/containerizer/mesos/isolators/gpu/nvml.hpp					\
+  slave/containerizer/mesos/isolators/gpu/volume.hpp					\
+  slave/containerizer/mesos/isolators/linux/capabilities.hpp				\
+  slave/containerizer/mesos/isolators/namespaces/ipc.hpp				\
+  slave/containerizer/mesos/isolators/namespaces/pid.hpp				\
+  slave/containerizer/mesos/isolators/network/cni/cni.hpp				\
+  slave/containerizer/mesos/isolators/network/cni/plugins/port_mapper/port_mapper.hpp	\
+  slave/containerizer/mesos/isolators/volume/image.hpp					\
+  slave/containerizer/mesos/provisioner/backends/aufs.hpp				\
+  slave/containerizer/mesos/provisioner/backends/bind.hpp				\
   slave/containerizer/mesos/provisioner/backends/overlay.hpp
 
 if ENABLE_XFS_DISK_ISOLATOR
-MESOS_LINUX_FILES +=                                                    \
-  slave/containerizer/mesos/isolators/xfs/utils.cpp                     \
-  slave/containerizer/mesos/isolators/xfs/utils.hpp                     \
-  slave/containerizer/mesos/isolators/xfs/disk.cpp                      \
+MESOS_LINUX_FILES +=							\
+  slave/containerizer/mesos/isolators/xfs/utils.cpp			\
+  slave/containerizer/mesos/isolators/xfs/utils.hpp			\
+  slave/containerizer/mesos/isolators/xfs/disk.cpp			\
   slave/containerizer/mesos/isolators/xfs/disk.hpp
 endif
 
@@ -1090,6 +1240,7 @@ MESOS_NETWORK_ISOLATOR_FILES =						\
   linux/routing/filter/icmp.cpp						\
   linux/routing/filter/ip.cpp						\
   linux/routing/link/link.cpp						\
+  linux/routing/link/veth.cpp						\
   linux/routing/queueing/fq_codel.cpp					\
   linux/routing/queueing/htb.cpp					\
   linux/routing/queueing/ingress.cpp					\
@@ -1111,6 +1262,7 @@ MESOS_NETWORK_ISOLATOR_FILES +=						\
   linux/routing/filter/priority.hpp					\
   linux/routing/link/internal.hpp					\
   linux/routing/link/link.hpp						\
+  linux/routing/link/veth.hpp						\
   linux/routing/queueing/discipline.hpp					\
   linux/routing/queueing/fq_codel.hpp					\
   linux/routing/queueing/htb.hpp					\
@@ -1129,6 +1281,12 @@ if WITH_NETWORK_ISOLATOR
 libmesos_no_3rdparty_la_SOURCES += $(MESOS_NETWORK_ISOLATOR_FILES)
 else
 EXTRA_DIST += $(MESOS_NETWORK_ISOLATOR_FILES)
+endif
+
+if ENABLE_SSL
+libmesos_no_3rdparty_la_SOURCES +=					\
+  authentication/executor/jwt_secret_generator.cpp				\
+  authentication/executor/jwt_secret_generator.hpp
 endif
 
 libmesos_no_3rdparty_la_CPPFLAGS = $(MESOS_CPPFLAGS)
@@ -1235,7 +1393,7 @@ lib_LTLIBRARIES += libmesos.la
 # Include as part of the distribution.
 libmesos_la_SOURCES =							\
   $(ACLS_PROTO)								\
-  $(AGENT_PROTO)								\
+  $(AGENT_PROTO)							\
   $(ALLOCATOR_PROTO)							\
   $(APPC_SPEC_PROTO)							\
   $(AUTHENTICATION_PROTO)						\
@@ -1246,11 +1404,12 @@ libmesos_la_SOURCES =							\
   $(DOCKER_V1_PROTO)							\
   $(DOCKER_V2_PROTO)							\
   $(FETCHER_PROTO)							\
-  $(ISOLATOR_PROTO)							\
+  $(HOOK_PROTO)								\
   $(MAINTENANCE_PROTO)							\
   $(MASTER_PROTO)							\
   $(MESOS_PROTO)							\
   $(MODULE_PROTO)							\
+  $(OCI_SPEC_PROTO)							\
   $(OVERSUBSCRIPTION_PROTO)						\
   $(QUOTA_PROTO)							\
   $(SCHEDULER_PROTO)							\
@@ -1274,7 +1433,6 @@ libmesos_la_LIBTOOLFLAGS = --tag=CXX
 # Add the convenience library.
 libmesos_la_LIBADD =							\
   libmesos_no_3rdparty.la						\
-  $(LIB_ELF)								\
   $(LIB_GLOG)								\
   $(LIB_LEVELDB)							\
   $(LIB_PROCESS)							\
@@ -1296,13 +1454,6 @@ mesos_master_SOURCES = master/main.cpp
 mesos_master_CPPFLAGS = $(MESOS_CPPFLAGS)
 mesos_master_LDADD = libmesos.la $(LDADD)
 
-# TODO(tomxing): Remove this binary once the
-# slave->agent rename is complete(MESOS-3782).
-sbin_PROGRAMS += mesos-slave
-mesos_slave_SOURCES = slave/main.cpp
-mesos_slave_CPPFLAGS = $(MESOS_CPPFLAGS)
-mesos_slave_LDADD = libmesos.la $(LDADD)
-
 bin_PROGRAMS += mesos-local
 mesos_local_SOURCES = local/main.cpp
 mesos_local_CPPFLAGS = $(MESOS_CPPFLAGS)
@@ -1320,10 +1471,24 @@ mesos_executor_SOURCES = 						\
 mesos_executor_CPPFLAGS = $(MESOS_CPPFLAGS)
 mesos_executor_LDADD = libmesos.la $(LDADD)
 
+pkglibexec_PROGRAMS += mesos-default-executor
+mesos_default_executor_SOURCES =					\
+  launcher/default_executor.cpp
+mesos_default_executor_CPPFLAGS = $(MESOS_CPPFLAGS)
+mesos_default_executor_LDADD = libmesos.la $(LDADD)
+
 pkglibexec_PROGRAMS += mesos-containerizer
 mesos_containerizer_SOURCES = slave/containerizer/mesos/main.cpp
 mesos_containerizer_CPPFLAGS = $(MESOS_CPPFLAGS)
 mesos_containerizer_LDADD = libmesos.la $(LDADD)
+
+if OS_LINUX
+pkglibexec_PROGRAMS += mesos-cni-port-mapper
+mesos_cni_port_mapper_SOURCES = \
+  slave/containerizer/mesos/isolators/network/cni/plugins/port_mapper/main.cpp
+mesos_cni_port_mapper_CPPFLAGS = $(MESOS_CPPFLAGS)
+mesos_cni_port_mapper_LDADD = libmesos.la $(LDADD)
+endif
 
 pkglibexec_PROGRAMS += mesos-logrotate-logger
 mesos_logrotate_logger_SOURCES =		\
@@ -1332,17 +1497,18 @@ mesos_logrotate_logger_SOURCES =		\
 mesos_logrotate_logger_CPPFLAGS = $(MESOS_CPPFLAGS)
 mesos_logrotate_logger_LDADD = libmesos.la $(LDADD)
 
+pkglibexec_PROGRAMS += mesos-io-switchboard
+mesos_io_switchboard_SOURCES =	\
+  slave/containerizer/mesos/io/switchboard_main.cpp
+mesos_io_switchboard_CPPFLAGS = $(MESOS_CPPFLAGS)
+mesos_io_switchboard_LDADD = libmesos.la $(LDADD)
+
 if WITH_NETWORK_ISOLATOR
 pkglibexec_PROGRAMS += mesos-network-helper
 mesos_network_helper_SOURCES = slave/containerizer/mesos/isolators/network/helper.cpp
 mesos_network_helper_CPPFLAGS = $(MESOS_CPPFLAGS)
 mesos_network_helper_LDADD = libmesos.la $(LDADD)
 endif
-
-pkglibexec_PROGRAMS += mesos-health-check
-mesos_health_check_SOURCES = health-check/main.cpp
-mesos_health_check_CPPFLAGS = $(MESOS_CPPFLAGS)
-mesos_health_check_LDADD = libmesos.la $(LDADD)
 
 pkglibexec_PROGRAMS += mesos-usage
 mesos_usage_SOURCES = usage/main.cpp
@@ -1353,6 +1519,11 @@ pkglibexec_PROGRAMS += mesos-docker-executor
 mesos_docker_executor_SOURCES = docker/executor.cpp
 mesos_docker_executor_CPPFLAGS = $(MESOS_CPPFLAGS)
 mesos_docker_executor_LDADD = libmesos.la $(LDADD)
+
+pkglibexec_PROGRAMS += mesos-tcp-connect
+mesos_tcp_connect_SOURCES = checks/tcp_connect.cpp
+mesos_tcp_connect_CPPFLAGS = $(MESOS_CPPFLAGS)
+mesos_tcp_connect_LDADD = libmesos.la $(LDADD)
 
 bin_PROGRAMS += mesos-log
 mesos_log_SOURCES = log/main.cpp
@@ -1409,8 +1580,10 @@ nobase_dist_pkgdata_DATA +=						\
   webui/master/static/frameworks.html					\
   webui/master/static/home.html						\
   webui/master/static/index.html					\
+  webui/master/static/maintenance.html					\
   webui/master/static/offers.html					\
   webui/master/static/pailer.html					\
+  webui/master/static/roles.html					\
   webui/master/static/directives/pagination.html			\
   webui/master/static/directives/tableHeader.html			\
   webui/master/static/directives/timestamp.html
@@ -1418,7 +1591,8 @@ nobase_dist_pkgdata_DATA +=						\
 # Need to distribute/install webui images.
 nobase_dist_pkgdata_DATA +=						\
   webui/master/static/ico/favicon.ico					\
-  webui/master/static/img/loading.gif
+  webui/master/static/img/loading.gif					\
+  webui/master/static/img/mesos_logo.png
 
 # Need to distribute/install webui fonts.
 nobase_dist_pkgdata_DATA +=						\
@@ -1433,16 +1607,15 @@ nobase_dist_pkgdata_DATA +=						\
   webui/master/static/js/angular-1.2.3.min.js				\
   webui/master/static/js/angular-route-1.2.3.js				\
   webui/master/static/js/angular-route-1.2.3.min.js			\
+  webui/master/static/js/clipboard-1.5.16.js				\
+  webui/master/static/js/clipboard-1.5.16.min.js			\
   webui/master/static/js/jquery-1.7.1.js				\
   webui/master/static/js/jquery-1.7.1.min.js				\
   webui/master/static/js/relative-date.js				\
   webui/master/static/js/ui-bootstrap-tpls-0.9.0.js			\
   webui/master/static/js/ui-bootstrap-tpls-0.9.0.min.js			\
   webui/master/static/js/underscore-1.4.3.js				\
-  webui/master/static/js/underscore-1.4.3.min.js			\
-  webui/master/static/js/zeroclipboard-1.1.7.js				\
-  webui/master/static/js/zeroclipboard-1.1.7.min.js			\
-  webui/master/static/obj/zeroclipboard-1.1.7.swf
+  webui/master/static/js/underscore-1.4.3.min.js
 
 # And the deploy related stuff.
 nodist_sbin_SCRIPTS +=							\
@@ -1487,7 +1660,11 @@ MESOS_JAR_SOURCE =							\
   $(srcdir)/java/src/org/apache/mesos/state/LogState.java		\
   $(srcdir)/java/src/org/apache/mesos/state/State.java			\
   $(srcdir)/java/src/org/apache/mesos/state/Variable.java		\
-  $(srcdir)/java/src/org/apache/mesos/state/ZooKeeperState.java
+  $(srcdir)/java/src/org/apache/mesos/state/ZooKeeperState.java		\
+  $(srcdir)/java/src/org/apache/mesos/v1/scheduler/V1Mesos.java		\
+  $(srcdir)/java/src/org/apache/mesos/v1/scheduler/Mesos.java		\
+  $(srcdir)/java/src/org/apache/mesos/v1/scheduler/Scheduler.java	\
+  $(srcdir)/java/src/org/apache/mesos/v1/scheduler/V0Mesos.java
 MESOS_JAR_GENERATED = $(JAVA_PROTOS) $(V1_JAVA_PROTOS)			\
   java/generated/org/apache/mesos/MesosNativeLibrary.java
 EXTRA_DIST += $(MESOS_JAR_SOURCE)					\
@@ -1500,7 +1677,8 @@ EXAMPLES_SOURCE =							\
   $(srcdir)/examples/java/TestExecutor.java				\
   $(srcdir)/examples/java/TestFramework.java				\
   $(srcdir)/examples/java/TestLog.java					\
-  $(srcdir)/examples/java/TestMultipleExecutorsFramework.java
+  $(srcdir)/examples/java/TestMultipleExecutorsFramework.java		\
+  $(srcdir)/examples/java/V1TestFramework.java
 EXTRA_DIST += $(EXAMPLES_SOURCE)
 
 
@@ -1508,7 +1686,7 @@ if HAS_JAVA
 
 $(MESOS_JAR): $(MESOS_JAR_SOURCE) $(MESOS_JAR_GENERATED) java/mesos.pom
 	@echo "Building mesos-$(PACKAGE_VERSION).jar ..."
-	@cd $(abs_top_builddir)/src/java && $(MVN) -f mesos.pom clean package
+	@cd $(abs_top_builddir)/src/java && $(MVN) -B -f mesos.pom clean package
 
 # Convenience library for JNI bindings.
 # TODO(Charles Reiss): We really should be building the Java library
@@ -1530,6 +1708,8 @@ libjava_la_SOURCES =							\
   java/jni/org_apache_mesos_state_LogState.cpp				\
   java/jni/org_apache_mesos_state_Variable.cpp				\
   java/jni/org_apache_mesos_state_ZooKeeperState.cpp			\
+  java/jni/org_apache_mesos_v1_scheduler_V1Mesos.cpp			\
+  java/jni/org_apache_mesos_v1_scheduler_V0Mesos.cpp			\
   jvm/jvm.cpp								\
   jvm/jvm.hpp								\
   jvm/java/io.hpp							\
@@ -1545,10 +1725,14 @@ libjava_la_CPPFLAGS += $(JAVA_CPPFLAGS)
 libjava_la_CPPFLAGS += -I$(srcdir)/java/jni -Ijava/jni
 
 libjava_la_DEPENDENCIES =						\
-  $(CONTAINERIZER_PROTO)						\
   $(MESOS_PROTO)							\
+  $(V1_AGENT_PROTO)							\
+  $(V1_ALLOCATOR_PROTO)							\
   $(V1_EXECUTOR_PROTO)							\
+  $(V1_MAINTENANCE_PROTO)						\
+  $(V1_MASTER_PROTO)							\
   $(V1_MESOS_PROTO)							\
+  $(V1_QUOTA_PROTO)							\
   $(V1_SCHEDULER_PROTO)
 
 # We don't add libjava.la to libmesos_no_3rdparty.la so we don't
@@ -1571,7 +1755,9 @@ nodist_libjava_la_SOURCES =						\
   java/jni/org_apache_mesos_state_LevelDBState.h			\
   java/jni/org_apache_mesos_state_LogState.h				\
   java/jni/org_apache_mesos_state_Variable.h				\
-  java/jni/org_apache_mesos_state_ZooKeeperState.h
+  java/jni/org_apache_mesos_state_ZooKeeperState.h			\
+  java/jni/org_apache_mesos_v1_scheduler_V1Mesos.h			\
+  java/jni/org_apache_mesos_v1_scheduler_V0Mesos.h
 
 BUILT_SOURCES += $(nodist_libjava_la_SOURCES)
 
@@ -1615,6 +1801,16 @@ java/jni/org_apache_mesos_state_ZooKeeperState.h: $(MESOS_JAR)
 	-classpath $(MESOS_JAR):@PROTOBUF_JAR@				\
 	  org.apache.mesos.state.ZooKeeperState
 
+java/jni/org_apache_mesos_v1_scheduler_V1Mesos.h: $(MESOS_JAR)
+	$(JAVA_HOME)/bin/javah -d java/jni				\
+	-classpath $(MESOS_JAR):@PROTOBUF_JAR@				\
+	  org.apache.mesos.v1.scheduler.V1Mesos
+
+java/jni/org_apache_mesos_v1_scheduler_V0Mesos.h: $(MESOS_JAR)
+	$(JAVA_HOME)/bin/javah -d java/jni				\
+	-classpath $(MESOS_JAR):@PROTOBUF_JAR@				\
+	  org.apache.mesos.v1.scheduler.V0Mesos
+
 $(EXAMPLES_JAR): $(EXAMPLES_SOURCE)
 	@echo "Building examples.jar ..."
 	$(MKDIR_P) examples/java
@@ -1627,7 +1823,7 @@ $(EXAMPLES_JAR): $(EXAMPLES_SOURCE)
 CLEANFILES += $(EXAMPLES_JAR)
 
 maven-install: $(MESOS_JAR) java/mesos.pom
-	$(MVN) -f java/mesos.pom install
+	$(MVN) -B -f java/mesos.pom install
 
 PHONY_TARGETS += maven-install
 endif # HAS_JAVA
@@ -1765,7 +1961,7 @@ python/dist/setup.cfg:
 # Makefile.am for an explanation of this variable.
 pipinstallargs=
 
-if WITHOUT_PYTHON_DEPS
+if !ENABLE_PYTHON_DEPENDENCY_INSTALL
 pipinstallargs += --no-deps
 endif
 
@@ -1796,8 +1992,8 @@ all-local: $(MESOS_EGGS)
 endif # HAS_PYTHON
 
 clean-python:
-	find python -name "build" -o -name "dist" -o -name "*.pyc"	\
-	  -o -name "*.egg-info" | xargs rm -rf
+	find python \( -name "build" -o -name "dist" -o -name "*.pyc"	\
+	  -o -name "*.egg-info" \) -exec rm -rf '{}' \+
 
 PHONY_TARGETS += clean-python
 
@@ -1867,28 +2063,28 @@ persistent_volume_framework_SOURCES = examples/persistent_volume_framework.cpp
 persistent_volume_framework_CPPFLAGS = $(MESOS_CPPFLAGS)
 persistent_volume_framework_LDADD = libmesos.la $(LDADD)
 
-if OS_LINUX
-check_PROGRAMS += setns-test-helper
-setns_test_helper_SOURCES =					\
-  tests/containerizer/setns_test_helper_main.cpp		\
-  tests/containerizer/setns_test_helper.cpp
-setns_test_helper_CPPFLAGS = $(MESOS_CPPFLAGS)
-setns_test_helper_LDADD = libmesos.la $(LDADD)
-endif
+check_PROGRAMS += disk-full-framework
+disk_full_framework_SOURCES = examples/disk_full_framework.cpp
+disk_full_framework_CPPFLAGS = $(MESOS_CPPFLAGS)
+disk_full_framework_LDADD = libmesos.la $(LDADD)
 
-check_PROGRAMS += memory-test-helper
-memory_test_helper_SOURCES =					\
+check_PROGRAMS += test-helper
+test_helper_SOURCES =						\
+  tests/active_user_test_helper.cpp				\
   tests/flags.cpp						\
+  tests/health_check_test_helper.cpp				\
+  tests/kill_policy_test_helper.cpp				\
+  tests/resources_utils.cpp					\
+  tests/test_helper_main.cpp					\
   tests/utils.cpp						\
-  tests/containerizer/memory_test_helper_main.cpp		\
   tests/containerizer/memory_test_helper.cpp
-memory_test_helper_CPPFLAGS = $(mesos_tests_CPPFLAGS)
-memory_test_helper_LDADD = $(mesos_tests_LDADD)
-
-check_PROGRAMS += active-user-test-helper
-active_user_test_helper_SOURCES = tests/active_user_test_helper.cpp
-active_user_test_helper_CPPFLAGS = $(MESOS_CPPFLAGS)
-active_user_test_helper_LDADD = libmesos.la $(LDADD)
+if OS_LINUX
+test_helper_SOURCES +=						\
+  tests/containerizer/capabilities_test_helper.cpp		\
+  tests/containerizer/setns_test_helper.cpp
+endif
+test_helper_CPPFLAGS = $(mesos_tests_CPPFLAGS)
+test_helper_LDADD = libmesos.la $(mesos_tests_LDADD)
 
 check_PROGRAMS += mesos-tests
 
@@ -2021,17 +2217,20 @@ endif
 
 mesos_tests_SOURCES =						\
   slave/qos_controllers/load.cpp				\
+  tests/active_user_test_helper.cpp				\
   tests/anonymous_tests.cpp					\
   tests/api_tests.cpp						\
   tests/attributes_tests.cpp					\
   tests/authentication_tests.cpp				\
   tests/authorization_tests.cpp					\
+  tests/check_tests.cpp						\
   tests/cluster.cpp						\
   tests/command_executor_tests.cpp				\
   tests/container_logger_tests.cpp				\
   tests/containerizer.cpp					\
   tests/cram_md5_authentication_tests.cpp			\
   tests/credentials_tests.cpp					\
+  tests/default_executor_tests.cpp				\
   tests/disk_quota_tests.cpp					\
   tests/dynamic_weights_tests.cpp				\
   tests/environment.cpp						\
@@ -2046,10 +2245,12 @@ mesos_tests_SOURCES =						\
   tests/gc_tests.cpp						\
   tests/hdfs_tests.cpp						\
   tests/health_check_tests.cpp					\
+  tests/health_check_test_helper.cpp				\
   tests/hierarchical_allocator_tests.cpp			\
   tests/hook_tests.cpp						\
   tests/http_authentication_tests.cpp				\
   tests/http_fault_tolerance_tests.cpp				\
+  tests/kill_policy_test_helper.cpp				\
   tests/log_tests.cpp						\
   tests/logging_tests.cpp					\
   tests/main.cpp						\
@@ -2063,6 +2264,9 @@ mesos_tests_SOURCES =						\
   tests/master_validation_tests.cpp				\
   tests/mesos.cpp						\
   tests/metrics_tests.cpp					\
+  tests/mock_docker.cpp						\
+  tests/mock_slave.cpp						\
+  tests/mock_registrar.cpp					\
   tests/module.cpp						\
   tests/module_tests.cpp					\
   tests/oversubscription_tests.cpp				\
@@ -2071,6 +2275,7 @@ mesos_tests_SOURCES =						\
   tests/persistent_volume_endpoints_tests.cpp			\
   tests/persistent_volume_tests.cpp				\
   tests/protobuf_io_tests.cpp					\
+  tests/protobuf_utils_tests.cpp				\
   tests/rate_limiting_tests.cpp					\
   tests/reconciliation_tests.cpp				\
   tests/registrar_tests.cpp					\
@@ -2078,6 +2283,7 @@ mesos_tests_SOURCES =						\
   tests/reservation_tests.cpp					\
   tests/resource_offers_tests.cpp				\
   tests/resources_tests.cpp					\
+  tests/resources_utils.cpp					\
   tests/role_tests.cpp						\
   tests/scheduler_driver_tests.cpp				\
   tests/scheduler_event_call_tests.cpp				\
@@ -2086,11 +2292,13 @@ mesos_tests_SOURCES =						\
   tests/script.cpp						\
   tests/slave_authorization_tests.cpp				\
   tests/slave_recovery_tests.cpp				\
+  tests/slave_validation_tests.cpp				\
   tests/slave_tests.cpp						\
   tests/sorter_tests.cpp					\
   tests/state_tests.cpp						\
   tests/status_update_manager_tests.cpp				\
   tests/teardown_tests.cpp					\
+  tests/upgrade_tests.cpp					\
   tests/uri_tests.cpp						\
   tests/uri_fetcher_tests.cpp					\
   tests/utils.cpp						\
@@ -2099,18 +2307,28 @@ mesos_tests_SOURCES =						\
   tests/common/command_utils_tests.cpp				\
   tests/common/http_tests.cpp					\
   tests/common/recordio_tests.cpp				\
+  tests/common/type_utils_tests.cpp				\
+  tests/containerizer/appc_spec_tests.cpp			\
   tests/containerizer/composing_containerizer_tests.cpp		\
+  tests/containerizer/containerizer_tests.cpp			\
+  tests/containerizer/cpu_isolator_tests.cpp			\
   tests/containerizer/docker_containerizer_tests.cpp		\
   tests/containerizer/docker_spec_tests.cpp			\
   tests/containerizer/docker_tests.cpp				\
-  tests/containerizer/external_containerizer_test.cpp		\
+  tests/containerizer/io_switchboard_tests.cpp			\
   tests/containerizer/isolator_tests.cpp			\
   tests/containerizer/launcher.cpp				\
+  tests/containerizer/memory_isolator_tests.cpp			\
   tests/containerizer/memory_test_helper.cpp			\
   tests/containerizer/mesos_containerizer_tests.cpp		\
+  tests/containerizer/mesos_containerizer_paths_tests.cpp	\
+  tests/containerizer/oci_spec_tests.cpp			\
+  tests/containerizer/posix_rlimits_isolator_tests.cpp		\
   tests/containerizer/provisioner_appc_tests.cpp		\
   tests/containerizer/provisioner_backend_tests.cpp		\
-  tests/containerizer/provisioner_docker_tests.cpp
+  tests/containerizer/provisioner_docker_tests.cpp		\
+  tests/containerizer/provisioner_paths_tests.cpp		\
+  tests/containerizer/volume_sandbox_path_isolator_tests.cpp
 
 if ENABLE_XFS_DISK_ISOLATOR
 mesos_tests_SOURCES +=						\
@@ -2144,26 +2362,37 @@ mesos_tests_DEPENDENCIES =					\
 if OS_LINUX
 mesos_tests_SOURCES +=						\
   tests/ldcache_tests.cpp					\
+  tests/ldd_tests.cpp						\
+  tests/containerizer/linux_capabilities_isolator_tests.cpp	\
+  tests/containerizer/capabilities_tests.cpp			\
+  tests/containerizer/capabilities_test_helper.cpp		\
   tests/containerizer/cgroups_isolator_tests.cpp		\
   tests/containerizer/cgroups_tests.cpp				\
   tests/containerizer/cni_isolator_tests.cpp			\
   tests/containerizer/docker_volume_isolator_tests.cpp		\
-  tests/containerizer/filesystem_isolator_tests.cpp		\
+  tests/containerizer/linux_filesystem_isolator_tests.cpp	\
   tests/containerizer/fs_tests.cpp				\
-  tests/containerizer/launch_tests.cpp				\
   tests/containerizer/memory_pressure_tests.cpp			\
+  tests/containerizer/nested_mesos_containerizer_tests.cpp	\
   tests/containerizer/ns_tests.cpp				\
   tests/containerizer/nvidia_gpu_isolator_tests.cpp		\
   tests/containerizer/perf_tests.cpp				\
+  tests/containerizer/rootfs.cpp				\
   tests/containerizer/runtime_isolator_tests.cpp		\
   tests/containerizer/sched_tests.cpp				\
-  tests/containerizer/setns_test_helper.cpp
+  tests/containerizer/setns_test_helper.cpp			\
+  tests/containerizer/volume_image_isolator_tests.cpp
 endif
 
 if WITH_NETWORK_ISOLATOR
 mesos_tests_SOURCES +=						\
   tests/containerizer/port_mapping_tests.cpp			\
   tests/containerizer/routing_tests.cpp
+endif
+
+if ENABLE_SSL
+mesos_tests_SOURCES +=						\
+  tests/secret_generator_tests.cpp
 endif
 
 if HAS_JAVA
@@ -2184,7 +2413,8 @@ EXAMPLESCRIPTSJAVA =						\
   examples/java/test-exception-framework			\
   examples/java/test-framework					\
   examples/java/test-log					\
-  examples/java/test-multiple-executors-framework
+  examples/java/test-multiple-executors-framework		\
+  examples/java/v1-test-framework
 
 check_SCRIPTS += $(EXAMPLESCRIPTSJAVA)
 mesos_tests_DEPENDENCIES += $(EXAMPLESCRIPTSJAVA)
@@ -2194,8 +2424,6 @@ if HAS_PYTHON
 mesos_tests_DEPENDENCIES += $(MESOS_EGG)
 
 EXAMPLESCRIPTSPYTHON =						\
-  examples/python/test_containerizer.py				\
-  examples/python/test-containerizer				\
   examples/python/test_executor.py				\
   examples/python/test-executor					\
   examples/python/test_framework.py				\
@@ -2206,21 +2434,23 @@ mesos_tests_DEPENDENCIES += $(EXAMPLESCRIPTSPYTHON)
 endif
 
 EXTRA_DIST +=							\
-  examples/python/test_containerizer.py				\
   examples/python/test_executor.py				\
   examples/python/test_framework.py
 
 
 dist_check_SCRIPTS +=						\
   tests/balloon_framework_test.sh				\
+  tests/disk_full_framework_test.sh				\
   tests/dynamic_reservation_framework_test.sh			\
-  tests/test_http_framework_test.sh				\
   tests/java_exception_test.sh					\
   tests/java_framework_test.sh					\
   tests/java_log_test.sh					\
+  tests/java_v0_framework_test.sh				\
+  tests/java_v1_framework_test.sh				\
   tests/no_executor_framework_test.sh				\
   tests/persistent_volume_framework_test.sh			\
   tests/python_framework_test.sh				\
+  tests/test_http_framework_test.sh				\
   tests/test_framework_test.sh
 
 ../3rdparty/libgmock.la:
@@ -2230,13 +2460,14 @@ if INSTALL_TESTS
 testlibexec_PROGRAMS = $(check_PROGRAMS)
 dist_testlibexec_SCRIPTS =			\
   tests/balloon_framework_test.sh		\
-  tests/test_http_framework_test.sh		\
+  tests/disk_full_framework_test.sh		\
   tests/java_exception_test.sh			\
   tests/java_framework_test.sh			\
   tests/java_log_test.sh			\
   tests/no_executor_framework_test.sh		\
   tests/persistent_volume_framework_test.sh	\
   tests/python_framework_test.sh		\
+  tests/test_http_framework_test.sh		\
   tests/test_framework_test.sh
 
 endif
@@ -2247,12 +2478,13 @@ endif
 #    path.
 #
 # TODO(tomxing): Remove this target once the
-# slave->agent rename is complete(MESOS-3782 & MESOS-5230).
+# slave->agent rename is complete (MESOS-3782 & MESOS-5230).
 copy-template-and-create-symlink:
-	cp $(DESTDIR)/$(pkgsysconfdir)/mesos-agent-env.sh.template \
-	  $(DESTDIR)/$(pkgsysconfdir)/mesos-slave-env.sh.template &&\
-	cd $(DESTDIR)/$(includedir)/mesos && \
-	ln -sf agent slave
+	cd $(DESTDIR)/$(pkgsysconfdir) && \
+	  $(LN_S) mesos-agent-env.sh.template mesos-slave-env.sh.template
+	cd $(DESTDIR)/$(includedir)/mesos && $(LN_S) agent slave
+
+PHONY_TARGETS += copy-template-and-create-symlink
 
 # Install compatibility symlinks for modules that used to be in $(LIBDIR)
 # but are now in $(PKGMODULEDIR). We use install-data-hook because it
@@ -2269,18 +2501,22 @@ install-data-hook: copy-template-and-create-symlink
 		done;						\
 	done
 
+install-exec-hook:
+	cd $(DESTDIR)/$(sbindir) && $(LN_S) mesos-agent mesos-slave
+
 # TODO(tomxing): Remove this hook once the
 # slave->agent rename is complete(MESOS-3782 & MESOS 5230).
 uninstall-hook:
-	rm -f $(DESTDIR)/$(pkgsysconfdir)/mesos-slave-env.sh.template &&\
+	rm -f $(DESTDIR)/$(pkgsysconfdir)/mesos-slave-env.sh.template
 	rm -f $(DESTDIR)/$(includedir)/mesos/slave
+	rm -f $(DESTDIR)/$(sbindir)/mesos-slave
 
 # We use a check-local target for now to avoid the parallel test
 # runner that ships with newer versions of autotools.
 # See the following discussion for the workaround:
 # http://lists.gnu.org/archive/html/automake/2013-01/msg00051.html
 check-local: tests
-	./mesos-tests
+	$(TEST_DRIVER) ./mesos-tests
 
 if INSTALL_TESTS
 # If we enabled test installation, we can run the tests from the

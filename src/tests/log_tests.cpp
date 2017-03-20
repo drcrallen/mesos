@@ -146,10 +146,10 @@ TYPED_TEST(LogStorageTest, Truncate)
   Try<Storage::State> state = storage.restore(os::getcwd() + "/.log");
   ASSERT_SOME(state);
 
-  EXPECT_EQ(Metadata::EMPTY, state.get().metadata.status());
-  EXPECT_EQ(0u, state.get().metadata.promised());
-  EXPECT_EQ(0u, state.get().begin);
-  EXPECT_EQ(0u, state.get().end);
+  EXPECT_EQ(Metadata::EMPTY, state->metadata.status());
+  EXPECT_EQ(0u, state->metadata.promised());
+  EXPECT_EQ(0u, state->begin);
+  EXPECT_EQ(0u, state->end);
 
   // Append from position 0 to position 9.
   for (uint64_t i = 0; i < 10; i++) {
@@ -168,13 +168,13 @@ TYPED_TEST(LogStorageTest, Truncate)
     Try<Action> action = storage.read(i);
     ASSERT_SOME(action);
 
-    EXPECT_EQ(i, action.get().position());
-    EXPECT_EQ(1u, action.get().promised());
-    EXPECT_EQ(1u, action.get().performed());
-    EXPECT_TRUE(action.get().learned());
-    EXPECT_EQ(Action::APPEND, action.get().type());
-    ASSERT_TRUE(action.get().has_append());
-    EXPECT_EQ(stringify(i), action.get().append().bytes());
+    EXPECT_EQ(i, action->position());
+    EXPECT_EQ(1u, action->promised());
+    EXPECT_EQ(1u, action->performed());
+    EXPECT_TRUE(action->learned());
+    EXPECT_EQ(Action::APPEND, action->type());
+    ASSERT_TRUE(action->has_append());
+    EXPECT_EQ(stringify(i), action->append().bytes());
   }
 
   // Truncate to position 3 (at position 10).
@@ -196,21 +196,21 @@ TYPED_TEST(LogStorageTest, Truncate)
       EXPECT_ERROR(action);
     } else if (i == 10) {
       // Position 10 is a truncate.
-      EXPECT_EQ(i, action.get().position());
-      EXPECT_EQ(1u, action.get().promised());
-      EXPECT_EQ(1u, action.get().performed());
-      EXPECT_TRUE(action.get().learned());
-      EXPECT_EQ(Action::TRUNCATE, action.get().type());
-      ASSERT_TRUE(action.get().has_truncate());
-      EXPECT_EQ(3u, action.get().truncate().to());
+      EXPECT_EQ(i, action->position());
+      EXPECT_EQ(1u, action->promised());
+      EXPECT_EQ(1u, action->performed());
+      EXPECT_TRUE(action->learned());
+      EXPECT_EQ(Action::TRUNCATE, action->type());
+      ASSERT_TRUE(action->has_truncate());
+      EXPECT_EQ(3u, action->truncate().to());
     } else {
-      EXPECT_EQ(i, action.get().position());
-      EXPECT_EQ(1u, action.get().promised());
-      EXPECT_EQ(1u, action.get().performed());
-      EXPECT_TRUE(action.get().learned());
-      EXPECT_EQ(Action::APPEND, action.get().type());
-      ASSERT_TRUE(action.get().has_append());
-      EXPECT_EQ(stringify(i), action.get().append().bytes());
+      EXPECT_EQ(i, action->position());
+      EXPECT_EQ(1u, action->promised());
+      EXPECT_EQ(1u, action->performed());
+      EXPECT_TRUE(action->learned());
+      EXPECT_EQ(Action::APPEND, action->type());
+      ASSERT_TRUE(action->has_append());
+      EXPECT_EQ(stringify(i), action->append().bytes());
     }
   }
 
@@ -232,22 +232,22 @@ TYPED_TEST(LogStorageTest, Truncate)
       EXPECT_ERROR(action);
     } else if (i == 10) {
       // Position 10 is a truncate (to position 3).
-      EXPECT_EQ(i, action.get().position());
-      EXPECT_EQ(1u, action.get().promised());
-      EXPECT_EQ(1u, action.get().performed());
-      EXPECT_TRUE(action.get().learned());
-      EXPECT_EQ(Action::TRUNCATE, action.get().type());
-      ASSERT_TRUE(action.get().has_truncate());
-      EXPECT_EQ(3u, action.get().truncate().to());
+      EXPECT_EQ(i, action->position());
+      EXPECT_EQ(1u, action->promised());
+      EXPECT_EQ(1u, action->performed());
+      EXPECT_TRUE(action->learned());
+      EXPECT_EQ(Action::TRUNCATE, action->type());
+      ASSERT_TRUE(action->has_truncate());
+      EXPECT_EQ(3u, action->truncate().to());
     } else if (i == 11) {
       // Position 11 is a truncate (to position 10).
-      EXPECT_EQ(i, action.get().position());
-      EXPECT_EQ(1u, action.get().promised());
-      EXPECT_EQ(1u, action.get().performed());
-      EXPECT_TRUE(action.get().learned());
-      EXPECT_EQ(Action::TRUNCATE, action.get().type());
-      ASSERT_TRUE(action.get().has_truncate());
-      EXPECT_EQ(10u, action.get().truncate().to());
+      EXPECT_EQ(i, action->position());
+      EXPECT_EQ(1u, action->promised());
+      EXPECT_EQ(1u, action->performed());
+      EXPECT_TRUE(action->learned());
+      EXPECT_EQ(Action::TRUNCATE, action->type());
+      ASSERT_TRUE(action->has_truncate());
+      EXPECT_EQ(10u, action->truncate().to());
     }
   }
 }
@@ -274,13 +274,13 @@ TYPED_TEST(LogStorageTest, TruncateWithEmptyLog)
   EXPECT_ERROR(action0);
 
   Try<Action> action1 = storage.read(1);
-  EXPECT_EQ(1u, action1.get().position());
-  EXPECT_EQ(1u, action1.get().promised());
-  EXPECT_EQ(1u, action1.get().performed());
-  EXPECT_TRUE(action1.get().learned());
-  EXPECT_EQ(Action::TRUNCATE, action1.get().type());
-  ASSERT_TRUE(action1.get().has_truncate());
-  EXPECT_EQ(0u, action1.get().truncate().to());
+  EXPECT_EQ(1u, action1->position());
+  EXPECT_EQ(1u, action1->promised());
+  EXPECT_EQ(1u, action1->performed());
+  EXPECT_TRUE(action1->learned());
+  EXPECT_EQ(Action::TRUNCATE, action1->type());
+  ASSERT_TRUE(action1->has_truncate());
+  EXPECT_EQ(0u, action1->truncate().to());
 }
 
 
@@ -311,20 +311,20 @@ TYPED_TEST(LogStorageTest, TruncateWithManyHoles)
 
   Try<Action> action = storage.read(600020000);
 
-  EXPECT_EQ(600020000u, action.get().position());
-  EXPECT_EQ(1u, action.get().promised());
-  EXPECT_EQ(1u, action.get().performed());
-  EXPECT_TRUE(action.get().learned());
-  EXPECT_EQ(Action::TRUNCATE, action.get().type());
-  ASSERT_TRUE(action.get().has_truncate());
-  EXPECT_EQ(600000000u, action.get().truncate().to());
+  EXPECT_EQ(600020000u, action->position());
+  EXPECT_EQ(1u, action->promised());
+  EXPECT_EQ(1u, action->performed());
+  EXPECT_TRUE(action->learned());
+  EXPECT_EQ(Action::TRUNCATE, action->type());
+  ASSERT_TRUE(action->has_truncate());
+  EXPECT_EQ(600000000u, action->truncate().to());
 }
 
 
 class ReplicaTest : public TemporaryDirectoryTest
 {
 protected:
-  // For initializing the log.
+  // Used to change the status of a replicated log from `EMPTY` to `VOTING`.
   tool::Initialize initializer;
 };
 
@@ -333,51 +333,49 @@ TEST_F(ReplicaTest, Promise)
 {
   const string path = os::getcwd() + "/.log";
   initializer.flags.path = path;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   Replica replica(path);
 
   PromiseRequest request;
-  PromiseResponse response;
-  Future<PromiseResponse> future;
-
   request.set_proposal(2);
 
-  future = protocol::promise(replica.pid(), request);
+  Future<PromiseResponse> response =
+    protocol::promise(replica.pid(), request);
 
-  AWAIT_READY(future);
+  AWAIT_READY(response);
 
-  response = future.get();
-  EXPECT_TRUE(response.okay());
-  EXPECT_EQ(2u, response.proposal());
-  EXPECT_TRUE(response.has_position());
-  EXPECT_EQ(0u, response.position());
-  EXPECT_FALSE(response.has_action());
+  EXPECT_EQ(PromiseResponse::ACCEPT, response->type());
+  EXPECT_TRUE(response->okay());
+  EXPECT_EQ(2u, response->proposal());
+  EXPECT_TRUE(response->has_position());
+  EXPECT_EQ(0u, response->position());
+  EXPECT_FALSE(response->has_action());
 
   request.set_proposal(1);
 
-  future = protocol::promise(replica.pid(), request);
+  response = protocol::promise(replica.pid(), request);
 
-  AWAIT_READY(future);
+  AWAIT_READY(response);
 
-  response = future.get();
-  EXPECT_FALSE(response.okay());
-  EXPECT_EQ(2u, response.proposal()); // Highest proposal seen so far.
-  EXPECT_FALSE(response.has_position());
-  EXPECT_FALSE(response.has_action());
+  EXPECT_EQ(PromiseResponse::REJECT, response->type());
+  EXPECT_FALSE(response->okay());
+  EXPECT_EQ(2u, response->proposal()); // Highest proposal seen so far.
+  EXPECT_FALSE(response->has_position());
+  EXPECT_FALSE(response->has_action());
 
   request.set_proposal(3);
 
-  future = protocol::promise(replica.pid(), request);
+  response = protocol::promise(replica.pid(), request);
 
-  AWAIT_READY(future);
+  AWAIT_READY(response);
 
-  response = future.get();
-  EXPECT_TRUE(response.okay());
-  EXPECT_EQ(3u, response.proposal());
-  EXPECT_TRUE(response.has_position());
-  EXPECT_EQ(0u, response.position());
-  EXPECT_FALSE(response.has_action());
+  EXPECT_EQ(PromiseResponse::ACCEPT, response->type());
+  EXPECT_TRUE(response->okay());
+  EXPECT_EQ(3u, response->proposal());
+  EXPECT_TRUE(response->has_position());
+  EXPECT_EQ(0u, response->position());
+  EXPECT_FALSE(response->has_action());
 }
 
 
@@ -385,7 +383,7 @@ TEST_F(ReplicaTest, Append)
 {
   const string path = os::getcwd() + "/.log";
   initializer.flags.path = path;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   Replica replica(path);
 
@@ -394,17 +392,17 @@ TEST_F(ReplicaTest, Append)
   PromiseRequest request1;
   request1.set_proposal(proposal);
 
-  Future<PromiseResponse> future1 =
+  Future<PromiseResponse> response1 =
     protocol::promise(replica.pid(), request1);
 
-  AWAIT_READY(future1);
+  AWAIT_READY(response1);
 
-  PromiseResponse response1 = future1.get();
-  EXPECT_TRUE(response1.okay());
-  EXPECT_EQ(proposal, response1.proposal());
-  EXPECT_TRUE(response1.has_position());
-  EXPECT_EQ(0u, response1.position());
-  EXPECT_FALSE(response1.has_action());
+  EXPECT_EQ(PromiseResponse::ACCEPT, response1->type());
+  EXPECT_TRUE(response1->okay());
+  EXPECT_EQ(proposal, response1->proposal());
+  EXPECT_TRUE(response1->has_position());
+  EXPECT_EQ(0u, response1->position());
+  EXPECT_FALSE(response1->has_action());
 
   WriteRequest request2;
   request2.set_proposal(proposal);
@@ -412,22 +410,22 @@ TEST_F(ReplicaTest, Append)
   request2.set_type(Action::APPEND);
   request2.mutable_append()->set_bytes("hello world");
 
-  Future<WriteResponse> future2 =
+  Future<WriteResponse> response2 =
     protocol::write(replica.pid(), request2);
 
-  AWAIT_READY(future2);
+  AWAIT_READY(response2);
 
-  WriteResponse response2 = future2.get();
-  EXPECT_TRUE(response2.okay());
-  EXPECT_EQ(proposal, response2.proposal());
-  EXPECT_EQ(1u, response2.position());
+  EXPECT_EQ(WriteResponse::ACCEPT, response2->type());
+  EXPECT_TRUE(response2->okay());
+  EXPECT_EQ(proposal, response2->proposal());
+  EXPECT_EQ(1u, response2->position());
 
-  Future<list<Action> > actions = replica.read(1, 1);
+  Future<list<Action>> actions = replica.read(1, 1);
 
   AWAIT_READY(actions);
-  ASSERT_EQ(1u, actions.get().size());
+  ASSERT_EQ(1u, actions->size());
 
-  Action action = actions.get().front();
+  Action action = actions->front();
   EXPECT_EQ(1u, action.position());
   EXPECT_EQ(1u, action.promised());
   EXPECT_TRUE(action.has_performed());
@@ -446,7 +444,7 @@ TEST_F(ReplicaTest, Restore)
 {
   const string path = os::getcwd() + "/.log";
   initializer.flags.path = path;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   // By design only a single process can access leveldb at a time. In
   // this test, two instances of log replica need to open a connection
@@ -456,22 +454,22 @@ TEST_F(ReplicaTest, Restore)
   {
     Replica replica1(path);
 
-    const uint64_t proposal= 1;
+    const uint64_t proposal = 1;
 
     PromiseRequest request1;
     request1.set_proposal(proposal);
 
-    Future<PromiseResponse> future1 =
+    Future<PromiseResponse> response1 =
       protocol::promise(replica1.pid(), request1);
 
-    AWAIT_READY(future1);
+    AWAIT_READY(response1);
 
-    PromiseResponse response1 = future1.get();
-    EXPECT_TRUE(response1.okay());
-    EXPECT_EQ(proposal, response1.proposal());
-    EXPECT_TRUE(response1.has_position());
-    EXPECT_EQ(0u, response1.position());
-    EXPECT_FALSE(response1.has_action());
+    EXPECT_EQ(PromiseResponse::ACCEPT, response1->type());
+    EXPECT_TRUE(response1->okay());
+    EXPECT_EQ(proposal, response1->proposal());
+    EXPECT_TRUE(response1->has_position());
+    EXPECT_EQ(0u, response1->position());
+    EXPECT_FALSE(response1->has_action());
 
     WriteRequest request2;
     request2.set_proposal(proposal);
@@ -479,23 +477,23 @@ TEST_F(ReplicaTest, Restore)
     request2.set_type(Action::APPEND);
     request2.mutable_append()->set_bytes("hello world");
 
-    Future<WriteResponse> future2 =
+    Future<WriteResponse> response2 =
       protocol::write(replica1.pid(), request2);
 
-    AWAIT_READY(future2);
+    AWAIT_READY(response2);
 
-    WriteResponse response2 = future2.get();
-    EXPECT_TRUE(response2.okay());
-    EXPECT_EQ(proposal, response2.proposal());
-    EXPECT_EQ(1u, response2.position());
+    EXPECT_EQ(WriteResponse::ACCEPT, response2->type());
+    EXPECT_TRUE(response2->okay());
+    EXPECT_EQ(proposal, response2->proposal());
+    EXPECT_EQ(1u, response2->position());
 
-    Future<list<Action> > actions1 = replica1.read(1, 1);
+    Future<list<Action>> actions1 = replica1.read(1, 1);
 
     AWAIT_READY(actions1);
-    ASSERT_EQ(1u, actions1.get().size());
+    ASSERT_EQ(1u, actions1->size());
 
     {
-      Action action = actions1.get().front();
+      Action action = actions1->front();
       EXPECT_EQ(1u, action.position());
       EXPECT_EQ(1u, action.promised());
       EXPECT_TRUE(action.has_performed());
@@ -513,13 +511,13 @@ TEST_F(ReplicaTest, Restore)
   {
     Replica replica2(path);
 
-    Future<list<Action> > actions2 = replica2.read(1, 1);
+    Future<list<Action>> actions2 = replica2.read(1, 1);
 
     AWAIT_READY(actions2);
-    ASSERT_EQ(1u, actions2.get().size());
+    ASSERT_EQ(1u, actions2->size());
 
     {
-      Action action = actions2.get().front();
+      Action action = actions2->front();
       EXPECT_EQ(1u, action.position());
       EXPECT_EQ(1u, action.promised());
       EXPECT_TRUE(action.has_performed());
@@ -547,14 +545,14 @@ TEST_F(ReplicaTest, NonVoting)
   PromiseRequest promiseRequest;
   promiseRequest.set_proposal(2);
 
-  Future<PromiseResponse> promiseResponse_ =
+  Future<PromiseResponse> promiseResponse =
     protocol::promise(replica.pid(), promiseRequest);
 
-  AWAIT_READY(promiseResponse_);
-  PromiseResponse promiseResponse = promiseResponse_.get();
-  EXPECT_EQ(PromiseResponse::IGNORE, promiseResponse.type());
-  EXPECT_FALSE(promiseResponse.okay());
-  EXPECT_EQ(2u, promiseResponse.proposal());
+  AWAIT_READY(promiseResponse);
+
+  EXPECT_EQ(PromiseResponse::IGNORED, promiseResponse->type());
+  EXPECT_FALSE(promiseResponse->okay());
+  EXPECT_EQ(2u, promiseResponse->proposal());
 
   WriteRequest writeRequest;
   writeRequest.set_proposal(3);
@@ -562,22 +560,22 @@ TEST_F(ReplicaTest, NonVoting)
   writeRequest.set_type(Action::APPEND);
   writeRequest.mutable_append()->set_bytes("hello world");
 
-  Future<WriteResponse> writeResponse_ =
+  Future<WriteResponse> writeResponse =
     protocol::write(replica.pid(), writeRequest);
 
-  AWAIT_READY(writeResponse_);
-  WriteResponse writeResponse = writeResponse_.get();
-  EXPECT_EQ(WriteResponse::IGNORE, writeResponse.type());
-  EXPECT_FALSE(writeResponse.okay());
-  EXPECT_EQ(3u, writeResponse.proposal());
-  EXPECT_EQ(1u, writeResponse.position());
+  AWAIT_READY(writeResponse);
+
+  EXPECT_EQ(WriteResponse::IGNORED, writeResponse->type());
+  EXPECT_FALSE(writeResponse->okay());
+  EXPECT_EQ(3u, writeResponse->proposal());
+  EXPECT_EQ(1u, writeResponse->position());
 }
 
 
 class CoordinatorTest : public TemporaryDirectoryTest
 {
 protected:
-  // For initializing the log.
+  // Used to change the status of a replicated log from `EMPTY` to `VOTING`.
   tool::Initialize initializer;
 };
 
@@ -586,11 +584,11 @@ TEST_F(CoordinatorTest, Elect)
 {
   const string path1 = os::getcwd() + "/.log1";
   initializer.flags.path = path1;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   const string path2 = os::getcwd() + "/.log2";
   initializer.flags.path = path2;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   Shared<Replica> replica1(new Replica(path1));
   Shared<Replica> replica2(new Replica(path2));
@@ -604,18 +602,18 @@ TEST_F(CoordinatorTest, Elect)
   Coordinator coord(2, replica1, network);
 
   {
-    Future<Option<uint64_t> > electing = coord.elect();
+    Future<Option<uint64_t>> electing = coord.elect();
     AWAIT_READY(electing);
     EXPECT_SOME_EQ(0u, electing.get());
   }
 
   {
-    Future<list<Action> > actions = replica1->read(0, 0);
+    Future<list<Action>> actions = replica1->read(0, 0);
     AWAIT_READY(actions);
-    ASSERT_EQ(1u, actions.get().size());
-    EXPECT_EQ(0u, actions.get().front().position());
-    ASSERT_TRUE(actions.get().front().has_type());
-    ASSERT_EQ(Action::NOP, actions.get().front().type());
+    ASSERT_EQ(1u, actions->size());
+    EXPECT_EQ(0u, actions->front().position());
+    ASSERT_TRUE(actions->front().has_type());
+    ASSERT_EQ(Action::NOP, actions->front().type());
   }
 }
 
@@ -628,11 +626,11 @@ TEST_F(CoordinatorTest, ElectWithClockPaused)
 
   const string path1 = os::getcwd() + "/.log1";
   initializer.flags.path = path1;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   const string path2 = os::getcwd() + "/.log2";
   initializer.flags.path = path2;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   Shared<Replica> replica1(new Replica(path1));
   Shared<Replica> replica2(new Replica(path2));
@@ -646,7 +644,7 @@ TEST_F(CoordinatorTest, ElectWithClockPaused)
   Coordinator coord(2, replica1, network);
 
   {
-    Future<Option<uint64_t> > electing = coord.elect();
+    Future<Option<uint64_t>> electing = coord.elect();
     AWAIT_READY(electing);
     EXPECT_SOME_EQ(0u, electing.get());
   }
@@ -659,11 +657,11 @@ TEST_F(CoordinatorTest, AppendRead)
 {
   const string path1 = os::getcwd() + "/.log1";
   initializer.flags.path = path1;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   const string path2 = os::getcwd() + "/.log2";
   initializer.flags.path = path2;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   Shared<Replica> replica1(new Replica(path1));
   Shared<Replica> replica2(new Replica(path2));
@@ -677,7 +675,7 @@ TEST_F(CoordinatorTest, AppendRead)
   Coordinator coord(2, replica1, network);
 
   {
-    Future<Option<uint64_t> > electing = coord.elect();
+    Future<Option<uint64_t>> electing = coord.elect();
     AWAIT_READY(electing);
     EXPECT_SOME_EQ(0u, electing.get());
   }
@@ -685,21 +683,21 @@ TEST_F(CoordinatorTest, AppendRead)
   uint64_t position;
 
   {
-    Future<Option<uint64_t> > appending = coord.append("hello world");
+    Future<Option<uint64_t>> appending = coord.append("hello world");
     AWAIT_READY(appending);
     ASSERT_SOME(appending.get());
-    position = appending.get().get();
+    position = appending->get();
     EXPECT_EQ(1u, position);
   }
 
   {
-    Future<list<Action> > actions = replica1->read(position, position);
+    Future<list<Action>> actions = replica1->read(position, position);
     AWAIT_READY(actions);
-    ASSERT_EQ(1u, actions.get().size());
-    EXPECT_EQ(position, actions.get().front().position());
-    ASSERT_TRUE(actions.get().front().has_type());
-    ASSERT_EQ(Action::APPEND, actions.get().front().type());
-    EXPECT_EQ("hello world", actions.get().front().append().bytes());
+    ASSERT_EQ(1u, actions->size());
+    EXPECT_EQ(position, actions->front().position());
+    ASSERT_TRUE(actions->front().has_type());
+    ASSERT_EQ(Action::APPEND, actions->front().type());
+    EXPECT_EQ("hello world", actions->front().append().bytes());
   }
 }
 
@@ -708,11 +706,11 @@ TEST_F(CoordinatorTest, AppendReadError)
 {
   const string path1 = os::getcwd() + "/.log1";
   initializer.flags.path = path1;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   const string path2 = os::getcwd() + "/.log2";
   initializer.flags.path = path2;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   Shared<Replica> replica1(new Replica(path1));
   Shared<Replica> replica2(new Replica(path2));
@@ -726,7 +724,7 @@ TEST_F(CoordinatorTest, AppendReadError)
   Coordinator coord(2, replica1, network);
 
   {
-    Future<Option<uint64_t> > electing = coord.elect();
+    Future<Option<uint64_t>> electing = coord.elect();
     AWAIT_READY(electing);
     EXPECT_SOME_EQ(0u, electing.get());
   }
@@ -734,16 +732,16 @@ TEST_F(CoordinatorTest, AppendReadError)
   uint64_t position;
 
   {
-    Future<Option<uint64_t> > appending = coord.append("hello world");
+    Future<Option<uint64_t>> appending = coord.append("hello world");
     AWAIT_READY(appending);
     ASSERT_SOME(appending.get());
-    position = appending.get().get();
+    position = appending->get();
     EXPECT_EQ(1u, position);
   }
 
   {
     position += 1;
-    Future<list<Action> > actions = replica1->read(position, position);
+    Future<list<Action>> actions = replica1->read(position, position);
     AWAIT_FAILED(actions);
     EXPECT_EQ("Bad read range (past end of log)", actions.failure());
   }
@@ -754,11 +752,11 @@ TEST_F(CoordinatorTest, AppendDiscarded)
 {
   const string path1 = os::getcwd() + "/.log1";
   initializer.flags.path = path1;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   const string path2 = os::getcwd() + "/.log2";
   initializer.flags.path = path2;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   Shared<Replica> replica1(new Replica(path1));
   Shared<Replica> replica2(new Replica(path2));
@@ -772,10 +770,10 @@ TEST_F(CoordinatorTest, AppendDiscarded)
   Coordinator coord(2, replica1, network);
 
   {
-    Future<Option<uint64_t> > electing = coord.elect();
+    Future<Option<uint64_t>> electing = coord.elect();
     AWAIT_READY(electing);
     ASSERT_SOME(electing.get());
-    EXPECT_EQ(0u, electing.get().get());
+    EXPECT_EQ(0u, electing->get());
   }
 
   process::terminate(replica2->pid());
@@ -783,7 +781,7 @@ TEST_F(CoordinatorTest, AppendDiscarded)
   replica2.reset();
 
   {
-    Future<Option<uint64_t> > appending = coord.append("hello world");
+    Future<Option<uint64_t>> appending = coord.append("hello world");
     ASSERT_TRUE(appending.isPending());
 
     appending.discard();
@@ -791,7 +789,7 @@ TEST_F(CoordinatorTest, AppendDiscarded)
   }
 
   {
-    Future<Option<uint64_t> > appending = coord.append("hello moto");
+    Future<Option<uint64_t>> appending = coord.append("hello moto");
     AWAIT_READY(appending);
 
     EXPECT_NONE(appending.get());
@@ -803,7 +801,7 @@ TEST_F(CoordinatorTest, ElectNoQuorum)
 {
   const string path = os::getcwd() + "/.log";
   initializer.flags.path = path;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   Shared<Replica> replica(new Replica(path));
 
@@ -816,7 +814,7 @@ TEST_F(CoordinatorTest, ElectNoQuorum)
 
   Clock::pause();
 
-  Future<Option<uint64_t> > electing = coord.elect();
+  Future<Option<uint64_t>> electing = coord.elect();
 
   Clock::advance(Seconds(10));
   Clock::settle();
@@ -831,11 +829,11 @@ TEST_F(CoordinatorTest, AppendNoQuorum)
 {
   const string path1 = os::getcwd() + "/.log1";
   initializer.flags.path = path1;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   const string path2 = os::getcwd() + "/.log2";
   initializer.flags.path = path2;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   Shared<Replica> replica1(new Replica(path1));
   Shared<Replica> replica2(new Replica(path2));
@@ -849,7 +847,7 @@ TEST_F(CoordinatorTest, AppendNoQuorum)
   Coordinator coord(2, replica1, network);
 
   {
-    Future<Option<uint64_t> > electing = coord.elect();
+    Future<Option<uint64_t>> electing = coord.elect();
     AWAIT_READY(electing);
     EXPECT_SOME_EQ(0u, electing.get());
   }
@@ -860,7 +858,7 @@ TEST_F(CoordinatorTest, AppendNoQuorum)
 
   Clock::pause();
 
-  Future<Option<uint64_t> > appending = coord.append("hello world");
+  Future<Option<uint64_t>> appending = coord.append("hello world");
 
   Clock::advance(Seconds(10));
   Clock::settle();
@@ -875,11 +873,11 @@ TEST_F(CoordinatorTest, Failover)
 {
   const string path1 = os::getcwd() + "/.log1";
   initializer.flags.path = path1;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   const string path2 = os::getcwd() + "/.log2";
   initializer.flags.path = path2;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   Shared<Replica> replica1(new Replica(path1));
   Shared<Replica> replica2(new Replica(path2));
@@ -893,7 +891,7 @@ TEST_F(CoordinatorTest, Failover)
   Coordinator coord1(2, replica1, network1);
 
   {
-    Future<Option<uint64_t> > electing = coord1.elect();
+    Future<Option<uint64_t>> electing = coord1.elect();
     AWAIT_READY(electing);
     EXPECT_SOME_EQ(0u, electing.get());
   }
@@ -901,10 +899,10 @@ TEST_F(CoordinatorTest, Failover)
   uint64_t position;
 
   {
-    Future<Option<uint64_t> > appending = coord1.append("hello world");
+    Future<Option<uint64_t>> appending = coord1.append("hello world");
     AWAIT_READY(appending);
     ASSERT_SOME(appending.get());
-    position = appending.get().get();
+    position = appending->get();
     EXPECT_EQ(1u, position);
   }
 
@@ -913,19 +911,19 @@ TEST_F(CoordinatorTest, Failover)
   Coordinator coord2(2, replica2, network2);
 
   {
-    Future<Option<uint64_t> > electing = coord2.elect();
+    Future<Option<uint64_t>> electing = coord2.elect();
     AWAIT_READY(electing);
     EXPECT_SOME_EQ(position, electing.get());
   }
 
   {
-    Future<list<Action> > actions = replica2->read(position, position);
+    Future<list<Action>> actions = replica2->read(position, position);
     AWAIT_READY(actions);
-    ASSERT_EQ(1u, actions.get().size());
-    EXPECT_EQ(position, actions.get().front().position());
-    ASSERT_TRUE(actions.get().front().has_type());
-    ASSERT_EQ(Action::APPEND, actions.get().front().type());
-    EXPECT_EQ("hello world", actions.get().front().append().bytes());
+    ASSERT_EQ(1u, actions->size());
+    EXPECT_EQ(position, actions->front().position());
+    ASSERT_TRUE(actions->front().has_type());
+    ASSERT_EQ(Action::APPEND, actions->front().type());
+    EXPECT_EQ("hello world", actions->front().append().bytes());
   }
 }
 
@@ -934,11 +932,11 @@ TEST_F(CoordinatorTest, Demoted)
 {
   const string path1 = os::getcwd() + "/.log1";
   initializer.flags.path = path1;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   const string path2 = os::getcwd() + "/.log2";
   initializer.flags.path = path2;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   Shared<Replica> replica1(new Replica(path1));
   Shared<Replica> replica2(new Replica(path2));
@@ -952,7 +950,7 @@ TEST_F(CoordinatorTest, Demoted)
   Coordinator coord1(2, replica1, network1);
 
   {
-    Future<Option<uint64_t> > electing = coord1.elect();
+    Future<Option<uint64_t>> electing = coord1.elect();
     AWAIT_READY(electing);
     EXPECT_SOME_EQ(0u, electing.get());
   }
@@ -960,10 +958,10 @@ TEST_F(CoordinatorTest, Demoted)
   uint64_t position1;
 
   {
-    Future<Option<uint64_t> > appending = coord1.append("hello world");
+    Future<Option<uint64_t>> appending = coord1.append("hello world");
     AWAIT_READY(appending);
     ASSERT_SOME(appending.get());
-    position1 = appending.get().get();
+    position1 = appending->get();
     EXPECT_EQ(1u, position1);
   }
 
@@ -972,13 +970,13 @@ TEST_F(CoordinatorTest, Demoted)
   Coordinator coord2(2, replica2, network2);
 
   {
-    Future<Option<uint64_t> > electing = coord2.elect();
+    Future<Option<uint64_t>> electing = coord2.elect();
     AWAIT_READY(electing);
     EXPECT_SOME_EQ(position1, electing.get());
   }
 
   {
-    Future<Option<uint64_t> > appending = coord1.append("hello moto");
+    Future<Option<uint64_t>> appending = coord1.append("hello moto");
     AWAIT_READY(appending);
     EXPECT_NONE(appending.get());
   }
@@ -986,21 +984,21 @@ TEST_F(CoordinatorTest, Demoted)
   uint64_t position2;
 
   {
-    Future<Option<uint64_t> > appending = coord2.append("hello hello");
+    Future<Option<uint64_t>> appending = coord2.append("hello hello");
     AWAIT_READY(appending);
     ASSERT_SOME(appending.get());
-    position2 = appending.get().get();
+    position2 = appending->get();
     EXPECT_EQ(2u, position2);
   }
 
   {
-    Future<list<Action> > actions = replica2->read(position2, position2);
+    Future<list<Action>> actions = replica2->read(position2, position2);
     AWAIT_READY(actions);
-    ASSERT_EQ(1u, actions.get().size());
-    EXPECT_EQ(position2, actions.get().front().position());
-    ASSERT_TRUE(actions.get().front().has_type());
-    ASSERT_EQ(Action::APPEND, actions.get().front().type());
-    EXPECT_EQ("hello hello", actions.get().front().append().bytes());
+    ASSERT_EQ(1u, actions->size());
+    EXPECT_EQ(position2, actions->front().position());
+    ASSERT_TRUE(actions->front().has_type());
+    ASSERT_EQ(Action::APPEND, actions->front().type());
+    EXPECT_EQ("hello hello", actions->front().append().bytes());
   }
 }
 
@@ -1009,15 +1007,15 @@ TEST_F(CoordinatorTest, Fill)
 {
   const string path1 = os::getcwd() + "/.log1";
   initializer.flags.path = path1;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   const string path2 = os::getcwd() + "/.log2";
   initializer.flags.path = path2;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   const string path3 = os::getcwd() + "/.log3";
   initializer.flags.path = path3;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   Shared<Replica> replica1(new Replica(path1));
   Shared<Replica> replica2(new Replica(path2));
@@ -1031,7 +1029,7 @@ TEST_F(CoordinatorTest, Fill)
   Coordinator coord1(2, replica1, network1);
 
   {
-    Future<Option<uint64_t> > electing = coord1.elect();
+    Future<Option<uint64_t>> electing = coord1.elect();
     AWAIT_READY(electing);
     EXPECT_SOME_EQ(0u, electing.get());
   }
@@ -1039,10 +1037,10 @@ TEST_F(CoordinatorTest, Fill)
   uint64_t position;
 
   {
-    Future<Option<uint64_t> > appending = coord1.append("hello world");
+    Future<Option<uint64_t>> appending = coord1.append("hello world");
     AWAIT_READY(appending);
     ASSERT_SOME(appending.get());
-    position = appending.get().get();
+    position = appending->get();
     EXPECT_EQ(1u, position);
   }
 
@@ -1060,7 +1058,7 @@ TEST_F(CoordinatorTest, Fill)
     // Note that the first election should fail because 'coord2' gets
     // its proposal number from 'replica3' which has an empty log and
     // thus a second attempt will need to be made.
-    Future<Option<uint64_t> > electing = coord2.elect();
+    Future<Option<uint64_t>> electing = coord2.elect();
     AWAIT_READY(electing);
     ASSERT_NONE(electing.get());
 
@@ -1070,13 +1068,13 @@ TEST_F(CoordinatorTest, Fill)
   }
 
   {
-    Future<list<Action> > actions = replica3->read(position, position);
+    Future<list<Action>> actions = replica3->read(position, position);
     AWAIT_READY(actions);
-    ASSERT_EQ(1u, actions.get().size());
-    EXPECT_EQ(position, actions.get().front().position());
-    ASSERT_TRUE(actions.get().front().has_type());
-    ASSERT_EQ(Action::APPEND, actions.get().front().type());
-    EXPECT_EQ("hello world", actions.get().front().append().bytes());
+    ASSERT_EQ(1u, actions->size());
+    EXPECT_EQ(position, actions->front().position());
+    ASSERT_TRUE(actions->front().has_type());
+    ASSERT_EQ(Action::APPEND, actions->front().type());
+    EXPECT_EQ("hello world", actions->front().append().bytes());
   }
 }
 
@@ -1085,15 +1083,15 @@ TEST_F(CoordinatorTest, NotLearnedFill)
 {
   const string path1 = os::getcwd() + "/.log1";
   initializer.flags.path = path1;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   const string path2 = os::getcwd() + "/.log2";
   initializer.flags.path = path2;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   const string path3 = os::getcwd() + "/.log3";
   initializer.flags.path = path3;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   Shared<Replica> replica1(new Replica(path1));
   Shared<Replica> replica2(new Replica(path2));
@@ -1111,7 +1109,7 @@ TEST_F(CoordinatorTest, NotLearnedFill)
   Coordinator coord1(2, replica1, network1);
 
   {
-    Future<Option<uint64_t> > electing = coord1.elect();
+    Future<Option<uint64_t>> electing = coord1.elect();
     AWAIT_READY(electing);
     EXPECT_SOME_EQ(0u, electing.get());
   }
@@ -1119,10 +1117,10 @@ TEST_F(CoordinatorTest, NotLearnedFill)
   uint64_t position;
 
   {
-    Future<Option<uint64_t> > appending = coord1.append("hello world");
+    Future<Option<uint64_t>> appending = coord1.append("hello world");
     AWAIT_READY(appending);
     ASSERT_SOME(appending.get());
-    position = appending.get().get();
+    position = appending->get();
     EXPECT_EQ(1u, position);
   }
 
@@ -1140,7 +1138,7 @@ TEST_F(CoordinatorTest, NotLearnedFill)
     // Note that the first election should fail because 'coord2' gets
     // its proposal number from 'replica3' which has an empty log and
     // thus a second attempt will need to be made.
-    Future<Option<uint64_t> > electing = coord2.elect();
+    Future<Option<uint64_t>> electing = coord2.elect();
     AWAIT_READY(electing);
     ASSERT_NONE(electing.get());
 
@@ -1150,13 +1148,13 @@ TEST_F(CoordinatorTest, NotLearnedFill)
   }
 
   {
-    Future<list<Action> > actions = replica3->read(position, position);
+    Future<list<Action>> actions = replica3->read(position, position);
     AWAIT_READY(actions);
-    ASSERT_EQ(1u, actions.get().size());
-    EXPECT_EQ(position, actions.get().front().position());
-    ASSERT_TRUE(actions.get().front().has_type());
-    ASSERT_EQ(Action::APPEND, actions.get().front().type());
-    EXPECT_EQ("hello world", actions.get().front().append().bytes());
+    ASSERT_EQ(1u, actions->size());
+    EXPECT_EQ(position, actions->front().position());
+    ASSERT_TRUE(actions->front().has_type());
+    ASSERT_EQ(Action::APPEND, actions->front().type());
+    EXPECT_EQ("hello world", actions->front().append().bytes());
   }
 }
 
@@ -1165,11 +1163,11 @@ TEST_F(CoordinatorTest, MultipleAppends)
 {
   const string path1 = os::getcwd() + "/.log1";
   initializer.flags.path = path1;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   const string path2 = os::getcwd() + "/.log2";
   initializer.flags.path = path2;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   Shared<Replica> replica1(new Replica(path1));
   Shared<Replica> replica2(new Replica(path2));
@@ -1183,21 +1181,21 @@ TEST_F(CoordinatorTest, MultipleAppends)
   Coordinator coord(2, replica1, network);
 
   {
-    Future<Option<uint64_t> > electing = coord.elect();
+    Future<Option<uint64_t>> electing = coord.elect();
     AWAIT_READY(electing);
     EXPECT_SOME_EQ(0u, electing.get());
   }
 
   for (uint64_t position = 1; position <= 10; position++) {
-    Future<Option<uint64_t> > appending = coord.append(stringify(position));
+    Future<Option<uint64_t>> appending = coord.append(stringify(position));
     AWAIT_READY(appending);
     EXPECT_SOME_EQ(position, appending.get());
   }
 
   {
-    Future<list<Action> > actions = replica1->read(1, 10);
+    Future<list<Action>> actions = replica1->read(1, 10);
     AWAIT_READY(actions);
-    EXPECT_EQ(10u, actions.get().size());
+    EXPECT_EQ(10u, actions->size());
     foreach (const Action& action, actions.get()) {
       ASSERT_TRUE(action.has_type());
       ASSERT_EQ(Action::APPEND, action.type());
@@ -1211,15 +1209,15 @@ TEST_F(CoordinatorTest, MultipleAppendsNotLearnedFill)
 {
   const string path1 = os::getcwd() + "/.log1";
   initializer.flags.path = path1;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   const string path2 = os::getcwd() + "/.log2";
   initializer.flags.path = path2;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   const string path3 = os::getcwd() + "/.log3";
   initializer.flags.path = path3;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   Shared<Replica> replica1(new Replica(path1));
   Shared<Replica> replica2(new Replica(path2));
@@ -1237,13 +1235,13 @@ TEST_F(CoordinatorTest, MultipleAppendsNotLearnedFill)
   Coordinator coord1(2, replica1, network1);
 
   {
-    Future<Option<uint64_t> > electing = coord1.elect();
+    Future<Option<uint64_t>> electing = coord1.elect();
     AWAIT_READY(electing);
     EXPECT_SOME_EQ(0u, electing.get());
   }
 
   for (uint64_t position = 1; position <= 10; position++) {
-    Future<Option<uint64_t> > appending = coord1.append(stringify(position));
+    Future<Option<uint64_t>> appending = coord1.append(stringify(position));
     AWAIT_READY(appending);
     EXPECT_SOME_EQ(position, appending.get());
   }
@@ -1262,7 +1260,7 @@ TEST_F(CoordinatorTest, MultipleAppendsNotLearnedFill)
     // Note that the first election should fail because 'coord2' gets
     // its proposal number from 'replica3' which has an empty log and
     // thus a second attempt will need to be made.
-    Future<Option<uint64_t> > electing = coord2.elect();
+    Future<Option<uint64_t>> electing = coord2.elect();
     AWAIT_READY(electing);
     ASSERT_NONE(electing.get());
 
@@ -1272,9 +1270,9 @@ TEST_F(CoordinatorTest, MultipleAppendsNotLearnedFill)
   }
 
   {
-    Future<list<Action> > actions = replica3->read(1, 10);
+    Future<list<Action>> actions = replica3->read(1, 10);
     AWAIT_READY(actions);
-    EXPECT_EQ(10u, actions.get().size());
+    EXPECT_EQ(10u, actions->size());
     foreach (const Action& action, actions.get()) {
       ASSERT_TRUE(action.has_type());
       ASSERT_EQ(Action::APPEND, action.type());
@@ -1288,11 +1286,11 @@ TEST_F(CoordinatorTest, Truncate)
 {
   const string path1 = os::getcwd() + "/.log1";
   initializer.flags.path = path1;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   const string path2 = os::getcwd() + "/.log2";
   initializer.flags.path = path2;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   Shared<Replica> replica1(new Replica(path1));
   Shared<Replica> replica2(new Replica(path2));
@@ -1306,33 +1304,33 @@ TEST_F(CoordinatorTest, Truncate)
   Coordinator coord(2, replica1, network);
 
   {
-    Future<Option<uint64_t> > electing = coord.elect();
+    Future<Option<uint64_t>> electing = coord.elect();
     AWAIT_READY(electing);
     EXPECT_SOME_EQ(0u, electing.get());
   }
 
   for (uint64_t position = 1; position <= 10; position++) {
-    Future<Option<uint64_t> > appending = coord.append(stringify(position));
+    Future<Option<uint64_t>> appending = coord.append(stringify(position));
     AWAIT_READY(appending);
     EXPECT_SOME_EQ(position, appending.get());
   }
 
   {
-    Future<Option<uint64_t> > truncating = coord.truncate(7);
+    Future<Option<uint64_t>> truncating = coord.truncate(7);
     AWAIT_READY(truncating);
     EXPECT_SOME_EQ(11u, truncating.get());
   }
 
   {
-    Future<list<Action> > actions = replica1->read(6, 10);
+    Future<list<Action>> actions = replica1->read(6, 10);
     AWAIT_FAILED(actions);
     EXPECT_EQ("Bad read range (truncated position)", actions.failure());
   }
 
   {
-    Future<list<Action> > actions = replica1->read(7, 10);
+    Future<list<Action>> actions = replica1->read(7, 10);
     AWAIT_READY(actions);
-    EXPECT_EQ(4u, actions.get().size());
+    EXPECT_EQ(4u, actions->size());
     foreach (const Action& action, actions.get()) {
       ASSERT_TRUE(action.has_type());
       ASSERT_EQ(Action::APPEND, action.type());
@@ -1346,15 +1344,15 @@ TEST_F(CoordinatorTest, TruncateNotLearnedFill)
 {
   const string path1 = os::getcwd() + "/.log1";
   initializer.flags.path = path1;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   const string path2 = os::getcwd() + "/.log2";
   initializer.flags.path = path2;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   const string path3 = os::getcwd() + "/.log3";
   initializer.flags.path = path3;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   Shared<Replica> replica1(new Replica(path1));
   Shared<Replica> replica2(new Replica(path2));
@@ -1372,19 +1370,19 @@ TEST_F(CoordinatorTest, TruncateNotLearnedFill)
   Coordinator coord1(2, replica1, network1);
 
   {
-    Future<Option<uint64_t> > electing = coord1.elect();
+    Future<Option<uint64_t>> electing = coord1.elect();
     AWAIT_READY(electing);
     EXPECT_SOME_EQ(0u, electing.get());
   }
 
   for (uint64_t position = 1; position <= 10; position++) {
-    Future<Option<uint64_t> > appending = coord1.append(stringify(position));
+    Future<Option<uint64_t>> appending = coord1.append(stringify(position));
     AWAIT_READY(appending);
     EXPECT_SOME_EQ(position, appending.get());
   }
 
   {
-    Future<Option<uint64_t> > truncating = coord1.truncate(7);
+    Future<Option<uint64_t>> truncating = coord1.truncate(7);
     AWAIT_READY(truncating);
     EXPECT_SOME_EQ(11u, truncating.get());
   }
@@ -1403,7 +1401,7 @@ TEST_F(CoordinatorTest, TruncateNotLearnedFill)
     // Note that the first election should fail because 'coord2' gets
     // its proposal number from 'replica3' which has an empty log and
     // thus a second attempt will need to be made.
-    Future<Option<uint64_t> > electing = coord2.elect();
+    Future<Option<uint64_t>> electing = coord2.elect();
     AWAIT_READY(electing);
     ASSERT_NONE(electing.get());
 
@@ -1413,15 +1411,15 @@ TEST_F(CoordinatorTest, TruncateNotLearnedFill)
   }
 
   {
-    Future<list<Action> > actions = replica3->read(6, 10);
+    Future<list<Action>> actions = replica3->read(6, 10);
     AWAIT_FAILED(actions);
     EXPECT_EQ("Bad read range (truncated position)", actions.failure());
   }
 
   {
-    Future<list<Action> > actions = replica3->read(7, 10);
+    Future<list<Action>> actions = replica3->read(7, 10);
     AWAIT_READY(actions);
-    EXPECT_EQ(4u, actions.get().size());
+    EXPECT_EQ(4u, actions->size());
     foreach (const Action& action, actions.get()) {
       ASSERT_TRUE(action.has_type());
       ASSERT_EQ(Action::APPEND, action.type());
@@ -1435,15 +1433,15 @@ TEST_F(CoordinatorTest, TruncateLearnedFill)
 {
   const string path1 = os::getcwd() + "/.log1";
   initializer.flags.path = path1;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   const string path2 = os::getcwd() + "/.log2";
   initializer.flags.path = path2;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   const string path3 = os::getcwd() + "/.log3";
   initializer.flags.path = path3;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   Shared<Replica> replica1(new Replica(path1));
   Shared<Replica> replica2(new Replica(path2));
@@ -1457,19 +1455,19 @@ TEST_F(CoordinatorTest, TruncateLearnedFill)
   Coordinator coord1(2, replica1, network1);
 
   {
-    Future<Option<uint64_t> > electing = coord1.elect();
+    Future<Option<uint64_t>> electing = coord1.elect();
     AWAIT_READY(electing);
     EXPECT_SOME_EQ(0u, electing.get());
   }
 
   for (uint64_t position = 1; position <= 10; position++) {
-    Future<Option<uint64_t> > appending = coord1.append(stringify(position));
+    Future<Option<uint64_t>> appending = coord1.append(stringify(position));
     AWAIT_READY(appending);
     EXPECT_SOME_EQ(position, appending.get());
   }
 
   {
-    Future<Option<uint64_t> > truncating = coord1.truncate(7);
+    Future<Option<uint64_t>> truncating = coord1.truncate(7);
     AWAIT_READY(truncating);
     EXPECT_SOME_EQ(11u, truncating.get());
   }
@@ -1488,7 +1486,7 @@ TEST_F(CoordinatorTest, TruncateLearnedFill)
     // Note that the first election should fail because 'coord2' gets
     // its proposal number from 'replica3' which has an empty log and
     // thus a second attempt will need to be made.
-    Future<Option<uint64_t> > electing = coord2.elect();
+    Future<Option<uint64_t>> electing = coord2.elect();
     AWAIT_READY(electing);
     ASSERT_NONE(electing.get());
 
@@ -1498,15 +1496,15 @@ TEST_F(CoordinatorTest, TruncateLearnedFill)
   }
 
   {
-    Future<list<Action> > actions = replica3->read(6, 10);
+    Future<list<Action>> actions = replica3->read(6, 10);
     AWAIT_FAILED(actions);
     EXPECT_EQ("Bad read range (truncated position)", actions.failure());
   }
 
   {
-    Future<list<Action> > actions = replica3->read(7, 10);
+    Future<list<Action>> actions = replica3->read(7, 10);
     AWAIT_READY(actions);
-    EXPECT_EQ(4u, actions.get().size());
+    EXPECT_EQ(4u, actions->size());
     foreach (const Action& action, actions.get()) {
       ASSERT_TRUE(action.has_type());
       ASSERT_EQ(Action::APPEND, action.type());
@@ -1655,7 +1653,7 @@ TEST_F(CoordinatorTest, RecoveryRace)
 class RecoverTest : public TemporaryDirectoryTest
 {
 protected:
-  // For initializing the log.
+  // Used to change the status of a replicated log from `EMPTY` to `VOTING`.
   tool::Initialize initializer;
 };
 
@@ -1665,15 +1663,15 @@ TEST_F(RecoverTest, RacingCatchup)
 {
   const string path1 = os::getcwd() + "/.log1";
   initializer.flags.path = path1;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   const string path2 = os::getcwd() + "/.log2";
   initializer.flags.path = path2;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   const string path3 = os::getcwd() + "/.log3";
   initializer.flags.path = path3;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   const string path4 = os::getcwd() + "/.log4";
   const string path5 = os::getcwd() + "/.log5";
@@ -1692,13 +1690,13 @@ TEST_F(RecoverTest, RacingCatchup)
   Coordinator coord1(3, replica1, network1);
 
   {
-    Future<Option<uint64_t> > electing = coord1.elect();
+    Future<Option<uint64_t>> electing = coord1.elect();
     AWAIT_READY(electing);
     EXPECT_SOME_EQ(0u, electing.get());
   }
 
   for (uint64_t position = 1; position <= 10; position++) {
-    Future<Option<uint64_t> > appending = coord1.append(stringify(position));
+    Future<Option<uint64_t>> appending = coord1.append(stringify(position));
     AWAIT_READY(appending);
     EXPECT_SOME_EQ(position, appending.get());
   }
@@ -1712,8 +1710,8 @@ TEST_F(RecoverTest, RacingCatchup)
 
   Shared<Network> network2(new Network(pids));
 
-  Future<Owned<Replica> > recovering4 = recover(3, replica4, network2);
-  Future<Owned<Replica> > recovering5 = recover(3, replica5, network2);
+  Future<Owned<Replica>> recovering4 = recover(3, replica4, network2);
+  Future<Owned<Replica>> recovering5 = recover(3, replica5, network2);
 
   // Wait until recovery is done.
   AWAIT_READY(recovering4);
@@ -1727,7 +1725,7 @@ TEST_F(RecoverTest, RacingCatchup)
     // Note that the first election should fail because 'coord2' gets
     // its proposal number from 'replica3' which has an empty log and
     // thus a second attempt will need to be made.
-    Future<Option<uint64_t> > electing = coord2.elect();
+    Future<Option<uint64_t>> electing = coord2.elect();
     AWAIT_READY(electing);
     ASSERT_NONE(electing.get());
 
@@ -1737,9 +1735,9 @@ TEST_F(RecoverTest, RacingCatchup)
   }
 
   {
-    Future<list<Action> > actions = shared4->read(1, 10);
+    Future<list<Action>> actions = shared4->read(1, 10);
     AWAIT_READY(actions);
-    EXPECT_EQ(10u, actions.get().size());
+    EXPECT_EQ(10u, actions->size());
     foreach (const Action& action, actions.get()) {
       ASSERT_TRUE(action.has_type());
       ASSERT_EQ(Action::APPEND, action.type());
@@ -1748,19 +1746,19 @@ TEST_F(RecoverTest, RacingCatchup)
   }
 
   {
-    Future<Option<uint64_t> > appending = coord2.append("hello hello");
+    Future<Option<uint64_t>> appending = coord2.append("hello hello");
     AWAIT_READY(appending);
     EXPECT_SOME_EQ(11u, appending.get());
   }
 
   {
-    Future<list<Action> > actions = shared4->read(11u, 11u);
+    Future<list<Action>> actions = shared4->read(11u, 11u);
     AWAIT_READY(actions);
-    ASSERT_EQ(1u, actions.get().size());
-    EXPECT_EQ(11u, actions.get().front().position());
-    ASSERT_TRUE(actions.get().front().has_type());
-    ASSERT_EQ(Action::APPEND, actions.get().front().type());
-    EXPECT_EQ("hello hello", actions.get().front().append().bytes());
+    ASSERT_EQ(1u, actions->size());
+    EXPECT_EQ(11u, actions->front().position());
+    ASSERT_TRUE(actions->front().has_type());
+    ASSERT_EQ(Action::APPEND, actions->front().type());
+    EXPECT_EQ("hello hello", actions->front().append().bytes());
   }
 }
 
@@ -1769,11 +1767,11 @@ TEST_F(RecoverTest, CatchupRetry)
 {
   const string path1 = os::getcwd() + "/.log1";
   initializer.flags.path = path1;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   const string path2 = os::getcwd() + "/.log2";
   initializer.flags.path = path2;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   const string path3 = os::getcwd() + "/.log3";
 
@@ -1792,7 +1790,7 @@ TEST_F(RecoverTest, CatchupRetry)
   Coordinator coord(2, replica1, network1);
 
   {
-    Future<Option<uint64_t> > electing = coord.elect();
+    Future<Option<uint64_t>> electing = coord.elect();
     AWAIT_READY(electing);
     EXPECT_SOME_EQ(0u, electing.get());
   }
@@ -1800,7 +1798,7 @@ TEST_F(RecoverTest, CatchupRetry)
   IntervalSet<uint64_t> positions;
 
   for (uint64_t position = 1; position <= 10; position++) {
-    Future<Option<uint64_t> > appending = coord.append(stringify(position));
+    Future<Option<uint64_t>> appending = coord.append(stringify(position));
     AWAIT_READY(appending);
     EXPECT_SOME_EQ(position, appending.get());
     positions += position;
@@ -1863,8 +1861,8 @@ TEST_F(RecoverTest, AutoInitialization)
 
   Shared<Network> network(new Network(pids));
 
-  Future<Owned<Replica> > recovering1 = recover(2, replica1, network, true);
-  Future<Owned<Replica> > recovering2 = recover(2, replica2, network, true);
+  Future<Owned<Replica>> recovering1 = recover(2, replica1, network, true);
+  Future<Owned<Replica>> recovering2 = recover(2, replica2, network, true);
 
   // Verifies that replica1 and replica2 cannot transit into VOTING
   // status because replica3 is still in EMPTY status. We flush the
@@ -1876,7 +1874,7 @@ TEST_F(RecoverTest, AutoInitialization)
   EXPECT_TRUE(recovering1.isPending());
   EXPECT_TRUE(recovering2.isPending());
 
-  Future<Owned<Replica> > recovering3 = recover(2, replica3, network, true);
+  Future<Owned<Replica>> recovering3 = recover(2, replica3, network, true);
 
   Clock::pause();
   Clock::settle();
@@ -1898,25 +1896,25 @@ TEST_F(RecoverTest, AutoInitialization)
   Coordinator coord(2, shared, network);
 
   {
-    Future<Option<uint64_t> > electing = coord.elect();
+    Future<Option<uint64_t>> electing = coord.elect();
     AWAIT_READY(electing);
     EXPECT_SOME_EQ(0u, electing.get());
   }
 
   {
-    Future<Option<uint64_t> > appending = coord.append("hello world");
+    Future<Option<uint64_t>> appending = coord.append("hello world");
     AWAIT_READY(appending);
     EXPECT_SOME_EQ(1u, appending.get());
   }
 
   {
-    Future<list<Action> > actions = shared->read(1, 1);
+    Future<list<Action>> actions = shared->read(1, 1);
     AWAIT_READY(actions);
-    ASSERT_EQ(1u, actions.get().size());
-    EXPECT_EQ(1u, actions.get().front().position());
-    ASSERT_TRUE(actions.get().front().has_type());
-    ASSERT_EQ(Action::APPEND, actions.get().front().type());
-    EXPECT_EQ("hello world", actions.get().front().append().bytes());
+    ASSERT_EQ(1u, actions->size());
+    EXPECT_EQ(1u, actions->front().position());
+    ASSERT_TRUE(actions->front().has_type());
+    ASSERT_EQ(Action::APPEND, actions->front().type());
+    EXPECT_EQ("hello world", actions->front().append().bytes());
   }
 }
 
@@ -1944,8 +1942,8 @@ TEST_F(RecoverTest, AutoInitializationRetry)
 
   Clock::pause();
 
-  Future<Owned<Replica> > recovering1 = recover(2, replica1, network, true);
-  Future<Owned<Replica> > recovering2 = recover(2, replica2, network, true);
+  Future<Owned<Replica>> recovering1 = recover(2, replica1, network, true);
+  Future<Owned<Replica>> recovering2 = recover(2, replica2, network, true);
 
   // Flush the event queue.
   Clock::settle();
@@ -1953,7 +1951,7 @@ TEST_F(RecoverTest, AutoInitializationRetry)
   EXPECT_TRUE(recovering1.isPending());
   EXPECT_TRUE(recovering2.isPending());
 
-  Future<Owned<Replica> > recovering3 = recover(2, replica3, network, true);
+  Future<Owned<Replica>> recovering3 = recover(2, replica3, network, true);
 
   // Replica1 and replica2 will retry recovery after 10 seconds.
   Clock::advance(Seconds(10));
@@ -1971,25 +1969,25 @@ TEST_F(RecoverTest, AutoInitializationRetry)
   Coordinator coord(2, shared, network);
 
   {
-    Future<Option<uint64_t> > electing = coord.elect();
+    Future<Option<uint64_t>> electing = coord.elect();
     AWAIT_READY(electing);
     EXPECT_SOME_EQ(0u, electing.get());
   }
 
   {
-    Future<Option<uint64_t> > appending = coord.append("hello world");
+    Future<Option<uint64_t>> appending = coord.append("hello world");
     AWAIT_READY(appending);
     EXPECT_SOME_EQ(1u, appending.get());
   }
 
   {
-    Future<list<Action> > actions = shared->read(1, 1);
+    Future<list<Action>> actions = shared->read(1, 1);
     AWAIT_READY(actions);
-    ASSERT_EQ(1u, actions.get().size());
-    EXPECT_EQ(1u, actions.get().front().position());
-    ASSERT_TRUE(actions.get().front().has_type());
-    ASSERT_EQ(Action::APPEND, actions.get().front().type());
-    EXPECT_EQ("hello world", actions.get().front().append().bytes());
+    ASSERT_EQ(1u, actions->size());
+    EXPECT_EQ(1u, actions->front().position());
+    ASSERT_TRUE(actions->front().has_type());
+    ASSERT_EQ(Action::APPEND, actions->front().type());
+    EXPECT_EQ("hello world", actions->front().append().bytes());
   }
 }
 
@@ -1997,7 +1995,7 @@ TEST_F(RecoverTest, AutoInitializationRetry)
 class LogTest : public TemporaryDirectoryTest
 {
 protected:
-  // For initializing the log.
+  // Used to change the status of a replicated log from `EMPTY` to `VOTING`.
   tool::Initialize initializer;
 };
 
@@ -2006,11 +2004,11 @@ TEST_F(LogTest, WriteRead)
 {
   const string path1 = os::getcwd() + "/.log1";
   initializer.flags.path = path1;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   const string path2 = os::getcwd() + "/.log2";
   initializer.flags.path = path2;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   Replica replica1(path1);
 
@@ -2021,26 +2019,26 @@ TEST_F(LogTest, WriteRead)
 
   Log::Writer writer(&log);
 
-  Future<Option<Log::Position> > start = writer.start();
+  Future<Option<Log::Position>> start = writer.start();
 
   AWAIT_READY(start);
   ASSERT_SOME(start.get());
 
-  Future<Option<Log::Position> > position = writer.append("hello world");
+  Future<Option<Log::Position>> position = writer.append("hello world");
 
   AWAIT_READY(position);
   ASSERT_SOME(position.get());
 
   Log::Reader reader(&log);
 
-  Future<list<Log::Entry> > entries =
-    reader.read(position.get().get(), position.get().get());
+  Future<list<Log::Entry>> entries =
+    reader.read(position->get(), position->get());
 
   AWAIT_READY(entries);
 
-  ASSERT_EQ(1u, entries.get().size());
-  EXPECT_EQ(position.get().get(), entries.get().front().position);
-  EXPECT_EQ("hello world", entries.get().front().data);
+  ASSERT_EQ(1u, entries->size());
+  EXPECT_EQ(position->get(), entries->front().position);
+  EXPECT_EQ("hello world", entries->front().data);
 }
 
 
@@ -2048,11 +2046,11 @@ TEST_F(LogTest, Position)
 {
   const string path1 = os::getcwd() + "/.log1";
   initializer.flags.path = path1;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   const string path2 = os::getcwd() + "/.log2";
   initializer.flags.path = path2;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   Replica replica1(path1);
 
@@ -2063,19 +2061,19 @@ TEST_F(LogTest, Position)
 
   Log::Writer writer(&log);
 
-  Future<Option<Log::Position> > start = writer.start();
+  Future<Option<Log::Position>> start = writer.start();
 
   AWAIT_READY(start);
   ASSERT_SOME(start.get());
 
-  Future<Option<Log::Position> > position = writer.append("hello world");
+  Future<Option<Log::Position>> position = writer.append("hello world");
 
   AWAIT_READY(position);
   ASSERT_SOME(position.get());
 
   ASSERT_EQ(
-      position.get().get(),
-      log.position(position.get().get().identity()));
+      position->get(),
+      log.position(position->get().identity()));
 }
 
 
@@ -2089,7 +2087,7 @@ TEST_F(LogTest, Metrics)
   initializer.flags.path = path;
   ASSERT_SOME(initializer.execute());
 
-  Log log(1, path, {}, false, "prefix/");
+  Log log(1, path, set<process::UPID>(), false, "prefix/");
 
   // Make sure the log is recovered. If the log is not recovered, the
   // writer cannot be elected.
@@ -2145,7 +2143,7 @@ protected:
     }
   }
 
-  // For initializing the log.
+  // Used to change the status of a replicated log from `EMPTY` to `VOTING`.
   tool::Initialize initializer;
 
 private:
@@ -2158,11 +2156,11 @@ TEST_F(LogZooKeeperTest, WriteRead)
 {
   const string path1 = os::getcwd() + "/.log1";
   initializer.flags.path = path1;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   const string path2 = os::getcwd() + "/.log2";
   initializer.flags.path = path2;
-  initializer.execute();
+  ASSERT_SOME(initializer.execute());
 
   string servers = server->connectString();
 
@@ -2171,26 +2169,26 @@ TEST_F(LogZooKeeperTest, WriteRead)
 
   Log::Writer writer(&log2);
 
-  Future<Option<Log::Position> > start = writer.start();
+  Future<Option<Log::Position>> start = writer.start();
 
   AWAIT_READY(start);
   ASSERT_SOME(start.get());
 
-  Future<Option<Log::Position> > position = writer.append("hello world");
+  Future<Option<Log::Position>> position = writer.append("hello world");
 
   AWAIT_READY(position);
   ASSERT_SOME(position.get());
 
   Log::Reader reader(&log2);
 
-  Future<list<Log::Entry> > entries =
-    reader.read(position.get().get(), position.get().get());
+  Future<list<Log::Entry>> entries =
+    reader.read(position->get(), position->get());
 
   AWAIT_READY(entries);
 
-  ASSERT_EQ(1u, entries.get().size());
-  EXPECT_EQ(position.get().get(), entries.get().front().position);
-  EXPECT_EQ("hello world", entries.get().front().data);
+  ASSERT_EQ(1u, entries->size());
+  EXPECT_EQ(position->get(), entries->front().position);
+  EXPECT_EQ("hello world", entries->front().data);
 }
 
 
@@ -2204,7 +2202,7 @@ TEST_F(LogZooKeeperTest, LostZooKeeper)
 
   Log::Writer writer(&log);
 
-  Future<Option<Log::Position> > start = writer.start();
+  Future<Option<Log::Position>> start = writer.start();
 
   AWAIT_READY(start);
   ASSERT_SOME(start.get());
@@ -2214,21 +2212,21 @@ TEST_F(LogZooKeeperTest, LostZooKeeper)
 
   // We should still be able to append as the local replica is in the
   // base set of the ZooKeeper network.
-  Future<Option<Log::Position> > position = writer.append("hello world");
+  Future<Option<Log::Position>> position = writer.append("hello world");
 
   AWAIT_READY(position);
   ASSERT_SOME(position.get());
 
   Log::Reader reader(&log);
 
-  Future<list<Log::Entry> > entries =
-    reader.read(position.get().get(), position.get().get());
+  Future<list<Log::Entry>> entries =
+    reader.read(position->get(), position->get());
 
   AWAIT_READY(entries);
 
-  ASSERT_EQ(1u, entries.get().size());
-  EXPECT_EQ(position.get().get(), entries.get().front().position);
-  EXPECT_EQ("hello world", entries.get().front().data);
+  ASSERT_EQ(1u, entries->size());
+  EXPECT_EQ(position->get(), entries->front().position);
+  EXPECT_EQ("hello world", entries->front().data);
 }
 #endif // MESOS_HAS_JAVA
 

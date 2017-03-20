@@ -37,7 +37,7 @@ namespace mesos {
 namespace internal {
 namespace master {
 
-class Flags : public logging::Flags
+class Flags : public virtual logging::Flags
 {
 public:
   Flags();
@@ -66,7 +66,8 @@ public:
   Option<std::string> weights;
   bool authenticate_frameworks;
   bool authenticate_agents;
-  bool authenticate_http;
+  bool authenticate_http_readonly;
+  bool authenticate_http_readwrite;
   bool authenticate_http_frameworks;
   Option<Path> credentials;
   Option<ACLs> acls;
@@ -77,6 +78,7 @@ public:
   Option<std::string> modulesDir;
   std::string authenticators;
   std::string allocator;
+  Option<std::set<std::string>> fair_sharing_excluded_resource_names;
   Option<std::string> hooks;
   Duration agent_ping_timeout;
   size_t max_agent_ping_timeouts;
@@ -85,8 +87,12 @@ public:
   Option<std::string> http_framework_authenticators;
   size_t max_completed_frameworks;
   size_t max_completed_tasks_per_framework;
+  size_t max_unreachable_tasks_per_framework;
   Option<std::string> master_contender;
   Option<std::string> master_detector;
+  Duration registry_gc_interval;
+  Duration registry_max_agent_age;
+  size_t registry_max_agent_count;
 
 #ifdef WITH_NETWORK_ISOLATOR
   Option<size_t> max_executors_per_agent;

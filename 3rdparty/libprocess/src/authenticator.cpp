@@ -11,6 +11,7 @@
 // limitations under the License
 
 #include <process/authenticator.hpp>
+#include <process/id.hpp>
 
 #include <string>
 #include <vector>
@@ -34,6 +35,28 @@ using std::string;
 using std::vector;
 
 
+static void json(JSON::ObjectWriter* writer, const Principal& principal)
+{
+  if (principal.value.isSome()) {
+    writer->field("value", principal.value.get());
+  }
+  if (!principal.claims.empty()) {
+    writer->field("claims", principal.claims);
+  }
+}
+
+
+std::ostream& operator<<(std::ostream& stream, const Principal& principal)
+{
+  // When only the `value` is set, simply output a string.
+  if (principal.value.isSome() && principal.claims.empty()) {
+    return stream << principal.value.get();
+  }
+
+  return stream << jsonify(principal);
+};
+
+
 class BasicAuthenticatorProcess : public Process<BasicAuthenticatorProcess>
 {
 public:
@@ -53,7 +76,9 @@ private:
 BasicAuthenticatorProcess::BasicAuthenticatorProcess(
     const string& realm,
     const hashmap<string, string>& credentials)
-  : realm_(realm), credentials_(credentials) {}
+  : ProcessBase(ID::generate("__basic_authenticator__")),
+    realm_(realm),
+    credentials_(credentials) {}
 
 
 Future<AuthenticationResult> BasicAuthenticatorProcess::authenticate(
@@ -90,7 +115,7 @@ Future<AuthenticationResult> BasicAuthenticatorProcess::authenticate(
   }
 
   AuthenticationResult authenticated;
-  authenticated.principal = credential[0];
+  authenticated.principal = Principal(credential[0]);
   return authenticated;
 }
 

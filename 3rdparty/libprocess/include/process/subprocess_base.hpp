@@ -15,6 +15,7 @@
 
 #include <sys/types.h>
 
+#include <initializer_list>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -30,23 +31,10 @@
 #include <stout/try.hpp>
 
 #include <stout/os/shell.hpp>
+#include <stout/os/int_fd.hpp>
 
 
 namespace process {
-
-// Flag describing whether a new process should generate a new sid.
-enum Setsid
-{
-  SETSID,
-  NO_SETSID,
-};
-
-// Flag describing whether a new process should be monitored by a seperate
-// watch process and be killed in case the parent process dies.
-enum Watchdog {
-  MONITOR,
-  NO_MONITOR,
-};
 
 /**
  * Represents a fork() exec()ed subprocess. Access is provided to the
@@ -60,7 +48,8 @@ class Subprocess
 {
 public:
   // Forward declarations.
-  struct Hook;
+  struct ParentHook;
+  class ChildHook;
 
   /**
    * Describes how the I/O is redirected for stdin/stdout/stderr.
@@ -82,38 +71,28 @@ public:
      * descriptor if one is present.
      *
      * NOTE: We initialize `read` to -1 so that we do not close an
-     * arbitrary file descriptor,in case we encounter an error
+     * arbitrary file descriptor, in case we encounter an error
      * while starting a subprocess (closing -1 is always a no-op).
      */
     struct InputFileDescriptors
     {
-#ifndef __WINDOWS__
-      int read = -1;
-      Option<int> write = None();
-#else
-      HANDLE read = INVALID_HANDLE_VALUE;
-      Option<HANDLE> write = None();
-#endif // __WINDOWS__
+      int_fd read = -1;
+      Option<int_fd> write = None();
     };
 
     /**
-     * For output file descriptors a child write to the `write` file
+     * For output file descriptors a child writes to the `write` file
      * descriptor and a parent may read from the `read` file
      * descriptor if one is present.
      *
      * NOTE: We initialize `write` to -1 so that we do not close an
-     * arbitrary file descriptor,in case we encounter an error
+     * arbitrary file descriptor, in case we encounter an error
      * while starting a subprocess (closing -1 is always a no-op).
      */
     struct OutputFileDescriptors
     {
-#ifndef __WINDOWS__
-      Option<int> read = None();
-      int write = -1;
-#else
-      Option<HANDLE> read = None();
-      HANDLE write = INVALID_HANDLE_VALUE;
-#endif // __WINDOWS__
+      Option<int_fd> read = None();
+      int_fd write = -1;
     };
 
     /**
@@ -145,14 +124,12 @@ public:
         const Subprocess::IO& in,
         const Subprocess::IO& out,
         const Subprocess::IO& err,
-        const Setsid set_sid,
-        const Option<flags::FlagsBase>& flags,
+        const flags::FlagsBase* flags,
         const Option<std::map<std::string, std::string>>& environment,
         const Option<lambda::function<
             pid_t(const lambda::function<int()>&)>>& clone,
-        const std::vector<Subprocess::Hook>& parent_hooks,
-        const Option<std::string>& working_directory,
-        const Watchdog watchdog);
+        const std::vector<Subprocess::ParentHook>& parent_hooks,
+        const std::vector<Subprocess::ChildHook>& child_hooks);
 
     IO(const lambda::function<Try<InputFileDescriptors>()>& _input,
        const lambda::function<Try<OutputFileDescriptors>()>& _output)
@@ -173,33 +150,94 @@ public:
   /**
    * A hook can be passed to a `subprocess` call. It provides a way to
    * inject dynamic implementation behavior between the clone and exec
-   * calls in the implementation of `subprocess`.
+   * calls in the parent process.
    */
-  struct Hook
+  struct ParentHook
   {
-    /**
-     * Returns an empty list of hooks.
-     */
-    static std::vector<Hook> None() { return std::vector<Hook>(); }
-
-    Hook(const lambda::function<Try<Nothing>(pid_t)>& _parent_callback);
+    ParentHook(const lambda::function<Try<Nothing>(pid_t)>& _parent_setup);
 
     /**
-     * The callback that must be sepcified for execution after the
-     * child has been cloned, but before it start executing the new
+     * The callback that must be specified for execution after the
+     * child has been cloned, but before it starts executing the new
      * process. This provides access to the child pid after its
      * initialization to add tracking or modify execution state of
      * the child before it executes the new process.
      */
-    const lambda::function<Try<Nothing>(pid_t)> parent_callback;
+    const lambda::function<Try<Nothing>(pid_t)> parent_setup;
 
     friend class Subprocess;
+
+#ifdef __WINDOWS__
+    /**
+     * A Windows Job Object is used to manage groups of processes, which
+     * we use due to the lack of a process hierarchy (in a UNIX sense)
+     * on Windows.
+     *
+     * This hook places the subprocess into a Job Object, which will allow
+     * us to kill the subprocess and all of its children together.
+     */
+    static ParentHook CREATE_JOB();
+#endif // __WINDOWS__
+  };
+
+  /**
+   * A `ChildHook` can be passed to a `subprocess` call. It provides a way to
+   * inject predefined behavior between the clone and exec calls in the
+   * child process.
+   * As such `ChildHooks` have to fulfill certain criteria (especially
+   * being async safe) the class does not offer a public constructor.
+   * Instead instances can be created via factory methods.
+   * NOTE: Returning an error from a childHook causes the child process to
+   * abort.
+   */
+  class ChildHook
+  {
+  public:
+    /**
+     * `ChildHook` for changing the working directory.
+     */
+    static ChildHook CHDIR(const std::string& working_directory);
+
+    /**
+     * `ChildHook` for generating a new session id.
+     */
+    static ChildHook SETSID();
+
+#ifndef __WINDOWS__
+    /**
+     * `ChildHook` for duplicating a file descriptor.
+     */
+    static ChildHook DUP2(int oldFd, int newFd);
+
+    /**
+     * `ChildHook` to unset CLOEXEC on a file descriptor. This is
+     * useful to explicitly pass an FD to a subprocess.
+     */
+    static ChildHook UNSET_CLOEXEC(int fd);
+#endif // __WINDOWS__
+
+    /**
+     * `ChildHook` for starting a Supervisor process monitoring
+     *  and killing the child process if the parent process terminates.
+     *
+     * NOTE: The supervisor process sets the process group id in order for it
+     * and its child processes to be killed together. We should not (re)set the
+     * sid after this.
+     */
+    static ChildHook SUPERVISOR();
+
+    Try<Nothing> operator()() const { return child_setup(); }
+
+  private:
+    ChildHook(const lambda::function<Try<Nothing>()>& _child_setup);
+
+    const lambda::function<Try<Nothing>()> child_setup;
   };
 
   // Some syntactic sugar to create an IO::PIPE redirector.
   static IO PIPE();
   static IO PATH(const std::string& path);
-  static IO FD(int fd, IO::FDType type = IO::DUPLICATED);
+  static IO FD(int_fd fd, IO::FDType type = IO::DUPLICATED);
 
   /**
    * @return The operating system PID for this subprocess.
@@ -211,11 +249,7 @@ public:
    *     write side) of this subprocess' stdin pipe or None if no pipe
    *     was requested.
    */
-#ifdef __WINDOWS__
-  Option<HANDLE> in() const
-#else
-  Option<int> in() const
-#endif // __WINDOWS__
+  Option<int_fd> in() const
   {
     return data->in;
   }
@@ -225,11 +259,7 @@ public:
    *     side) of this subprocess' stdout pipe or None if no pipe was
    *     requested.
    */
-#ifdef __WINDOWS__
-  Option<HANDLE> out() const
-#else
-  Option<int> out() const
-#endif // __WINDOWS__
+  Option<int_fd> out() const
   {
     return data->out;
   }
@@ -239,11 +269,7 @@ public:
    *     side) of this subprocess' stderr pipe or None if no pipe was
    *     requested.
    */
-#ifdef __WINDOWS__
-  Option<HANDLE> err() const
-#else
-  Option<int> err() const
-#endif // __WINDOWS__
+  Option<int_fd> err() const
   {
     return data->err;
   }
@@ -252,13 +278,22 @@ public:
    * Exit status of this subprocess captured as a Future (completed
    * when the subprocess exits).
    *
-   * The exit status is propagated from an underlying call to
-   * 'waitpid' and can be used with macros defined in wait.h, i.e.,
-   * 'WIFEXITED(status)'.
+   * On Posix, the exit status is propagated from an underlying call
+   * to `waitpid` and can be used with macros defined in wait.h, i.e.,
+   * `WIFEXITED(status)`.
+   *
+   * On Windows, the exit status contains the exit code from an
+   * underlying call to `GetExitCodeProcess()`.
+   *
+   * TODO(alexr): Ensure the code working with `status` is portable by
+   * either making `WIFEXITED` family macros no-op on Windows or
+   * converting `status` to a tuple <termination status, exit code>,
+   * see MESOS-7242.
    *
    * NOTE: Discarding this future has no effect on the subprocess!
    *
-   * @return Future from doing a process::reap of this subprocess.
+   * @return Future from doing a `process::reap()` of this subprocess.
+   *     Note that `process::reap()` never fails or discards this future.
    */
   Future<Option<int>> status() const { return data->status; }
 
@@ -269,14 +304,12 @@ private:
       const Subprocess::IO& in,
       const Subprocess::IO& out,
       const Subprocess::IO& err,
-      const Setsid setsid,
-      const Option<flags::FlagsBase>& flags,
+      const flags::FlagsBase* flags,
       const Option<std::map<std::string, std::string>>& environment,
       const Option<lambda::function<
           pid_t(const lambda::function<int()>&)>>& clone,
-      const std::vector<Subprocess::Hook>& parent_hooks,
-      const Option<std::string>& working_directory,
-      const Watchdog watchdog);
+      const std::vector<Subprocess::ParentHook>& parent_hooks,
+      const std::vector<Subprocess::ChildHook>& child_hooks);
 
   struct Data
   {
@@ -287,8 +320,8 @@ private:
       if (err.isSome()) { os::close(err.get()); }
 
 #ifdef __WINDOWS__
-      os::close(processInformation.hProcess);
-      os::close(processInformation.hThread);
+      CloseHandle(processInformation.hProcess);
+      CloseHandle(processInformation.hThread);
 #endif // __WINDOWS__
     }
 
@@ -302,15 +335,9 @@ private:
     // IO mode is not a pipe, `None` will be stored.
     // NOTE: stdin, stdout, stderr are macros on some systems, hence
     // these names instead.
-#ifdef __WINDOWS__
-    Option<HANDLE> in;
-    Option<HANDLE> out;
-    Option<HANDLE> err;
-#else
-    Option<int> in;
-    Option<int> out;
-    Option<int> err;
-#endif // __WINDOWS__
+    Option<int_fd> in;
+    Option<int_fd> out;
+    Option<int_fd> err;
 
     Future<Option<int>> status;
   };
@@ -319,6 +346,9 @@ private:
 
   std::shared_ptr<Data> data;
 };
+
+using InputFileDescriptors = Subprocess::IO::InputFileDescriptors;
+using OutputFileDescriptors = Subprocess::IO::OutputFileDescriptors;
 
 /**
  * Forks a subprocess and execs the specified 'path' with the
@@ -331,8 +361,6 @@ private:
  * @param in Redirection specification for stdin.
  * @param out Redirection specification for stdout.
  * @param err Redirection specification for stderr.
- * @param set_sid Indicator whether the process should be placed in
- *     a new session after the 'parent_hooks' have been executed.
  * @param flags Flags to be stringified and appended to 'argv'.
  * @param environment Environment variables to use for the new
  *     subprocess or if None (the default) then the new subprocess
@@ -341,10 +369,8 @@ private:
  *     subprocess.
  * @param parent_hooks Hooks that will be executed in the parent
  *     before the child execs.
- * @param working_directory Directory in which the process should
- *     chdir before exec after the 'parent_hooks' have been executed.
- * @param watchdog Indicator whether the new process should be monitored
- *     and killed if the parent process terminates.
+ * @param child_hooks Hooks that will be executed in the child
+ *     before the child execs but after parent_hooks have executed.
  * @return The subprocess or an error if one occurred.
  */
 // TODO(jmlvanre): Consider removing default argument for
@@ -355,15 +381,12 @@ Try<Subprocess> subprocess(
     const Subprocess::IO& in = Subprocess::FD(STDIN_FILENO),
     const Subprocess::IO& out = Subprocess::FD(STDOUT_FILENO),
     const Subprocess::IO& err = Subprocess::FD(STDERR_FILENO),
-    const Setsid set_sid = NO_SETSID,
-    const Option<flags::FlagsBase>& flags = None(),
+    const flags::FlagsBase* flags = nullptr,
     const Option<std::map<std::string, std::string>>& environment = None(),
     const Option<lambda::function<
         pid_t(const lambda::function<int()>&)>>& clone = None(),
-    const std::vector<Subprocess::Hook>& parent_hooks =
-      Subprocess::Hook::None(),
-    const Option<std::string>& working_directory = None(),
-    const Watchdog watchdog = NO_MONITOR);
+    const std::vector<Subprocess::ParentHook>& parent_hooks = {},
+    const std::vector<Subprocess::ChildHook>& child_hooks = {});
 
 
 /**
@@ -377,8 +400,6 @@ Try<Subprocess> subprocess(
  * @param in Redirection specification for stdin.
  * @param out Redirection specification for stdout.
  * @param err Redirection specification for stderr.
- * @param set_sid Indicator whether the process should be placed in
- *     a new session after the 'parent_hooks' have been executed.
  * @param environment Environment variables to use for the new
  *     subprocess or if None (the default) then the new subprocess
  *     will inherit the environment of the current process.
@@ -386,10 +407,8 @@ Try<Subprocess> subprocess(
  *     subprocess.
  * @param parent_hooks Hooks that will be executed in the parent
  *     before the child execs.
- * @param working_directory Directory in which the process should
- *     chdir before exec after the 'parent_hooks' have been executed.
- * @param watchdog Indicator whether the new process should be monitored
- *     and killed if the parent process terminates.
+ * @param child_hooks Hooks that will be executed in the child
+ *     before the child execs but after parent_hooks have executed.
  * @return The subprocess or an error if one occurred.
  */
 // TODO(jmlvanre): Consider removing default argument for
@@ -399,14 +418,11 @@ inline Try<Subprocess> subprocess(
     const Subprocess::IO& in = Subprocess::FD(STDIN_FILENO),
     const Subprocess::IO& out = Subprocess::FD(STDOUT_FILENO),
     const Subprocess::IO& err = Subprocess::FD(STDERR_FILENO),
-    const Setsid set_sid = NO_SETSID,
     const Option<std::map<std::string, std::string>>& environment = None(),
     const Option<lambda::function<
         pid_t(const lambda::function<int()>&)>>& clone = None(),
-    const std::vector<Subprocess::Hook>& parent_hooks =
-      Subprocess::Hook::None(),
-    const Option<std::string>& working_directory = None(),
-    const Watchdog watchdog = NO_MONITOR)
+    const std::vector<Subprocess::ParentHook>& parent_hooks = {},
+    const std::vector<Subprocess::ChildHook>& child_hooks = {})
 {
   std::vector<std::string> argv = {os::Shell::arg0, os::Shell::arg1, command};
 
@@ -416,15 +432,41 @@ inline Try<Subprocess> subprocess(
       in,
       out,
       err,
-      set_sid,
-      None(),
+      nullptr,
       environment,
       clone,
       parent_hooks,
-      working_directory,
-      watchdog);
+      child_hooks);
 }
 
+namespace internal {
+
+inline void close(std::initializer_list<int_fd> fds)
+{
+  foreach (int_fd fd, fds) {
+    if (fd >= 0) {
+      os::close(fd);
+    }
+  }
+}
+
+// This function will invoke `os::close` on all specified file
+// descriptors that are valid (i.e., not `None` and >= 0).
+inline void close(
+    const Subprocess::IO::InputFileDescriptors& stdinfds,
+    const Subprocess::IO::OutputFileDescriptors& stdoutfds,
+    const Subprocess::IO::OutputFileDescriptors& stderrfds)
+{
+  close(
+      {stdinfds.read,
+       stdinfds.write.getOrElse(-1),
+       stdoutfds.read.getOrElse(-1),
+       stdoutfds.write,
+       stderrfds.read.getOrElse(-1),
+       stderrfds.write});
+}
+
+} // namespace internal {
 } // namespace process {
 
 #endif // __PROCESS_SUBPROCESS_BASE_HPP__

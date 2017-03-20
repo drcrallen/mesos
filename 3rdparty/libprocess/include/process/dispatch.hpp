@@ -20,6 +20,7 @@
 #include <process/process.hpp>
 
 #include <stout/preprocessor.hpp>
+#include <stout/result_of.hpp>
 
 namespace process {
 
@@ -64,6 +65,82 @@ void dispatch(
     const UPID& pid,
     const std::shared_ptr<std::function<void(ProcessBase*)>>& f,
     const Option<const std::type_info*>& functionType = None());
+
+
+// NOTE: This struct is used by the public `dispatch(const UPID& pid, F&& f)`
+// function. See comments there for the reason why we need this.
+template <typename R>
+struct Dispatch;
+
+
+// Partial specialization for callable objects returning `void` to be dispatched
+// on a process.
+// NOTE: This struct is used by the public `dispatch(const UPID& pid, F&& f)`
+// function. See comments there for the reason why we need this.
+template <>
+struct Dispatch<void>
+{
+  template <typename F>
+  void operator()(const UPID& pid, F&& f)
+  {
+    std::shared_ptr<std::function<void(ProcessBase*)>> f_(
+        new std::function<void(ProcessBase*)>(
+            [=](ProcessBase*) {
+              f();
+            }));
+
+    internal::dispatch(pid, f_);
+  }
+};
+
+
+// Partial specialization for callable objects returning `Future<R>` to be
+// dispatched on a process.
+// NOTE: This struct is used by the public `dispatch(const UPID& pid, F&& f)`
+// function. See comments there for the reason why we need this.
+template <typename R>
+struct Dispatch<Future<R>>
+{
+  template <typename F>
+  Future<R> operator()(const UPID& pid, F&& f)
+  {
+    std::shared_ptr<Promise<R>> promise(new Promise<R>());
+
+    std::shared_ptr<std::function<void(ProcessBase*)>> f_(
+        new std::function<void(ProcessBase*)>(
+            [=](ProcessBase*) {
+              promise->associate(f());
+            }));
+
+    internal::dispatch(pid, f_);
+
+    return promise->future();
+  }
+};
+
+
+// Dispatches a callable object returning `R` on a process.
+// NOTE: This struct is used by the public `dispatch(const UPID& pid, F&& f)`
+// function. See comments there for the reason why we need this.
+template <typename R>
+struct Dispatch
+{
+  template <typename F>
+  Future<R> operator()(const UPID& pid, F&& f)
+  {
+    std::shared_ptr<Promise<R>> promise(new Promise<R>());
+
+    std::shared_ptr<std::function<void(ProcessBase*)>> f_(
+        new std::function<void(ProcessBase*)>(
+            [=](ProcessBase*) {
+              promise->set(f());
+            }));
+
+    internal::dispatch(pid, f_);
+
+    return promise->future();
+  }
+};
 
 } // namespace internal {
 
@@ -149,7 +226,7 @@ void dispatch(const Process<T>* process, void (T::*method)())
     dispatch(process->self(), method, ENUM_PARAMS(N, a));               \
   }
 
-  REPEAT_FROM_TO(1, 11, TEMPLATE, _) // Args A0 -> A9.
+  REPEAT_FROM_TO(1, 12, TEMPLATE, _) // Args A0 -> A10.
 #undef TEMPLATE
 
 
@@ -236,7 +313,7 @@ Future<R> dispatch(const Process<T>* process, Future<R> (T::*method)())
     return dispatch(process->self(), method, ENUM_PARAMS(N, a));        \
   }
 
-  REPEAT_FROM_TO(1, 11, TEMPLATE, _) // Args A0 -> A9.
+  REPEAT_FROM_TO(1, 12, TEMPLATE, _) // Args A0 -> A10.
 #undef TEMPLATE
 
 
@@ -323,53 +400,20 @@ Future<R> dispatch(const Process<T>* process, R (T::*method)())
     return dispatch(process->self(), method, ENUM_PARAMS(N, a));        \
   }
 
-  REPEAT_FROM_TO(1, 11, TEMPLATE, _) // Args A0 -> A9.
+  REPEAT_FROM_TO(1, 12, TEMPLATE, _) // Args A0 -> A10.
 #undef TEMPLATE
 
 
-inline void dispatch(const UPID& pid, const std::function<void()>& f)
+// We use partial specialization of
+//   - internal::Dispatch<void> vs
+//   - internal::Dispatch<Future<R>> vs
+//   - internal::Dispatch
+// in order to determine whether R is void, Future or other types.
+template <typename F, typename R = typename result_of<F()>::type>
+auto dispatch(const UPID& pid, F&& f)
+  -> decltype(internal::Dispatch<R>()(pid, std::forward<F>(f)))
 {
-  std::shared_ptr<std::function<void(ProcessBase*)>> f_(
-      new std::function<void(ProcessBase*)>(
-          [=](ProcessBase*) {
-            f();
-          }));
-
-  internal::dispatch(pid, f_);
-}
-
-
-template <typename R>
-Future<R> dispatch(const UPID& pid, const std::function<Future<R>()>& f)
-{
-  std::shared_ptr<Promise<R>> promise(new Promise<R>());
-
-  std::shared_ptr<std::function<void(ProcessBase*)>> f_(
-      new std::function<void(ProcessBase*)>(
-          [=](ProcessBase*) {
-            promise->associate(f());
-          }));
-
-  internal::dispatch(pid, f_);
-
-  return promise->future();
-}
-
-
-template <typename R>
-Future<R> dispatch(const UPID& pid, const std::function<R()>& f)
-{
-  std::shared_ptr<Promise<R>> promise(new Promise<R>());
-
-  std::shared_ptr<std::function<void(ProcessBase*)>> f_(
-      new std::function<void(ProcessBase*)>(
-          [=](ProcessBase*) {
-            promise->set(f());
-          }));
-
-  internal::dispatch(pid, f_);
-
-  return promise->future();
+  return internal::Dispatch<R>()(pid, std::forward<F>(f));
 }
 
 } // namespace process {

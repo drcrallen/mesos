@@ -23,45 +23,70 @@
 
 #include <stout/error.hpp>
 #include <stout/foreach.hpp>
+#include <stout/hashset.hpp>
 #include <stout/option.hpp>
 #include <stout/os.hpp>
 #include <stout/try.hpp>
+#include <stout/windows.hpp>
 
 #include <stout/os/close.hpp>
 #include <stout/os/environment.hpp>
 
-using std::map;
-using std::string;
-using std::vector;
-
+#include <userEnv.h>
 
 namespace process {
-
-using InputFileDescriptors = Subprocess::IO::InputFileDescriptors;
-using OutputFileDescriptors = Subprocess::IO::OutputFileDescriptors;
-
 namespace internal {
 
-// This function will invoke `os::close` on all specified file
-// descriptors that are valid (i.e., not `None` and >= 0).
-inline void close(
-    const InputFileDescriptors& stdinfds,
-    const OutputFileDescriptors& stdoutfds,
-    const OutputFileDescriptors& stderrfds)
+// Retrieves system environment in a `std::map`, ignoring
+// the current process's environment variables.
+inline Option<std::map<std::string, std::string>> getSystemEnvironment()
 {
-  HANDLE fds[6] = {
-    stdinfds.read, stdinfds.write.getOrElse(INVALID_HANDLE_VALUE),
-    stdoutfds.read.getOrElse(INVALID_HANDLE_VALUE), stdoutfds.write,
-    stderrfds.read.getOrElse(INVALID_HANDLE_VALUE), stderrfds.write
-  };
+  std::wstring_convert<std::codecvt<wchar_t, char, mbstate_t>,
+    wchar_t> converter;
 
-  foreach (HANDLE fd, fds) {
-    if (fd != INVALID_HANDLE_VALUE) {
-      os::close(fd);
-    }
+  std::map<std::string, std::string> systemEnvironment;
+  wchar_t* environmentEntry = nullptr;
+
+  // Get the system environment.
+  // The third parameter (bool) tells the function *not* to inherit
+  // variables from the current process.
+  if (!CreateEnvironmentBlock((LPVOID*)&environmentEntry, nullptr, FALSE)) {
+    return None();
   }
-}
 
+  // Save the environment block in order to destroy it later.
+  wchar_t* environmentBlock = environmentEntry;
+
+  while (*environmentEntry != L'\0') {
+    // Each environment block contains the environment variables as follows:
+    // Var1=Value1\0
+    // Var2=Value2\0
+    // Var3=Value3\0
+    // ...
+    // VarN=ValueN\0\0
+    // The name of an environment variable cannot include an equal sign (=).
+
+    wchar_t * separator = wcschr(environmentEntry, L'=');
+    std::wstring varName = std::wstring(environmentEntry, separator);
+    std::wstring varVal = std::wstring(separator + 1);
+
+    // Mesos variables are upper case. Convert system variables to
+    // match the name provided by the scheduler in case of a collision.
+    std::transform(varName.begin(), varName.end(), varName.begin(), ::towupper);
+
+    // The system environment has priority. Force `ANSI` usage until the code
+    // is converted to UNICODE.
+    systemEnvironment.insert_or_assign(
+      converter.to_bytes(varName.c_str()),
+      converter.to_bytes(varVal.c_str()));
+
+    environmentEntry += varName.length() + varVal.length() + 2;
+  }
+
+  DestroyEnvironmentBlock(environmentBlock);
+
+  return systemEnvironment;
+}
 
 // Creates a null-terminated array of null-terminated strings that will be
 // passed to `CreateProcess` as the `lpEnvironment` argument, as described by
@@ -70,16 +95,37 @@ inline void close(
 // environments, so it should not be used in conjunction with the
 // `CREATE_UNICODE_ENVIRONMENT` flag.
 //
+// NOTE: This function will add the system's environment variables into
+// the returned string. These variables take precedence over the provided
+// `env` and are generally necessary in order to launch things on Windows.
+//
 // [1] https://msdn.microsoft.com/en-us/library/windows/desktop/ms682425(v=vs.85).aspx
-inline Option<string> createProcessEnvironment(
-    const Option<map<string, string>>& env)
+inline Option<std::string> createProcessEnvironment(
+    const Option<std::map<std::string, std::string>>& env)
 {
   if (env.isNone() || (env.isSome() && env.get().size() == 0)) {
     return None();
   }
 
-  string environmentString;
-  foreachpair (const string& key, const string& value, env.get()) {
+  Option<std::map<std::string, std::string>> systemEnvironment =
+    getSystemEnvironment();
+
+  // The system environment must be non-empty.
+  // No subprocesses will be able to launch if the system environment is blank.
+  CHECK(systemEnvironment.isSome() && systemEnvironment.get().size() > 0);
+
+  std::map<std::string, std::string> combinedEnvironment = env.get();
+
+  foreachpair (const std::string& key,
+               const std::string& value,
+               systemEnvironment.get()) {
+    combinedEnvironment[key] = value;
+  }
+
+  std::string environmentString;
+  foreachpair (const std::string& key,
+               const std::string& value,
+               combinedEnvironment) {
     environmentString += key + '=' + value + '\0';
   }
 
@@ -88,15 +134,16 @@ inline Option<string> createProcessEnvironment(
 
 
 inline Try<PROCESS_INFORMATION> createChildProcess(
-    const string& path,
-    const vector<string>& argv,
-    const Option<map<string, string>>& environment,
+    const std::string& path,
+    const std::vector<std::string>& argv,
+    const Option<std::map<std::string, std::string>>& environment,
     const InputFileDescriptors stdinfds,
     const OutputFileDescriptors stdoutfds,
-    const OutputFileDescriptors stderrfds)
+    const OutputFileDescriptors stderrfds,
+    const std::vector<Subprocess::ParentHook>& parent_hooks)
 {
   // Construct the environment that will be passed to `CreateProcess`.
-  Option<string> environmentString = createProcessEnvironment(environment);
+  Option<std::string> environmentString = createProcessEnvironment(environment);
   const char* processEnvironment = environmentString.isNone()
     ? nullptr
     : environmentString.get().c_str();
@@ -126,7 +173,7 @@ inline Try<PROCESS_INFORMATION> createChildProcess(
   // to have been already quoted correctly before we generate `command`.
   // Incorrectly-quoted command arguments will probably lead the child process
   // to terminate with an error. See also NOTE on `process::subprocess`.
-  string command = strings::join(" ", argv);
+  std::string command = strings::join(" ", argv);
 
   // Escape the quotes in `command`.
   //
@@ -153,14 +200,41 @@ inline Try<PROCESS_INFORMATION> createChildProcess(
       nullptr,                 // Default security attributes.
       nullptr,                 // Default primary thread security attributes.
       TRUE,                    // Inherited parent process handles.
-      0,                       // Normal thread priority.
+      CREATE_SUSPENDED,        // Create process in suspended state.
       (LPVOID)processEnvironment,
       nullptr,                 // Use parent's current directory.
       &startupInfo,            // STARTUPINFO pointer.
       &processInfo);           // PROCESS_INFORMATION pointer.
 
   if (!createProcessResult) {
-    return WindowsError("createChildProcess: failed to call 'CreateProcess'");
+    return WindowsError(
+        "Failed to call CreateProcess on command '" + command + "'");
+  }
+
+  // Run the parent hooks.
+  const pid_t pid = processInfo.dwProcessId;
+  foreach (const Subprocess::ParentHook& hook, parent_hooks) {
+    Try<Nothing> parentSetup = hook.parent_setup(pid);
+
+    // If the hook callback fails, we shouldn't proceed with the
+    // execution and hence the child process should be killed.
+    if (parentSetup.isError()) {
+      // Attempt to kill the process. Since it is still in suspended state, we
+      // do not need to kill any descendents. We also can't use `os::kill_job`
+      // because this process is not in a Job Object unless one of the parent
+      // hooks added it.
+      ::TerminateProcess(processInfo.hProcess, 1);
+
+      return Error(
+          "Failed to execute Parent Hook in child '" + stringify(pid) +
+          "' with command '" + command + "': " + parentSetup.error());
+    }
+  }
+
+  // Start child process.
+  if (::ResumeThread(processInfo.hThread) == -1) {
+    return WindowsError(
+        "Failed to resume child process with command '" + command + "'");
   }
 
   return processInfo;

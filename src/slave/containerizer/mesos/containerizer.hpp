@@ -20,14 +20,17 @@
 #include <list>
 #include <vector>
 
+#include <process/id.hpp>
+#include <process/http.hpp>
 #include <process/sequence.hpp>
+#include <process/shared.hpp>
 
 #include <process/metrics/counter.hpp>
 
 #include <stout/hashmap.hpp>
 #include <stout/multihashmap.hpp>
+#include <stout/os/int_fd.hpp>
 
-#include <mesos/slave/container_logger.hpp>
 #include <mesos/slave/isolator.hpp>
 
 #include "slave/state.hpp"
@@ -36,16 +39,19 @@
 
 #include "slave/containerizer/mesos/launcher.hpp"
 
+#include "slave/containerizer/mesos/io/switchboard.hpp"
+
+#include "slave/containerizer/mesos/isolators/gpu/nvidia.hpp"
+
 #include "slave/containerizer/mesos/provisioner/provisioner.hpp"
 
 namespace mesos {
 namespace internal {
 namespace slave {
 
-extern const char MESOS_CONTAINERIZER[];
-
 // Forward declaration.
 class MesosContainerizerProcess;
+
 
 class MesosContainerizer : public Containerizer
 {
@@ -53,19 +59,16 @@ public:
   static Try<MesosContainerizer*> create(
       const Flags& flags,
       bool local,
-      Fetcher* fetcher);
+      Fetcher* fetcher,
+      const Option<NvidiaComponents>& nvidia = None());
 
-  MesosContainerizer(
+  static Try<MesosContainerizer*> create(
       const Flags& flags,
       bool local,
       Fetcher* fetcher,
-      const process::Owned<mesos::slave::ContainerLogger>& logger,
       const process::Owned<Launcher>& launcher,
-      const process::Owned<Provisioner>& provisioner,
+      const process::Shared<Provisioner>& provisioner,
       const std::vector<process::Owned<mesos::slave::Isolator>>& isolators);
-
-  // Used for testing.
-  MesosContainerizer(const process::Owned<MesosContainerizerProcess>& _process);
 
   virtual ~MesosContainerizer();
 
@@ -74,22 +77,24 @@ public:
 
   virtual process::Future<bool> launch(
       const ContainerID& containerId,
+      const Option<TaskInfo>& taskInfo,
       const ExecutorInfo& executorInfo,
       const std::string& directory,
       const Option<std::string>& user,
       const SlaveID& slaveId,
-      const process::PID<Slave>& slavePid,
+      const std::map<std::string, std::string>& environment,
       bool checkpoint);
 
   virtual process::Future<bool> launch(
       const ContainerID& containerId,
-      const TaskInfo& taskInfo,
-      const ExecutorInfo& executorInfo,
-      const std::string& directory,
+      const CommandInfo& commandInfo,
+      const Option<ContainerInfo>& containerInfo,
       const Option<std::string>& user,
       const SlaveID& slaveId,
-      const process::PID<Slave>& slavePid,
-      bool checkpoint);
+      const Option<mesos::slave::ContainerClass>& containerClass = None());
+
+  virtual process::Future<process::http::Connection> attach(
+      const ContainerID& containerId);
 
   virtual process::Future<Nothing> update(
       const ContainerID& containerId,
@@ -101,14 +106,20 @@ public:
   virtual process::Future<ContainerStatus> status(
       const ContainerID& containerId);
 
-  virtual process::Future<containerizer::Termination> wait(
+  virtual process::Future<Option<mesos::slave::ContainerTermination>> wait(
       const ContainerID& containerId);
 
-  virtual void destroy(const ContainerID& containerId);
+  virtual process::Future<bool> destroy(
+      const ContainerID& containerId);
 
   virtual process::Future<hashset<ContainerID>> containers();
 
+  virtual process::Future<Nothing> remove(const ContainerID& containerId);
+
 private:
+  explicit MesosContainerizer(
+      const process::Owned<MesosContainerizerProcess>& process);
+
   process::Owned<MesosContainerizerProcess> process;
 };
 
@@ -119,16 +130,15 @@ class MesosContainerizerProcess
 public:
   MesosContainerizerProcess(
       const Flags& _flags,
-      bool _local,
       Fetcher* _fetcher,
-      const process::Owned<mesos::slave::ContainerLogger>& _logger,
+      IOSwitchboard* _ioSwitchboard,
       const process::Owned<Launcher>& _launcher,
-      const process::Owned<Provisioner>& _provisioner,
+      const process::Shared<Provisioner>& _provisioner,
       const std::vector<process::Owned<mesos::slave::Isolator>>& _isolators)
-    : flags(_flags),
-      local(_local),
+    : ProcessBase(process::ID::generate("mesos-containerizer")),
+      flags(_flags),
       fetcher(_fetcher),
-      logger(_logger),
+      ioSwitchboard(_ioSwitchboard),
       launcher(_launcher),
       provisioner(_provisioner),
       isolators(_isolators) {}
@@ -145,8 +155,19 @@ public:
       const std::string& directory,
       const Option<std::string>& user,
       const SlaveID& slaveId,
-      const process::PID<Slave>& slavePid,
+      const std::map<std::string, std::string>& environment,
       bool checkpoint);
+
+  virtual process::Future<bool> launch(
+      const ContainerID& containerId,
+      const CommandInfo& commandInfo,
+      const Option<ContainerInfo>& containerInfo,
+      const Option<std::string>& user,
+      const SlaveID& slaveId,
+      const Option<mesos::slave::ContainerClass>& containerClass);
+
+  virtual process::Future<process::http::Connection> attach(
+      const ContainerID& containerId);
 
   virtual process::Future<Nothing> update(
       const ContainerID& containerId,
@@ -158,23 +179,33 @@ public:
   virtual process::Future<ContainerStatus> status(
       const ContainerID& containerId);
 
-  virtual process::Future<containerizer::Termination> wait(
+  virtual process::Future<Option<mesos::slave::ContainerTermination>> wait(
       const ContainerID& containerId);
 
   virtual process::Future<bool> exec(
       const ContainerID& containerId,
-      int pipeWrite);
+      int_fd pipeWrite);
 
-  virtual void destroy(const ContainerID& containerId);
+  virtual process::Future<bool> destroy(
+      const ContainerID& containerId);
+
+  virtual process::Future<Nothing> remove(const ContainerID& containerId);
 
   virtual process::Future<hashset<ContainerID>> containers();
 
-  // Made public for testing.
-  void ___recover(
-      const ContainerID& containerId,
-      const process::Future<std::list<process::Future<Nothing>>>& future);
-
 private:
+  enum State
+  {
+    PROVISIONING,
+    PREPARING,
+    ISOLATING,
+    FETCHING,
+    RUNNING,
+    DESTROYING
+  };
+
+  friend std::ostream& operator<<(std::ostream& stream, const State& state);
+
   process::Future<Nothing> _recover(
       const std::list<mesos::slave::ContainerState>& recoverable,
       const hashset<ContainerID>& orphans);
@@ -191,82 +222,71 @@ private:
       const std::list<mesos::slave::ContainerState>& recovered,
       const hashset<ContainerID>& orphans);
 
-  process::Future<std::list<Option<mesos::slave::ContainerLaunchInfo>>>
-    prepare(const ContainerID& containerId,
-            const Option<TaskInfo>& taskInfo,
-            const ExecutorInfo& executorInfo,
-            const std::string& directory,
-            const Option<std::string>& user,
-            const Option<ProvisionInfo>& provisionInfo);
+  process::Future<Nothing> prepare(
+      const ContainerID& containerId,
+      const Option<ProvisionInfo>& provisionInfo);
 
   process::Future<Nothing> fetch(
       const ContainerID& containerId,
-      const CommandInfo& commandInfo,
-      const std::string& directory,
-      const Option<std::string>& user,
       const SlaveID& slaveId);
+
+  process::Future<bool> launch(
+      const ContainerID& containerId,
+      const mesos::slave::ContainerConfig& containerConfig,
+      const std::map<std::string, std::string>& environment,
+      const SlaveID& slaveId,
+      bool checkpoint);
 
   process::Future<bool> _launch(
       const ContainerID& containerId,
-      const Option<TaskInfo>& taskInfo,
-      const ExecutorInfo& executorInfo,
-      const std::string& directory,
-      const Option<std::string>& user,
+      const Option<mesos::slave::ContainerIO>& containerIO,
+      const std::map<std::string, std::string>& environment,
       const SlaveID& slaveId,
-      const process::PID<Slave>& slavePid,
-      bool checkpoint,
-      const Option<ProvisionInfo>& provisionInfo);
-
-  process::Future<bool> __launch(
-      const ContainerID& containerId,
-      const Option<TaskInfo>& taskInfo,
-      const ExecutorInfo& executorInfo,
-      const std::string& directory,
-      const Option<std::string>& user,
-      const SlaveID& slaveId,
-      const process::PID<Slave>& slavePid,
-      bool checkpoint,
-      const Option<ProvisionInfo>& provisionInfo,
-      const std::list<Option<mesos::slave::ContainerLaunchInfo>>& launchInfos);
+      bool checkpoint);
 
   process::Future<bool> isolate(
       const ContainerID& containerId,
       pid_t _pid);
 
-  // Continues 'destroy()' once isolators has completed.
-  void _destroy(const ContainerID& containerId);
+  // Continues 'destroy()' once nested containers are handled.
+  void _destroy(
+      const ContainerID& containerId,
+      const State& previousState,
+      const std::list<process::Future<bool>>& destroys);
 
-  // Continues '_destroy()' once all processes have been killed by the launcher.
-  void __destroy(
+  // Continues '_destroy()' once isolators has completed.
+  void __destroy(const ContainerID& containerId);
+
+  // Continues '__destroy()' once all processes have been killed
+  // by the launcher.
+  void ___destroy(
       const ContainerID& containerId,
       const process::Future<Nothing>& future);
 
-  // Continues '__destroy()' once we get the exit status of the executor.
-  void ___destroy(
-      const ContainerID& containerId,
-      const process::Future<Option<int>>& status,
-      const Option<std::string>& message);
+  // Continues '___destroy()' once we get the exit status of the container.
+  void ____destroy(const ContainerID& containerId);
 
-  // Continues '___destroy()' once all isolators have completed
+  // Continues '____destroy()' once all isolators have completed
   // cleanup.
-  void ____destroy(
-      const ContainerID& containerId,
-      const process::Future<Option<int>>& status,
-      const process::Future<std::list<process::Future<Nothing>>>& cleanups,
-      Option<std::string> message);
-
-  // Continues '____destroy()' once provisioner have completed destroy.
   void _____destroy(
       const ContainerID& containerId,
-      const process::Future<Option<int>>& status,
-      const process::Future<bool>& destroy,
-      Option<std::string> message);
+      const process::Future<std::list<process::Future<Nothing>>>& cleanups);
+
+  // Continues '_____destroy()' once provisioner have completed destroy.
+  void ______destroy(
+      const ContainerID& containerId,
+      const process::Future<bool>& destroy);
 
   // Call back for when an isolator limits a container and impacts the
   // processes. This will trigger container destruction.
   void limited(
       const ContainerID& containerId,
       const process::Future<mesos::slave::ContainerLimitation>& future);
+
+  // Helper for reaping the 'init' process of a container.
+  process::Future<Option<int>> reap(
+      const ContainerID& containerId,
+      pid_t pid);
 
   // Call back for when the executor exits. This will trigger container
   // destroy.
@@ -278,59 +298,65 @@ private:
       const ContainerID& containerId);
 
   const Flags flags;
-  const bool local;
   Fetcher* fetcher;
-  process::Owned<mesos::slave::ContainerLogger> logger;
+  IOSwitchboard* ioSwitchboard;
   const process::Owned<Launcher> launcher;
-  const process::Owned<Provisioner> provisioner;
+  const process::Shared<Provisioner> provisioner;
   const std::vector<process::Owned<mesos::slave::Isolator>> isolators;
-
-  enum State
-  {
-    PROVISIONING,
-    PREPARING,
-    ISOLATING,
-    FETCHING,
-    RUNNING,
-    DESTROYING
-  };
 
   struct Container
   {
+    Container() : sequence("mesos-container-status-updates") {}
+
     // Promise for futures returned from wait().
-    process::Promise<containerizer::Termination> promise;
+    process::Promise<mesos::slave::ContainerTermination> termination;
 
-    // We need to keep track of the future exit status for each
-    // executor because we'll only get a single notification when
-    // the executor exits.
-    process::Future<Option<int>> status;
+    // NOTE: this represents 'PID 1', i.e., the "init" of the
+    // container that we created (it may be for an executor, or any
+    // arbitrary process that has been launched in the event of nested
+    // containers).
+    Option<pid_t> pid;
 
-    // We keep track of the future that is waiting for the provisioner's
-    // `ProvisionInfo`, so that destroy will only start calling
-    // provisioner->destroy after provisioner->provision has finished.
-    std::list<process::Future<ProvisionInfo>> provisionInfos;
+    // Sandbox directory for the container. It is optional here because
+    // we don't keep track of sandbox directory for orphan containers.
+    Option<std::string> directory;
+
+    // We keep track of the future exit status for the container if it
+    // has been launched. If the container has not been launched yet,
+    // 'status' will be set to None().
+    //
+    // NOTE: A container has an exit status does not mean that it has
+    // been properly destroyed. We need to perform cleanup on
+    // isolators and provisioner after that.
+    Option<process::Future<Option<int>>> status;
+
+    // We keep track of the future for 'provisioner->provision' so
+    // that destroy will only start calling 'provisioner->destroy'
+    // after 'provisioner->provision' has finished.
+    process::Future<ProvisionInfo> provisioning;
 
     // We keep track of the future that is waiting for all the
-    // isolators' prepare futures, so that destroy will only start
+    // 'isolator->prepare' to finish so that destroy will only start
     // calling cleanup after all isolators have finished preparing.
     process::Future<std::list<Option<mesos::slave::ContainerLaunchInfo>>>
       launchInfos;
 
     // We keep track of the future that is waiting for all the
-    // isolators' isolate futures, so that destroy will only start
+    // 'isolator->isolate' futures so that destroy will only start
     // calling cleanup after all isolators have finished isolating.
     process::Future<std::list<Nothing>> isolation;
 
-    // We keep track of any limitations received from each isolator so we can
-    // determine the cause of an executor termination.
+    // We keep track of any limitations received from each isolator so
+    // we can determine the cause of a container termination.
     std::vector<mesos::slave::ContainerLimitation> limitations;
 
-    // We keep track of the resources for each container so we can set the
-    // ResourceStatistics limits in usage().
+    // We keep track of the resources for each container so we can set
+    // the ResourceStatistics limits in usage().
     Resources resources;
 
-    // The executor's working directory on the host.
-    std::string directory;
+    // The configuration for the container to be launched. This field
+    // is only used during the launch of a container.
+    mesos::slave::ContainerConfig config;
 
     State state;
 
@@ -338,6 +364,9 @@ private:
     // associated with this container. `Sequence` allows us to
     // maintain the order of `status` requests for a given container.
     process::Sequence sequence;
+
+    // Child containers nested under this container.
+    hashset<ContainerID> children;
   };
 
   hashmap<ContainerID, process::Owned<Container>> containers_;
@@ -350,6 +379,11 @@ private:
     process::metrics::Counter container_destroy_errors;
   } metrics;
 };
+
+
+std::ostream& operator<<(
+    std::ostream& stream,
+    const MesosContainerizerProcess::State& state);
 
 } // namespace slave {
 } // namespace internal {

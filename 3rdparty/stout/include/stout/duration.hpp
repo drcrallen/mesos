@@ -96,8 +96,11 @@ public:
   struct timeval timeval() const
   {
     struct timeval t;
-    t.tv_sec = secs();
-    t.tv_usec = us() - (t.tv_sec * MILLISECONDS);
+
+    // Explicitly compute `tv_sec` and `tv_usec` instead of using `us` and
+    // `secs` to avoid converting `int64_t` -> `double` -> `long`.
+    t.tv_sec = ns() / SECONDS;
+    t.tv_usec = (ns() / MICROSECONDS) - (t.tv_sec * SECONDS / MICROSECONDS);
     return t;
   }
 
@@ -308,10 +311,9 @@ public:
 
 inline std::ostream& operator<<(std::ostream& stream, const Duration& duration_)
 {
-  long precision = stream.precision();
-
-  // Output the duration in full double precision.
-  stream.precision(std::numeric_limits<double>::digits10);
+  // Output the duration in full double precision and save the old precision.
+  std::streamsize precision =
+    stream.precision(std::numeric_limits<double>::digits10);
 
   // Parse the duration as the sign and the absolute value.
   Duration duration = duration_;

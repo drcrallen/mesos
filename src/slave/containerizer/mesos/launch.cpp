@@ -15,28 +15,59 @@
 // limitations under the License.
 
 #include <errno.h>
+#ifdef __linux__
+#include <sched.h>
+#include <signal.h>
+#endif // __linux__
 #include <string.h>
 
 #include <iostream>
+#include <set>
+#include <string>
+
+#include <process/subprocess.hpp>
 
 #include <stout/foreach.hpp>
 #include <stout/os.hpp>
 #include <stout/protobuf.hpp>
+#include <stout/path.hpp>
 #include <stout/unreachable.hpp>
 
+#include <mesos/mesos.hpp>
+#include <mesos/type_utils.hpp>
+
+#include <mesos/slave/containerizer.hpp>
+
+#include "common/parse.hpp"
+#include "common/status_utils.hpp"
+
 #ifdef __linux__
+#include "linux/capabilities.hpp"
 #include "linux/fs.hpp"
+#include "linux/ns.hpp"
 #endif
 
-#include "mesos/mesos.hpp"
+#ifndef __WINDOWS__
+#include "posix/rlimits.hpp"
+#endif // __WINDOWS__
 
 #include "slave/containerizer/mesos/launch.hpp"
+#include "slave/containerizer/mesos/paths.hpp"
 
 using std::cerr;
 using std::cout;
 using std::endl;
+using std::set;
 using std::string;
 using std::vector;
+
+#ifdef __linux__
+using mesos::internal::capabilities::Capabilities;
+using mesos::internal::capabilities::Capability;
+using mesos::internal::capabilities::ProcessCapabilities;
+#endif // __linux__
+
+using mesos::slave::ContainerLaunchInfo;
 
 namespace mesos {
 namespace internal {
@@ -47,184 +78,326 @@ const string MesosContainerizerLaunch::NAME = "launch";
 
 MesosContainerizerLaunch::Flags::Flags()
 {
-  add(&command,
-      "command",
-      "The command to execute.");
+  add(&Flags::launch_info,
+      "launch_info",
+      "");
 
-  add(&sandbox,
-      "sandbox",
-      "The sandbox for the executor. If rootfs is specified this must\n"
-      "be relative to the new root.");
+  add(&Flags::pipe_read,
+      "pipe_read",
+      "The read end of the control pipe. This is a file descriptor \n"
+      "on Posix, or a handle on Windows. It's caller's responsibility \n"
+      "to make sure the file descriptor or the handle is inherited \n"
+      "properly in the subprocess. It's used to synchronize with the \n"
+      "parent process. If not specified, no synchronization will happen.");
 
-  add(&working_directory,
-      "working_directory",
-      "The working directory for the executor. It will be ignored if\n"
-      "container root filesystem is not specified.");
+  add(&Flags::pipe_write,
+      "pipe_write",
+      "The write end of the control pipe. This is a file descriptor \n"
+      "on Posix, or a handle on Windows. It's caller's responsibility \n"
+      "to make sure the file descriptor or the handle is inherited \n"
+      "properly in the subprocess. It's used to synchronize with the \n"
+      "parent process. If not specified, no synchronization will happen.");
 
 #ifndef __WINDOWS__
-  add(&rootfs,
-      "rootfs",
-      "Absolute path to the container root filesystem.\n"
-      "The command and sandbox flags are interpreted relative\n"
-      "to rootfs\n"
-      "Different platforms may implement 'chroot' differently.");
-
-  add(&user,
-      "user",
-      "The user to change to.");
+  add(&Flags::runtime_directory,
+      "runtime_directory",
+      "The runtime directory for the container (used for checkpointing)");
 #endif // __WINDOWS__
 
-  add(&pipe_read,
-      "pipe_read",
-      "The read end of the control pipe.");
+#ifdef __linux__
+  add(&Flags::namespace_mnt_target,
+      "namespace_mnt_target",
+      "The target 'pid' of the process whose mount namespace we'd like\n"
+      "to enter before executing the command.");
 
-  add(&pipe_write,
-      "pipe_write",
-      "The write end of the control pipe.");
+  add(&Flags::unshare_namespace_mnt,
+      "unshare_namespace_mnt",
+      "Whether to launch the command in a new mount namespace.",
+      false);
+#endif // __linux__
+}
 
-  add(&commands,
-      "commands",
-      "The additional preparation commands to execute before\n"
-      "executing the command.");
+
+static Option<pid_t> containerPid = None();
+static Option<string> containerStatusPath = None();
+static Option<int> containerStatusFd = None();
+
+static void exitWithSignal(int sig);
+static void exitWithStatus(int status);
+
+
+#ifndef __WINDOWS__
+static void signalSafeWriteStatus(int status)
+{
+  const string statusString = std::to_string(status);
+
+  Try<Nothing> write = os::write(
+      containerStatusFd.get(),
+      statusString);
+
+  if (write.isError()) {
+    os::write(STDERR_FILENO,
+              "Failed to write container status '" +
+              statusString + "': " + ::strerror(errno));
+  }
+}
+
+
+// When launching the executor with an 'init' process, we need to
+// forward all relevant signals to it. The functions below help to
+// enable this forwarding.
+static void signalHandler(int sig)
+{
+  // If we dn't yet have a container pid, we treat
+  // receiving a signal like a failure and exit.
+  if (containerPid.isNone()) {
+    exitWithSignal(sig);
+  }
+
+  // Otherwise we simply forward the signal to `containerPid`. We
+  // purposefully ignore the error here since we have to remain async
+  // signal safe. The only possible error scenario relevant to us is
+  // ESRCH, but if that happens that means our pid is already gone and
+  // the process will exit soon. So we are safe.
+  os::kill(containerPid.get(), sig);
+}
+
+
+static Try<Nothing> installSignalHandlers()
+{
+  // Install handlers for all standard POSIX signals
+  // (i.e. any signal less than `NSIG`).
+  for (int i = 1; i < NSIG; i++) {
+    // We don't want to forward the SIGCHLD signal, nor do we want to
+    // handle it ourselves because we reap all children inline in the
+    // `execute` function.
+    if (i == SIGCHLD) {
+      continue;
+    }
+
+    // We can't catch or ignore these signals, so we shouldn't try
+    // to register a handler for them.
+    if (i == SIGKILL || i == SIGSTOP) {
+      continue;
+    }
+
+    // The NSIG constant is used to determine the number of signals
+    // available on a system. However, Darwin, Linux, and BSD differ
+    // on their interpretation of of the value of NSIG. Linux, for
+    // example, sets it to 65, where Darwin sets it to 32. The reason
+    // for the discrepency is that Linux includes the real-time
+    // signals in this count, where Darwin does not. However, even on
+    // linux, we are not able to arbitrarily install signal handlers
+    // for all the real-time signals -- they must have not been
+    // registered with the system first. For this reason, we
+    // standardize on verifying the installation of handlers for
+    // signals 1-31 (since these are defined in the POSIX standard),
+    // but we continue to attempt to install handlers up to the value
+    // of NSIG without verification.
+    const int posixLimit = 32;
+    if (os::signals::install(i, signalHandler) != 0 && i < posixLimit) {
+      return ErrnoError("Unable to register signal"
+                        " '" + stringify(strsignal(i)) + "'");
+    }
+  }
+
+  return Nothing();
+}
+#endif // __WINDOWS__
+
+
+static void exitWithSignal(int sig)
+{
+#ifndef __WINDOWS__
+  if (containerStatusFd.isSome()) {
+    signalSafeWriteStatus(W_EXITCODE(0, sig));
+    os::close(containerStatusFd.get());
+  }
+#endif // __WINDOWS__
+  ::_exit(EXIT_FAILURE);
+}
+
+
+static void exitWithStatus(int status)
+{
+#ifndef __WINDOWS__
+  if (containerStatusFd.isSome()) {
+    signalSafeWriteStatus(W_EXITCODE(status, 0));
+    os::close(containerStatusFd.get());
+  }
+#endif // __WINDOWS__
+  ::_exit(status);
 }
 
 
 int MesosContainerizerLaunch::execute()
 {
-  // Check command line flags.
-  if (flags.command.isNone()) {
-    cerr << "Flag --command is not specified" << endl;
-    return 1;
+  if (flags.help) {
+    cerr << flags.usage();
+    return EXIT_SUCCESS;
   }
 
-  if (flags.sandbox.isNone()) {
-    cerr << "Flag --sandbox is not specified" << endl;
-    return 1;
+#ifndef __WINDOWS__
+  // The existence of the `runtime_directory` flag implies that we
+  // want to checkpoint the container's status upon exit.
+  if (flags.runtime_directory.isSome()) {
+    containerStatusPath = path::join(
+        flags.runtime_directory.get(),
+        containerizer::paths::STATUS_FILE);
+
+    Try<int> open = os::open(
+        containerStatusPath.get(),
+        O_WRONLY | O_CREAT | O_CLOEXEC,
+        S_IRUSR | S_IWUSR);
+
+    if (open.isError()) {
+      cerr << "Failed to open file for writing the container status"
+           << " '" << containerStatusPath.get() << "':"
+           << " " << open.error() << endl;
+      exitWithStatus(EXIT_FAILURE);
+    }
+
+    containerStatusFd = open.get();
   }
 
-  if (flags.pipe_read.isNone()) {
-    cerr << "Flag --pipe_read is not specified" << endl;
-    return 1;
+  // We need a signal fence here to ensure that `containerStatusFd` is
+  // actually written to memory and not just to a temporary register.
+  // Without this, it's possible that the signal handler we are about
+  // to install would never see the correct value since there's no
+  // guarantee that it is written to memory until this function
+  // completes (which won't happen for a really long time because we
+  // do a blocking `waitpid()` below).
+  std::atomic_signal_fence(std::memory_order_relaxed);
+
+  // Install signal handlers for all incoming signals.
+  Try<Nothing> signals = installSignalHandlers();
+  if (signals.isError()) {
+    cerr << "Failed to install signal handlers: " << signals.error() << endl;
+    exitWithStatus(EXIT_FAILURE);
+  }
+#endif // __WINDOWS__
+
+  if (flags.launch_info.isNone()) {
+    cerr << "Flag --launch_info is not specified" << endl;
+    exitWithStatus(EXIT_FAILURE);
   }
 
-  if (flags.pipe_write.isNone()) {
-    cerr << "Flag --pipe_write is not specified" << endl;
-    return 1;
+  Try<ContainerLaunchInfo> _launchInfo =
+    ::protobuf::parse<ContainerLaunchInfo>(flags.launch_info.get());
+
+  if (_launchInfo.isError()) {
+    cerr << "Failed to parse launch info: " << _launchInfo.error() << endl;
+    exitWithStatus(EXIT_FAILURE);
   }
 
-  // Parse the command.
-  Try<CommandInfo> command =
-    ::protobuf::parse<CommandInfo>(flags.command.get());
+  ContainerLaunchInfo launchInfo = _launchInfo.get();
 
-  if (command.isError()) {
-    cerr << "Failed to parse the command: " << command.error() << endl;
-    return 1;
+  if (!launchInfo.has_command()) {
+    cerr << "Launch command is not specified" << endl;
+    exitWithStatus(EXIT_FAILURE);
   }
 
   // Validate the command.
-  if (command.get().shell()) {
-    if (!command.get().has_value()) {
+  if (launchInfo.command().shell()) {
+    if (!launchInfo.command().has_value()) {
       cerr << "Shell command is not specified" << endl;
-      return 1;
+      exitWithStatus(EXIT_FAILURE);
     }
   } else {
-    if (!command.get().has_value()) {
+    if (!launchInfo.command().has_value()) {
       cerr << "Executable path is not specified" << endl;
-      return 1;
+      exitWithStatus(EXIT_FAILURE);
     }
   }
 
-  int pipe[2] = { flags.pipe_read.get(), flags.pipe_write.get() };
-
-// NOTE: On windows we need to pass `HANDLE`s between processes, as
-// file descriptors are not unique across processes. Here we convert
-// back from from the `HANDLE`s we receive to fds that can be used in
-// os-agnostic code.
-#ifdef __WINDOWS__
-  pipe[0] = os::handle_to_fd(pipe[0], _O_RDONLY | _O_TEXT);
-  pipe[1] = os::handle_to_fd(pipe[1], _O_TEXT);
-#endif // __WINDOWS__
-
-  Try<Nothing> close = os::close(pipe[1]);
-  if (close.isError()) {
-    cerr << "Failed to close pipe[1]: " << close.error() << endl;
-    return 1;
+  if ((flags.pipe_read.isSome() && flags.pipe_write.isNone()) ||
+      (flags.pipe_read.isNone() && flags.pipe_write.isSome())) {
+    cerr << "Flag --pipe_read and --pipe_write should either be "
+         << "both set or both not set" << endl;
+    exitWithStatus(EXIT_FAILURE);
   }
 
-  // Do a blocking read on the pipe until the parent signals us to continue.
-  char dummy;
-  ssize_t length;
-  while ((length = os::read(
-              pipe[0],
-              &dummy,
-              sizeof(dummy))) == -1 &&
-          errno == EINTR);
+  bool controlPipeSpecified =
+    flags.pipe_read.isSome() && flags.pipe_write.isSome();
 
-  if (length != sizeof(dummy)) {
-     // There's a reasonable probability this will occur during agent
-     // restarts across a large/busy cluster.
-     cerr << "Failed to synchronize with agent (it's probably exited)" << endl;
-     return 1;
-  }
+  if (controlPipeSpecified) {
+    int_fd pipe[2] = { flags.pipe_read.get(), flags.pipe_write.get() };
 
-  close = os::close(pipe[0]);
-  if (close.isError()) {
-    cerr << "Failed to close pipe[0]: " << close.error() << endl;
-    return 1;
-  }
-
-  // Run additional preparation commands. These are run as the same
-  // user and with the environment as the agent.
-  if (flags.commands.isSome()) {
-    // TODO(jieyu): Use JSON::Array if we have generic parse support.
-    JSON::Object object = flags.commands.get();
-    if (object.values.count("commands") == 0) {
-      cerr << "Invalid JSON format for flag --commands" << endl;
-      return 1;
+    Try<Nothing> close = os::close(pipe[1]);
+    if (close.isError()) {
+      cerr << "Failed to close pipe[1]: " << close.error() << endl;
+      exitWithStatus(EXIT_FAILURE);
     }
 
-    if (!object.values["commands"].is<JSON::Array>()) {
-      cerr << "Invalid JSON format for flag --commands" << endl;
-      return 1;
+    // Do a blocking read on the pipe until the parent signals us to continue.
+    char dummy;
+    ssize_t length;
+    while ((length = os::read(pipe[0], &dummy, sizeof(dummy))) == -1 &&
+           errno == EINTR);
+
+    if (length != sizeof(dummy)) {
+      // There's a reasonable probability this will occur during
+      // agent restarts across a large/busy cluster.
+      cerr << "Failed to synchronize with agent "
+           << "(it's probably exited)" << endl;
+      exitWithStatus(EXIT_FAILURE);
     }
 
-    JSON::Array array = object.values["commands"].as<JSON::Array>();
-    foreach (const JSON::Value& value, array.values) {
-      if (!value.is<JSON::Object>()) {
-        cerr << "Invalid JSON format for flag --commands" << endl;
-        return 1;
-      }
-
-      Try<CommandInfo> parse = ::protobuf::parse<CommandInfo>(value);
-      if (parse.isError()) {
-        cerr << "Failed to parse a preparation command: "
-             << parse.error() << endl;
-        return 1;
-      }
-
-      // TODO(jieyu): Currently, we only accept shell commands for the
-      // preparation commands.
-      if (!parse.get().shell()) {
-        cerr << "Preparation commands need to be shell commands" << endl;
-        return 1;
-      }
-
-      if (!parse.get().has_value()) {
-        cerr << "The 'value' of a preparation command is not specified" << endl;
-        return 1;
-      }
-
-      // Block until the command completes.
-      int status = os::system(parse.get().value());
-      if (!WIFEXITED(status) || (WEXITSTATUS(status) != 0)) {
-        cerr << "Failed to execute a preparation shell command" << endl;
-        return 1;
-      }
+    close = os::close(pipe[0]);
+    if (close.isError()) {
+      cerr << "Failed to close pipe[0]: " << close.error() << endl;
+      exitWithStatus(EXIT_FAILURE);
     }
   }
 
 #ifndef __WINDOWS__
-  // NOTE: If 'flags.user' is set, we will get the uid, gid, and the
+  if (launchInfo.has_tty_slave_path()) {
+    Try<Nothing> setctty = os::setctty(STDIN_FILENO);
+    if (setctty.isError()) {
+      cerr << "Failed to set control tty: " << setctty.error() << endl;
+      exitWithStatus(EXIT_FAILURE);
+    }
+  }
+#endif // __WINDOWS__
+
+  // Run additional preparation commands. These are run as the same
+  // user and with the environment as the agent.
+  foreach (const CommandInfo& command, launchInfo.pre_exec_commands()) {
+    if (!command.has_value()) {
+      cerr << "The 'value' of a preparation command is not specified" << endl;
+      exitWithStatus(EXIT_FAILURE);
+    }
+
+    cout << "Executing pre-exec command '"
+         << JSON::protobuf(command) << "'" << endl;
+
+    int status = 0;
+
+    if (command.shell()) {
+      // Execute the command using the system shell.
+      status = os::system(command.value());
+    } else {
+      // Directly spawn all non-shell commands to prohibit users
+      // from injecting arbitrary shell commands in the arguments.
+      vector<string> args;
+      foreach (const string& arg, command.arguments()) {
+        args.push_back(arg);
+      }
+
+      status = os::spawn(command.value(), args);
+    }
+
+    if (!WSUCCEEDED(status)) {
+      cerr << "Failed to execute pre-exec command '"
+           << JSON::protobuf(command) << "': "
+           << WSTRINGIFY(status)
+           << endl;
+      exitWithStatus(EXIT_FAILURE);
+    }
+  }
+
+#ifndef __WINDOWS__
+  // NOTE: If 'user' is set, we will get the uid, gid, and the
   // supplementary group ids associated with the specified user before
   // changing the filesystem root. This is because after changing the
   // filesystem root, the current process might no longer have access
@@ -238,30 +411,30 @@ int MesosContainerizerLaunch::execute()
   // user namespace and container capabilities is available for
   // mesos container.
 
-  if (flags.user.isSome()) {
-    Result<uid_t> _uid = os::getuid(flags.user.get());
+  if (launchInfo.has_user()) {
+    Result<uid_t> _uid = os::getuid(launchInfo.user());
     if (!_uid.isSome()) {
-      cerr << "Failed to get the uid of user '" << flags.user.get() << "': "
+      cerr << "Failed to get the uid of user '" << launchInfo.user() << "': "
            << (_uid.isError() ? _uid.error() : "not found") << endl;
-      return 1;
+      exitWithStatus(EXIT_FAILURE);
     }
 
     // No need to change user/groups if the specified user is the same
     // as that of the current process.
     if (_uid.get() != os::getuid().get()) {
-      Result<gid_t> _gid = os::getgid(flags.user.get());
+      Result<gid_t> _gid = os::getgid(launchInfo.user());
       if (!_gid.isSome()) {
-        cerr << "Failed to get the gid of user '" << flags.user.get() << "': "
+        cerr << "Failed to get the gid of user '" << launchInfo.user() << "': "
              << (_gid.isError() ? _gid.error() : "not found") << endl;
-        return 1;
+        exitWithStatus(EXIT_FAILURE);
       }
 
-      Try<vector<gid_t>> _gids = os::getgrouplist(flags.user.get());
+      Try<vector<gid_t>> _gids = os::getgrouplist(launchInfo.user());
       if (_gids.isError()) {
         cerr << "Failed to get the supplementary gids of user '"
-             << flags.user.get() << "': "
+             << launchInfo.user() << "': "
              << (_gids.isError() ? _gids.error() : "not found") << endl;
-        return 1;
+        exitWithStatus(EXIT_FAILURE);
       }
 
       uid = _uid.get();
@@ -269,110 +442,336 @@ int MesosContainerizerLaunch::execute()
       gids = _gids.get();
     }
   }
-#endif // __WINDOWS__
-
-#ifdef __WINDOWS__
-  // Not supported on Windows.
-  const Option<std::string> rootfs = None();
 #else
-  const Option<std::string> rootfs = flags.rootfs;
+  if (launchInfo.has_user()) {
+    cerr << "Switching user is not supported on Windows" << endl;
+    exitWithStatus(EXIT_FAILURE);
+  }
 #endif // __WINDOWS__
-
-  // Change root to a new root, if provided.
-  if (rootfs.isSome()) {
-    cout << "Changing root to " << rootfs.get() << endl;
-
-    // Verify that rootfs is an absolute path.
-    Result<string> realpath = os::realpath(rootfs.get());
-    if (realpath.isError()) {
-      cerr << "Failed to determine if rootfs is an absolute path: "
-           << realpath.error() << endl;
-      return 1;
-    } else if (realpath.isNone()) {
-      cerr << "Rootfs path does not exist" << endl;
-      return 1;
-    } else if (realpath.get() != rootfs.get()) {
-      cerr << "Rootfs path is not an absolute path" << endl;
-      return 1;
-    }
 
 #ifdef __linux__
-    Try<Nothing> chroot = fs::chroot::enter(rootfs.get());
-#elif defined(__WINDOWS__)
-    Try<Nothing> chroot = Error("`chroot` not supported on Windows");
-#else // For any other platform we'll just use POSIX chroot.
-    Try<Nothing> chroot = os::chroot(rootfs.get());
+  // Initialize capabilities support if necessary.
+  Try<Capabilities> capabilitiesManager = Error("Not initialized");
+
+  if (launchInfo.has_capabilities()) {
+    capabilitiesManager = Capabilities::create();
+    if (capabilitiesManager.isError()) {
+      cerr << "Failed to initialize capabilities support: "
+           << capabilitiesManager.error() << endl;
+      exitWithStatus(EXIT_FAILURE);
+    }
+
+    // Prevent clearing of capabilities on `setuid`.
+    if (uid.isSome()) {
+      Try<Nothing> keepCaps = capabilitiesManager->setKeepCaps();
+      if (keepCaps.isError()) {
+        cerr << "Failed to set process control for keeping capabilities "
+             << "on potential uid change: " << keepCaps.error() << endl;
+        exitWithStatus(EXIT_FAILURE);
+      }
+    }
+  }
+#else
+  if (launchInfo.has_capabilities()) {
+    cerr << "Capabilities are not supported on non Linux system" << endl;
+    exitWithStatus(EXIT_FAILURE);
+  }
 #endif // __linux__
-    if (chroot.isError()) {
-      cerr << "Failed to enter chroot '" << rootfs.get()
-           << "': " << chroot.error();
-      return 1;
+
+#ifdef __linux__
+  if (flags.namespace_mnt_target.isSome()) {
+    string path = path::join(
+        "/proc",
+        stringify(flags.namespace_mnt_target.get()),
+        "ns",
+        "mnt");
+
+    Try<Nothing> setns = ns::setns(path, "mnt", false);
+    if (setns.isError()) {
+      cerr << "Failed to enter mount namespace: "
+           << setns.error() << endl;
+      exitWithStatus(EXIT_FAILURE);
     }
   }
 
+  if (flags.unshare_namespace_mnt) {
+    if (unshare(CLONE_NEWNS) != 0) {
+      cerr << "Failed to unshare mount namespace: "
+           << os::strerror(errno) << endl;
+      exitWithStatus(EXIT_FAILURE);
+    }
+  }
+#endif // __linux__
+
+#ifndef __WINDOWS__
+  // Change root to a new root, if provided.
+  if (launchInfo.has_rootfs()) {
+    cout << "Changing root to " << launchInfo.rootfs() << endl;
+
+    // Verify that rootfs is an absolute path.
+    Result<string> realpath = os::realpath(launchInfo.rootfs());
+    if (realpath.isError()) {
+      cerr << "Failed to determine if rootfs is an absolute path: "
+           << realpath.error() << endl;
+      exitWithStatus(EXIT_FAILURE);
+    } else if (realpath.isNone()) {
+      cerr << "Rootfs path does not exist" << endl;
+      exitWithStatus(EXIT_FAILURE);
+    } else if (realpath.get() != launchInfo.rootfs()) {
+      cerr << "Rootfs path is not an absolute path" << endl;
+      exitWithStatus(EXIT_FAILURE);
+    }
+
+#ifdef __linux__
+    Try<Nothing> chroot = fs::chroot::enter(launchInfo.rootfs());
+#else
+    // For any other platform we'll just use POSIX chroot.
+    Try<Nothing> chroot = os::chroot(launchInfo.rootfs());
+#endif // __linux__
+
+    if (chroot.isError()) {
+      cerr << "Failed to enter chroot '" << launchInfo.rootfs()
+           << "': " << chroot.error();
+      exitWithStatus(EXIT_FAILURE);
+    }
+  }
+#else
+  if (launchInfo.has_rootfs()) {
+    cerr << "Changing rootfs is not supported on Windows" << endl;
+    exitWithStatus(EXIT_FAILURE);
+  }
+#endif // __WINDOWS__
+
+#ifndef __WINDOWS__
+  // Setting resource limits for the process.
+  if (launchInfo.has_rlimits()) {
+    foreach (const RLimitInfo::RLimit& limit, launchInfo.rlimits().rlimits()) {
+      Try<Nothing> set = rlimits::set(limit);
+      if (set.isError()) {
+        cerr << "Failed to set rlimit: " << set.error() << endl;
+        exitWithStatus(EXIT_FAILURE);
+      }
+    }
+  }
+#else
+  if (launchInfo.has_rlimits()) {
+    cerr << "Rlimits are not supported on Windows" << endl;
+    exitWithStatus(EXIT_FAILURE);
+  }
+#endif // __WINDOWS__
+
+#ifndef __WINDOWS__
   // Change user if provided. Note that we do that after executing the
   // preparation commands so that those commands will be run with the
   // same privilege as the mesos-agent.
-#ifndef __WINDOWS__
   if (uid.isSome()) {
     Try<Nothing> setgid = os::setgid(gid.get());
     if (setgid.isError()) {
       cerr << "Failed to set gid to " << gid.get()
            << ": " << setgid.error() << endl;
-      return 1;
+      exitWithStatus(EXIT_FAILURE);
     }
 
     Try<Nothing> setgroups = os::setgroups(gids, uid);
     if (setgroups.isError()) {
       cerr << "Failed to set supplementary gids: "
            << setgroups.error() << endl;
-      return 1;
+      exitWithStatus(EXIT_FAILURE);
     }
 
     Try<Nothing> setuid = os::setuid(uid.get());
     if (setuid.isError()) {
       cerr << "Failed to set uid to " << uid.get()
            << ": " << setuid.error() << endl;
-      return 1;
+      exitWithStatus(EXIT_FAILURE);
     }
   }
 #endif // __WINDOWS__
 
-  // Determine the current working directory for the executor.
-  string cwd;
-  if (rootfs.isSome() && flags.working_directory.isSome()) {
-    cwd = flags.working_directory.get();
-  } else {
-    cwd = flags.sandbox.get();
-  }
-
-  Try<Nothing> chdir = os::chdir(cwd);
-  if (chdir.isError()) {
-    cerr << "Failed to chdir into current working directory '"
-         << cwd << "': " << chdir.error() << endl;
-    return 1;
-  }
-
-  // Relay the environment variables.
-  // TODO(jieyu): Consider using a clean environment.
-
-  if (command.get().shell()) {
-    // Execute the command using shell.
-    os::execlp(os::Shell::name, os::Shell::arg0,
-               os::Shell::arg1, command.get().value().c_str(), (char*) nullptr);
-  } else {
-    // Use execvp to launch the command.
-    char** argv = new char*[command.get().arguments().size() + 1];
-    for (int i = 0; i < command.get().arguments().size(); i++) {
-      argv[i] = strdup(command.get().arguments(i).c_str());
+#ifdef __linux__
+  if (launchInfo.has_capabilities()) {
+    Try<ProcessCapabilities> capabilities = capabilitiesManager->get();
+    if (capabilities.isError()) {
+      cerr << "Failed to get capabilities for the current process: "
+           << capabilities.error() << endl;
+      exitWithStatus(EXIT_FAILURE);
     }
-    argv[command.get().arguments().size()] = nullptr;
 
-    execvp(command.get().value().c_str(), argv);
+    // After 'setuid', 'effective' set is cleared. Since `SETPCAP` is
+    // required in the `effective` set of a process to change the
+    // bounding set, we need to restore it first.
+    capabilities->add(capabilities::EFFECTIVE, capabilities::SETPCAP);
+
+    Try<Nothing> setPcap = capabilitiesManager->set(capabilities.get());
+    if (setPcap.isError()) {
+      cerr << "Failed to add SETPCAP to the effective set: "
+           << setPcap.error() << endl;
+      exitWithStatus(EXIT_FAILURE);
+    }
+
+    // Set up requested capabilities.
+    set<Capability> target = capabilities::convert(launchInfo.capabilities());
+
+    capabilities->set(capabilities::EFFECTIVE, target);
+    capabilities->set(capabilities::PERMITTED, target);
+    capabilities->set(capabilities::INHERITABLE, target);
+    capabilities->set(capabilities::BOUNDING, target);
+
+    Try<Nothing> set = capabilitiesManager->set(capabilities.get());
+    if (set.isError()) {
+      cerr << "Failed to set process capabilities: " << set.error() << endl;
+      exitWithStatus(EXIT_FAILURE);
+    }
+  }
+#endif // __linux__
+
+  if (launchInfo.has_working_directory()) {
+    Try<Nothing> chdir = os::chdir(launchInfo.working_directory());
+    if (chdir.isError()) {
+      cerr << "Failed to chdir into current working directory "
+           << "'" << launchInfo.working_directory() << "': "
+           << chdir.error() << endl;
+      exitWithStatus(EXIT_FAILURE);
+    }
+  }
+
+  // Prepare the executable and the argument list for the child.
+  string executable(launchInfo.command().shell()
+    ? os::Shell::name
+    : launchInfo.command().value().c_str());
+
+  os::raw::Argv argv(launchInfo.command().shell()
+    ? vector<string>({
+          os::Shell::arg0,
+          os::Shell::arg1,
+          launchInfo.command().value()})
+    : vector<string>(
+          launchInfo.command().arguments().begin(),
+          launchInfo.command().arguments().end()));
+
+  // Prepare the environment for the child. If 'environment' is not
+  // specified, inherit the environment of the current process.
+  Option<os::raw::Envp> envp;
+  if (launchInfo.has_environment()) {
+    hashmap<string, string> environment;
+
+    foreach (const Environment::Variable& variable,
+             launchInfo.environment().variables()) {
+      const string& name = variable.name();
+      const string& value = variable.value();
+
+      if (environment.contains(name)) {
+        cout << "Overwriting environment variable '" << name
+             << "', original: '" << environment[name]
+             << "', new: '" << value << "'" << endl;
+      }
+
+      environment[name] = value;
+    }
+
+    if (!environment.contains("PATH")) {
+      environment["PATH"] = os::host_default_path();
+    }
+
+#ifdef __WINDOWS__
+    // TODO(dpravat): (MESOS-6816) We should allow system environment variables
+    // to be overwritten if they are specified by the framework.  This might
+    // cause applications to not work, but upon overriding system defaults, it
+    // becomes the overidder's problem.
+    Option<std::map<string, string>> systemEnvironment =
+      process::internal::getSystemEnvironment();
+    foreachpair (
+        const string& key, const string& value, systemEnvironment.get()) {
+      environment[key] = value;
+    }
+#endif // __WINDOWS__
+
+    envp = os::raw::Envp(environment);
+  }
+
+#ifndef __WINDOWS__
+  // If we have `containerStatusFd` set, then we need to fork-exec the
+  // command we are launching and checkpoint its status on exit. We
+  // use fork-exec directly (as opposed to `process::subprocess()`) to
+  // avoid intializing libprocess for this simple helper binary.
+  //
+  // TODO(klueska): Once we move the majority of `process::subprocess()`
+  // into stout, update the code below to use it.
+  if (containerStatusFd.isSome()) {
+    pid_t pid = ::fork();
+
+    if (pid == -1) {
+      cerr << "Failed to fork() the command: " << os::strerror(errno) << endl;
+      exitWithStatus(EXIT_FAILURE);
+    }
+
+    // If we are the parent...
+    if (pid > 0) {
+      // Set the global `containerPid` variable to enable signal forwarding.
+      //
+      // NOTE: We need a signal fence here to ensure that `containerPid`
+      // is actually written to memory and not just to a temporary register.
+      // Without this, it's possible that the signal handler would
+      // never notice the change since there's no guarantee that it is
+      // written out to memory until this function completes (which
+      // won't happen until it's too late because we loop inside a
+      // blocking `waitpid()` call below).
+      containerPid = pid;
+      std::atomic_signal_fence(std::memory_order_relaxed);
+
+      // Wait for the newly created process to finish.
+      int status = 0;
+      Result<pid_t> waitpid = None();
+
+      // Reap all decendants, but only continue once we reap the
+      // process we just launched.
+      while (true) {
+        waitpid = os::waitpid(-1, &status, 0);
+
+        if (waitpid.isError()) {
+          // If the error was an EINTR, we were interrupted by a
+          // signal and should just call `waitpid()` over again.
+          if (errno == EINTR) {
+            continue;
+          }
+          cerr << "Failed to os::waitpid(): " << waitpid.error() << endl;
+          exitWithStatus(EXIT_FAILURE);
+        }
+
+        if (waitpid.isNone()) {
+          cerr << "Calling os::waitpid() with blocking semantics"
+               << "returned asynchronously" << endl;
+          exitWithStatus(EXIT_FAILURE);
+        }
+
+        // We only forward the signal if the child has terminated. If
+        // the child has stopped due to some signal (e.g., SIGSTOP),
+        // we will simply ignore it.
+        if (WIFSTOPPED(status)) {
+          continue;
+        }
+
+        if (pid == waitpid.get()) {
+          break;
+        }
+      }
+
+      signalSafeWriteStatus(status);
+      os::close(containerStatusFd.get());
+      ::_exit(EXIT_SUCCESS);
+    }
+  }
+#endif // __WINDOWS__
+
+  if (envp.isSome()) {
+    os::execvpe(executable.c_str(), argv, envp.get());
+  } else {
+    os::execvp(executable.c_str(), argv);
   }
 
   // If we get here, the execle call failed.
   cerr << "Failed to execute command: " << os::strerror(errno) << endl;
+  exitWithStatus(EXIT_FAILURE);
   UNREACHABLE();
 }
 

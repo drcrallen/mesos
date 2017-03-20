@@ -14,6 +14,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "linux/fs.hpp"
+
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
@@ -21,9 +23,15 @@
 #include <linux/limits.h>
 #include <linux/unistd.h>
 
+#include <list>
+#include <set>
+#include <utility>
+
 #include <stout/adaptor.hpp>
 #include <stout/check.hpp>
 #include <stout/error.hpp>
+#include <stout/hashmap.hpp>
+#include <stout/hashset.hpp>
 #include <stout/numify.hpp>
 #include <stout/path.hpp>
 #include <stout/strings.hpp>
@@ -33,10 +41,13 @@
 #include <stout/os.hpp>
 
 #include <stout/os/read.hpp>
+#include <stout/os/shell.hpp>
 #include <stout/os/stat.hpp>
 
-#include "linux/fs.hpp"
+#include "common/status_utils.hpp"
 
+using std::list;
+using std::set;
 using std::string;
 using std::vector;
 
@@ -45,7 +56,7 @@ namespace internal {
 namespace fs {
 
 
-Try<bool> supported(const std::string& fsname)
+Try<bool> supported(const string& fsname)
 {
   hashset<string> overlayfs{"overlay", "overlayfs"};
 
@@ -79,10 +90,127 @@ Try<bool> supported(const std::string& fsname)
 }
 
 
-Try<MountInfoTable> MountInfoTable::read(const Option<pid_t>& pid)
+Try<uint32_t> type(const string& path)
+{
+  struct statfs buf;
+  if (statfs(path.c_str(), &buf) < 0) {
+    return ErrnoError();
+  }
+  return (uint32_t) buf.f_type;
+}
+
+
+Try<string> typeName(uint32_t fsType)
+{
+  // `typeNames` maps a filesystem id to its filesystem type name.
+  hashmap<uint32_t, string> typeNames = {
+    {FS_TYPE_AUFS      , "aufs"},
+    {FS_TYPE_BTRFS     , "btrfs"},
+    {FS_TYPE_CRAMFS    , "cramfs"},
+    {FS_TYPE_ECRYPTFS  , "ecryptfs"},
+    {FS_TYPE_EXTFS     , "extfs"},
+    {FS_TYPE_F2FS      , "f2fs"},
+    {FS_TYPE_GPFS      , "gpfs"},
+    {FS_TYPE_JFFS2FS   , "jffs2fs"},
+    {FS_TYPE_JFS       , "jfs"},
+    {FS_TYPE_NFSFS     , "nfsfs"},
+    {FS_TYPE_RAMFS     , "ramfs"},
+    {FS_TYPE_REISERFS  , "reiserfs"},
+    {FS_TYPE_SMBFS     , "smbfs"},
+    {FS_TYPE_SQUASHFS  , "squashfs"},
+    {FS_TYPE_TMPFS     , "tmpfs"},
+    {FS_TYPE_VXFS      , "vxfs"},
+    {FS_TYPE_XFS       , "xfs"},
+    {FS_TYPE_ZFS       , "zfs"},
+    {FS_TYPE_OVERLAY   , "overlay"}
+  };
+
+  if (!typeNames.contains(fsType)) {
+    return Error("Unexpected filesystem type '" + stringify(fsType) + "'");
+  }
+
+  return typeNames[fsType];
+}
+
+
+Try<MountInfoTable> MountInfoTable::read(
+    const string& lines,
+    bool hierarchicalSort)
 {
   MountInfoTable table;
 
+  foreach (const string& line, strings::tokenize(lines, "\n")) {
+    Try<Entry> parse = MountInfoTable::Entry::parse(line);
+    if (parse.isError()) {
+      return Error("Failed to parse entry '" + line + "': " + parse.error());
+    }
+
+    table.entries.push_back(parse.get());
+  }
+
+  // If `hierarchicalSort == true`, then sort the entries in
+  // the newly constructed table hierarchically. That is, sort
+  // them according to the invariant that all parent entries
+  // appear before their child entries.
+  if (hierarchicalSort) {
+    Option<int> rootParentId = None();
+
+    // Construct a representation of the mount hierarchy using a hashmap.
+    hashmap<int, vector<MountInfoTable::Entry>> parentToChildren;
+
+    foreach (const MountInfoTable::Entry& entry, table.entries) {
+      if (entry.target == "/") {
+        CHECK_NONE(rootParentId);
+        rootParentId = entry.parent;
+      }
+      parentToChildren[entry.parent].push_back(entry);
+    }
+
+    // Walk the hashmap and construct a list of entries sorted
+    // hierarchically. The recursion eventually terminates because
+    // entries in MountInfoTable are guaranteed to have no cycles.
+    // We double check though, just to make sure.
+    hashset<int> visitedParents;
+    vector<MountInfoTable::Entry> sortedEntries;
+
+    std::function<void(int)> sortFrom = [&](int parentId) {
+      CHECK(!visitedParents.contains(parentId))
+        << "Cycle found in mount table hierarchy at entry"
+        << " '" << stringify(parentId) << "': " << std::endl << lines;
+
+      visitedParents.insert(parentId);
+
+      foreach (const MountInfoTable::Entry& entry, parentToChildren[parentId]) {
+        sortedEntries.push_back(entry);
+
+        // It is legal to have a `MountInfoTable` entry whose
+        // `entry.id` is the same as its `entry.parent`. This can
+        // happen (for example), if a system boots from the network
+        // and then keeps the original `/` in RAM. To avoid cycles
+        // when walking the mount hierarchy, we only recurse into our
+        // children if this case is not satisfied.
+        if (parentId != entry.id) {
+          sortFrom(entry.id);
+        }
+      }
+    };
+
+    // We know the node with a parent id of
+    // `rootParentId` is the root mount point.
+    CHECK_SOME(rootParentId);
+    sortFrom(rootParentId.get());
+
+    table.entries = std::move(sortedEntries);
+  }
+
+  return table;
+}
+
+
+Try<MountInfoTable> MountInfoTable::read(
+    const Option<pid_t>& pid,
+    bool hierarchicalSort)
+{
   const string path = path::join(
       "/proc",
       (pid.isSome() ? stringify(pid.get()) : "self"),
@@ -93,16 +221,7 @@ Try<MountInfoTable> MountInfoTable::read(const Option<pid_t>& pid)
     return Error("Failed to read mountinfo file: " + lines.error());
   }
 
-  foreach (const string& line, strings::tokenize(lines.get(), "\n")) {
-    Try<Entry> parse = MountInfoTable::Entry::parse(line);
-    if (parse.isError()) {
-      return Error("Failed to parse entry '" + line + "': " + parse.error());
-    }
-
-    table.entries.push_back(parse.get());
-  }
-
-  return table;
+  return MountInfoTable::read(lines.get(), hierarchicalSort);
 }
 
 
@@ -350,6 +469,24 @@ Try<Nothing> unmountAll(const string& target, int flags)
       if (unmount.isError()) {
         return unmount;
       }
+
+      // This normally should not fail even if the entry is not in
+      // mtab or mtab doesn't exist or is not writable. However we
+      // still catch the error here in case there's an error somewhere
+      // else while running this command.
+      // TODO(xujyan): Consider using `setmntent(3)` to implement this.
+      int status = os::spawn("umount", {"umount", "--fake", entry.dir});
+
+      const string message =
+        "Failed to clean up '" + entry.dir + "' in /etc/mtab";
+
+      if (status == -1) {
+        return ErrnoError(message);
+      }
+
+      if (!WSUCCEEDED(status)) {
+        return Error(message + ": " + WSTRINGIFY(status));
+      }
     }
   }
 
@@ -512,8 +649,26 @@ Try<Nothing> createStandardDevices(const string& root)
     "zero"
   };
 
+  // Glob all Nvidia GPU devices on the system and add them to the
+  // list of devices injected into the chroot environment.
+  //
+  // TODO(klueska): Only inject these devices if the 'gpu/nvidia'
+  // isolator is enabled.
+  Try<list<string>> nvidia = os::glob("/dev/nvidia*");
+  if (nvidia.isError()) {
+    return Error("Failed to glob /dev/nvidia* on the host filesystem:"
+                 " " + nvidia.error());
+  }
+
+  foreach (const string& device, nvidia.get()) {
+    if (os::exists(device)) {
+      devices.push_back(Path(device).basename());
+    }
+  }
+
+  // Inject each device into the chroot environment. Copy both the
+  // mode and the device itself from the corresponding host device.
   foreach (const string& device, devices) {
-    // Copy the mode and device from the corresponding host device.
     Try<Nothing> copy = copyDeviceNode(
         path::join("/",  "dev", device),
         path::join(root, "dev", device));
@@ -580,8 +735,15 @@ Try<Nothing> enter(const string& root)
   // new root is writable (i.e., it could be a read only filesystem).
   // Therefore, we always mount a tmpfs on /tmp in the new root so
   // that we can create the mount point for the old root.
-  if (!os::exists(path::join(root, "tmp"))) {
-    return Error("/tmp in chroot does not exist");
+  //
+  // NOTE: If the new root is a read-only filesystem (e.g., using bind
+  // backend), the 'tmpfs' mount point '/tmp' must already exist in the
+  // new root. Otherwise, mkdir would return an error because of unable
+  // to create it in read-only filesystem.
+  Try<Nothing> mkdir = os::mkdir(path::join(root, "tmp"));
+  if (mkdir.isError()) {
+    return Error("Failed to create 'tmpfs' mount point at '" +
+                 path::join(root, "tmp") + "': " + mkdir.error());
   }
 
   // TODO(jieyu): Consider limiting the size of the tmpfs.

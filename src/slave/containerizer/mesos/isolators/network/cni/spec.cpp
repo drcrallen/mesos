@@ -31,32 +31,76 @@ Try<NetworkConfig> parseNetworkConfig(const string& s)
 {
   Try<JSON::Object> json = JSON::parse<JSON::Object>(s);
   if (json.isError()) {
-    return Error("JSON parse failed: " + json.error());
+    return ::Error("JSON parse failed: " + json.error());
   }
 
   Try<NetworkConfig> parse = ::protobuf::parse<NetworkConfig>(json.get());
-
   if (parse.isError()) {
-    return Error("Protobuf parse failed: " + parse.error());
+    return ::Error("Protobuf parse failed: " + parse.error());
   }
 
   return parse.get();
 }
 
+
 Try<NetworkInfo> parseNetworkInfo(const string& s)
 {
   Try<JSON::Object> json = JSON::parse<JSON::Object>(s);
   if (json.isError()) {
-    return Error("JSON parse failed: " + json.error());
+    return ::Error("JSON parse failed: " + json.error());
   }
 
   Try<NetworkInfo> parse = ::protobuf::parse<NetworkInfo>(json.get());
-
   if (parse.isError()) {
-    return Error("Protobuf parse failed: " + parse.error());
+    return ::Error("Protobuf parse failed: " + parse.error());
   }
 
   return parse.get();
+}
+
+
+string formatResolverConfig(const DNS& dns)
+{
+  std::stringstream resolv;
+
+  if (dns.has_domain()) {
+    resolv << "domain " << dns.domain() << std::endl;
+  }
+
+  if (!dns.search().empty()) {
+    resolv << "search";
+    foreach (const string& domain, dns.search()) {
+      resolv << " " << domain;
+    }
+    resolv << std::endl;
+  }
+
+  if (!dns.options().empty()) {
+    resolv << "options";
+    foreach (const string& opt, dns.options()) {
+      resolv << " " << opt;
+    }
+    resolv << std::endl;
+  }
+
+  if (!dns.nameservers().empty()) {
+    foreach (const string& nameserver, dns.nameservers()) {
+      resolv << "nameserver " << nameserver << std::endl;
+    }
+  }
+
+  return resolv.str();
+}
+
+
+string error(const string& msg, uint32_t code)
+{
+  spec::Error error;
+  error.set_cniversion(CNI_VERSION);
+  error.set_code(code);
+  error.set_msg(msg);
+
+  return stringify(JSON::protobuf(error));
 }
 
 } // namespace spec {

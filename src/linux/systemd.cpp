@@ -133,8 +133,8 @@ Try<Nothing> initialize(const Flags& flags)
   // This allows the life-time of the process to be extended past the life-time
   // of the slave. See MESOS-3352.
   // This function takes responsibility for creating and starting this slice.
-  // We inject a `Subprocess::Hook` into the `subprocess` function that migrates
-  // pids into this slice if the `EXTEND_LIFETIME` option is set on the
+  // We inject a `Subprocess::ParentHook` into the `subprocess` function that
+  // migrates pids into this slice if the `EXTEND_LIFETIME` option is set on the
   // `subprocess` call.
 
   // Ensure that the `MESOS_EXECUTORS_SLICE` exists and is running.
@@ -199,7 +199,8 @@ bool exists()
     const Result<string> realpath = os::realpath("/sbin/init");
     if (realpath.isError() || realpath.isNone()) {
       LOG(WARNING) << "Failed to test /sbin/init for systemd environment: "
-                   << realpath.error();
+                   << (realpath.isError() ? realpath.error()
+                                          : "does not exist");
 
       return false;
     }
@@ -297,15 +298,15 @@ Try<Nothing> create(const Path& path, const string& data)
 {
   Try<Nothing> write = os::write(path, data);
   if (write.isError()) {
-    return Error(
-        "Failed to write systemd slice `" + path.value + "`: " + write.error());
+    return Error("Failed to write systemd slice `" + path.string() + "`: " +
+                 write.error());
   }
 
   LOG(INFO) << "Created systemd slice: `" << path << "`";
 
   Try<Nothing> reload = daemonReload();
   if (reload.isError()) {
-    return Error("Failed to create systemd slice `" + path.value + "`: " +
+    return Error("Failed to create systemd slice `" + path.string() + "`: " +
                  reload.error());
   }
 

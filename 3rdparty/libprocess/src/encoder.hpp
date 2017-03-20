@@ -16,6 +16,7 @@
 #include <stdint.h>
 #include <time.h>
 
+#include <limits>
 #include <map>
 #include <sstream>
 
@@ -46,7 +47,8 @@ public:
     FILE
   };
 
-  explicit Encoder(const network::Socket& _s) : s(_s) {}
+  Encoder() = default;
+
   virtual ~Encoder() {}
 
   virtual Kind kind() const = 0;
@@ -54,22 +56,14 @@ public:
   virtual void backup(size_t length) = 0;
 
   virtual size_t remaining() const = 0;
-
-  network::Socket socket() const
-  {
-    return s;
-  }
-
-private:
-  const network::Socket s; // The socket this encoder is associated with.
 };
 
 
 class DataEncoder : public Encoder
 {
 public:
-  DataEncoder(const network::Socket& s, const std::string& _data)
-    : Encoder(s), data(_data), index(0) {}
+  DataEncoder(const std::string& _data)
+    : data(_data), index(0) {}
 
   virtual ~DataEncoder() {}
 
@@ -107,8 +101,8 @@ private:
 class MessageEncoder : public DataEncoder
 {
 public:
-  MessageEncoder(const network::Socket& s, Message* _message)
-    : DataEncoder(s, encode(_message)), message(_message) {}
+  MessageEncoder(Message* _message)
+    : DataEncoder(encode(_message)), message(_message) {}
 
   virtual ~MessageEncoder()
   {
@@ -162,10 +156,9 @@ class HttpResponseEncoder : public DataEncoder
 {
 public:
   HttpResponseEncoder(
-      const network::Socket& s,
       const http::Response& response,
       const http::Request& request)
-    : DataEncoder(s, encode(response, request)) {}
+    : DataEncoder(encode(response, request)) {}
 
   static std::string encode(
       const http::Response& response,
@@ -251,12 +244,19 @@ public:
 class FileEncoder : public Encoder
 {
 public:
-  FileEncoder(const network::Socket& s, int _fd, size_t _size)
-    : Encoder(s), fd(_fd), size(_size), index(0) {}
+  FileEncoder(int_fd _fd, size_t _size)
+    : fd(_fd), size(static_cast<off_t>(_size)), index(0)
+  {
+    // NOTE: For files, we expect the size to be derived from `stat`-ing
+    // the file.  The `struct stat` returns the size in `off_t` form,
+    // meaning that it is a programmer error to construct the `FileEncoder`
+    // with a size greater the max value of `off_t`.
+    CHECK_LE(_size, static_cast<size_t>(std::numeric_limits<off_t>::max()));
+  }
 
   virtual ~FileEncoder()
   {
-    os::close(fd);
+    CHECK_SOME(os::close(fd)) << "Failed to close file descriptor";
   }
 
   virtual Kind kind() const
@@ -264,7 +264,7 @@ public:
     return Encoder::FILE;
   }
 
-  virtual int next(off_t* offset, size_t* length)
+  virtual int_fd next(off_t* offset, size_t* length)
   {
     off_t temp = index;
     index = size;
@@ -275,19 +275,19 @@ public:
 
   virtual void backup(size_t length)
   {
-    if (index >= length) {
-      index -= length;
+    if (index >= static_cast<off_t>(length)) {
+      index -= static_cast<off_t>(length);
     }
   }
 
   virtual size_t remaining() const
   {
-    return size - index;
+    return static_cast<size_t>(size - index);
   }
 
 private:
-  int fd;
-  size_t size;
+  int_fd fd;
+  off_t size;
   off_t index;
 };
 

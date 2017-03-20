@@ -25,21 +25,29 @@
 #include <mesos/http.hpp>
 #include <mesos/resources.hpp>
 
+#include <mesos/authentication/http/basic_authenticator_factory.hpp>
+#include <mesos/authentication/http/combined_authenticator.hpp>
 #include <mesos/authorizer/authorizer.hpp>
+#include <mesos/module/http_authenticator.hpp>
 
 #include <process/dispatch.hpp>
 #include <process/future.hpp>
 #include <process/http.hpp>
 #include <process/pid.hpp>
 
+#include <stout/duration.hpp>
 #include <stout/foreach.hpp>
 #include <stout/protobuf.hpp>
+#include <stout/recordio.hpp>
 #include <stout/stringify.hpp>
 #include <stout/unreachable.hpp>
+
+#include <stout/os/permissions.hpp>
 
 #include "common/http.hpp"
 
 #include "messages/messages.hpp"
+#include "module/manager.hpp"
 
 using std::map;
 using std::ostream;
@@ -47,7 +55,16 @@ using std::set;
 using std::string;
 using std::vector;
 
+using process::Failure;
+using process::Owned;
+
+using process::http::authentication::Authenticator;
+using process::http::authentication::Principal;
+
 using process::http::authorization::AuthorizationCallbacks;
+
+using mesos::http::authentication::BasicAuthenticatorFactory;
+using mesos::http::authentication::CombinedAuthenticator;
 
 namespace mesos {
 
@@ -60,12 +77,27 @@ ostream& operator<<(ostream& stream, ContentType contentType)
     case ContentType::JSON: {
       return stream << APPLICATION_JSON;
     }
+    case ContentType::RECORDIO: {
+      return stream << APPLICATION_RECORDIO;
+    }
   }
 
   UNREACHABLE();
 }
 
 namespace internal {
+
+// Set of endpoint whose access is protected with the authorization
+// action `GET_ENDPOINTS_WITH_PATH`.
+hashset<string> AUTHORIZABLE_ENDPOINTS{
+    "/containers",
+    "/files/debug",
+    "/files/debug.json",
+    "/logging/toggle",
+    "/metrics/snapshot",
+    "/monitor/statistics",
+    "/monitor/statistics.json"};
+
 
 string serialize(
     ContentType contentType,
@@ -78,6 +110,26 @@ string serialize(
     case ContentType::JSON: {
       JSON::Object object = JSON::protobuf(message);
       return stringify(object);
+    }
+    case ContentType::RECORDIO: {
+      LOG(FATAL) << "Serializing a RecordIO stream is not supported";
+    }
+  }
+
+  UNREACHABLE();
+}
+
+
+bool streamingMediaType(ContentType contentType)
+{
+  switch(contentType) {
+    case ContentType::PROTOBUF:
+    case ContentType::JSON: {
+      return false;
+    }
+
+    case ContentType::RECORDIO: {
+      return true;
     }
   }
 
@@ -93,7 +145,7 @@ string serialize(
 static JSON::Value value(
     const string& name,
     const Value::Type& type,
-    Resources resources)
+    const Resources& resources)
 {
   switch (type) {
     case Value::SCALAR:
@@ -187,10 +239,6 @@ JSON::Object model(const NetworkInfo& info)
 {
   JSON::Object object;
 
-  if (info.has_ip_address()) {
-    object.values["ip_address"] = info.ip_address();
-  }
-
   if (info.groups().size() > 0) {
     JSON::Array array;
     array.values.reserve(info.groups().size()); // MESOS-2353.
@@ -224,6 +272,10 @@ JSON::Object model(const NetworkInfo& info)
 JSON::Object model(const ContainerStatus& status)
 {
   JSON::Object object;
+
+  if (status.has_container_id()) {
+    object.values["container_id"] = JSON::protobuf(status.container_id());
+  }
 
   if (status.network_infos().size() > 0) {
     JSON::Array array;
@@ -376,6 +428,65 @@ JSON::Object model(const ExecutorInfo& executorInfo)
 }
 
 
+// Returns JSON representation of a FileInfo protobuf message.
+// Example JSON:
+// {
+//   'path': '\/some\/file',
+//   'mode': '-rwxrwxrwx',
+//   'nlink': 5,
+//   'uid': 'bmahler',
+//   'gid': 'employee',
+//   'size': 4096,           // Bytes.
+//   'mtime': 1348258116,    // Unix timestamp.
+// }
+JSON::Object model(const FileInfo& fileInfo)
+{
+  JSON::Object file;
+  file.values["path"] = fileInfo.path();
+  file.values["nlink"] = fileInfo.nlink();
+  file.values["size"] = fileInfo.size();
+  file.values["mtime"] = Nanoseconds(fileInfo.mtime().nanoseconds()).secs();
+
+  char filetype;
+  if (S_ISREG(fileInfo.mode())) {
+    filetype = '-';
+  } else if (S_ISDIR(fileInfo.mode())) {
+    filetype = 'd';
+  } else if (S_ISCHR(fileInfo.mode())) {
+    filetype = 'c';
+  } else if (S_ISBLK(fileInfo.mode())) {
+    filetype = 'b';
+  } else if (S_ISFIFO(fileInfo.mode())) {
+    filetype = 'p';
+  } else if (S_ISLNK(fileInfo.mode())) {
+    filetype = 'l';
+  } else if (S_ISSOCK(fileInfo.mode())) {
+    filetype = 's';
+  } else {
+    filetype = '-';
+  }
+
+  struct os::Permissions permissions(fileInfo.mode());
+
+  file.values["mode"] = strings::format(
+      "%c%c%c%c%c%c%c%c%c%c",
+      filetype,
+      permissions.owner.r ? 'r' : '-',
+      permissions.owner.w ? 'w' : '-',
+      permissions.owner.x ? 'x' : '-',
+      permissions.group.r ? 'r' : '-',
+      permissions.group.w ? 'w' : '-',
+      permissions.group.x ? 'x' : '-',
+      permissions.others.r ? 'r' : '-',
+      permissions.others.w ? 'w' : '-',
+      permissions.others.x ? 'x' : '-').get();
+
+  file.values["uid"] = fileInfo.uid();
+  file.values["gid"] = fileInfo.gid();
+
+  return file;
+}
+
 }  // namespace internal {
 
 void json(JSON::ObjectWriter* writer, const Attributes& attributes)
@@ -430,6 +541,10 @@ void json(JSON::ObjectWriter* writer, const CommandInfo& command)
 
 static void json(JSON::ObjectWriter* writer, const ContainerStatus& status)
 {
+  if (status.has_container_id()) {
+    writer->field("container_id", JSON::Protobuf(status.container_id()));
+  }
+
   if (status.network_infos().size() > 0) {
     writer->field("network_infos", status.network_infos());
   }
@@ -448,8 +563,21 @@ void json(JSON::ObjectWriter* writer, const ExecutorInfo& executorInfo)
   writer->field("command", executorInfo.command());
   writer->field("resources", Resources(executorInfo.resources()));
 
+  // Resources may be empty for command executors.
+  if (!executorInfo.resources().empty()) {
+    // Executors are not allowed to mix resources allocated to
+    // different roles, see MESOS-6636.
+    writer->field(
+        "role",
+        executorInfo.resources().begin()->allocation_info().role());
+  }
+
   if (executorInfo.has_labels()) {
     writer->field("labels", executorInfo.labels());
+  }
+
+  if (executorInfo.has_type()) {
+    writer->field("type", ExecutorInfo::Type_Name(executorInfo.type()));
   }
 }
 
@@ -464,10 +592,6 @@ void json(JSON::ArrayWriter* writer, const Labels& labels)
 
 static void json(JSON::ObjectWriter* writer, const NetworkInfo& info)
 {
-  if (info.has_ip_address()) {
-    writer->field("ip_address", info.ip_address());
-  }
-
   if (info.groups().size() > 0) {
     writer->field("groups", info.groups());
   }
@@ -530,6 +654,11 @@ void json(JSON::ObjectWriter* writer, const Task& task)
   writer->field("slave_id", task.slave_id().value());
   writer->field("state", TaskState_Name(task.state()));
   writer->field("resources", Resources(task.resources()));
+
+  // Tasks are not allowed to mix resources allocated to
+  // different roles, see MESOS-6636.
+  writer->field("role", task.resources().begin()->allocation_info().role());
+
   writer->field("statuses", task.statuses());
 
   if (task.has_user()) {
@@ -592,31 +721,64 @@ static void json(JSON::StringWriter* writer, const Value::Text& text)
   writer->append(text.value());
 }
 
+namespace authorization {
+
+const Option<authorization::Subject> createSubject(
+    const Option<Principal>& principal)
+{
+  if (principal.isSome()) {
+    authorization::Subject subject;
+
+    if (principal->value.isSome()) {
+      subject.set_value(principal->value.get());
+    }
+
+    foreachpair (const string& key, const string& value, principal->claims) {
+      Label* claim = subject.mutable_claims()->mutable_labels()->Add();
+      claim->set_key(key);
+      claim->set_value(value);
+    }
+
+    return subject;
+  }
+
+  return None();
+}
+
+} // namespace authorization {
 
 const AuthorizationCallbacks createAuthorizationCallbacks(
     Authorizer* authorizer)
 {
   typedef lambda::function<process::Future<bool>(
       const process::http::Request& httpRequest,
-      const Option<string>& principal)> Callback;
+      const Option<Principal>& principal)> Callback;
 
   AuthorizationCallbacks callbacks;
 
   Callback getEndpoint = [authorizer](
       const process::http::Request& httpRequest,
-      const Option<string>& principal) -> process::Future<bool> {
+      const Option<Principal>& principal) -> process::Future<bool> {
+        const string path = httpRequest.url.path;
+
+        if (!internal::AUTHORIZABLE_ENDPOINTS.contains(path)) {
+          return Failure(
+              "Endpoint '" + path + "' is not an authorizable endpoint.");
+        }
+
         authorization::Request authRequest;
         authRequest.set_action(mesos::authorization::GET_ENDPOINT_WITH_PATH);
 
-        if (principal.isSome()) {
-          authRequest.mutable_subject()->set_value(principal.get());
+        Option<authorization::Subject> subject =
+          authorization::createSubject(principal);
+        if (subject.isSome()) {
+          authRequest.mutable_subject()->CopyFrom(subject.get());
         }
 
-        const string path = httpRequest.url.path;
         authRequest.mutable_object()->set_value(path);
 
         LOG(INFO) << "Authorizing principal '"
-                  << (principal.isSome() ? principal.get() : "ANY")
+                  << (principal.isSome() ? stringify(principal.get()) : "ANY")
                   << "' to GET the endpoint '" << path << "'";
 
         return authorizer->authorized(authRequest);
@@ -626,6 +788,261 @@ const AuthorizationCallbacks createAuthorizationCallbacks(
   callbacks.insert(std::make_pair("/metrics/snapshot", getEndpoint));
 
   return callbacks;
+}
+
+
+bool approveViewFrameworkInfo(
+    const Owned<ObjectApprover>& frameworksApprover,
+    const FrameworkInfo& frameworkInfo)
+{
+  ObjectApprover::Object object;
+  object.framework_info = &frameworkInfo;
+
+  Try<bool> approved = frameworksApprover->approved(object);
+  if (approved.isError()) {
+    LOG(WARNING) << "Error during FrameworkInfo authorization: "
+                 << approved.error();
+    // TODO(joerg84): Consider exposing these errors to the caller.
+    return false;
+  }
+  return approved.get();
+}
+
+
+bool approveViewExecutorInfo(
+    const Owned<ObjectApprover>& executorsApprover,
+    const ExecutorInfo& executorInfo,
+    const FrameworkInfo& frameworkInfo)
+{
+  ObjectApprover::Object object;
+  object.executor_info = &executorInfo;
+  object.framework_info = &frameworkInfo;
+
+  Try<bool> approved = executorsApprover->approved(object);
+  if (approved.isError()) {
+    LOG(WARNING) << "Error during ExecutorInfo authorization: "
+                 << approved.error();
+    // TODO(joerg84): Consider exposing these errors to the caller.
+    return false;
+  }
+  return approved.get();
+}
+
+
+bool approveViewTaskInfo(
+    const Owned<ObjectApprover>& tasksApprover,
+    const TaskInfo& taskInfo,
+    const FrameworkInfo& frameworkInfo)
+{
+  ObjectApprover::Object object;
+  object.task_info = &taskInfo;
+  object.framework_info = &frameworkInfo;
+
+  Try<bool> approved = tasksApprover->approved(object);
+  if (approved.isError()) {
+    LOG(WARNING) << "Error during TaskInfo authorization: " << approved.error();
+    // TODO(joerg84): Consider exposing these errors to the caller.
+    return false;
+  }
+  return approved.get();
+}
+
+
+bool approveViewTask(
+    const Owned<ObjectApprover>& tasksApprover,
+    const Task& task,
+    const FrameworkInfo& frameworkInfo)
+{
+  ObjectApprover::Object object;
+  object.task = &task;
+  object.framework_info = &frameworkInfo;
+
+  Try<bool> approved = tasksApprover->approved(object);
+  if (approved.isError()) {
+    LOG(WARNING) << "Error during Task authorization: " << approved.error();
+    // TODO(joerg84): Consider exposing these errors to the caller.
+    return false;
+  }
+  return approved.get();
+}
+
+
+bool approveViewFlags(
+    const Owned<ObjectApprover>& flagsApprover)
+{
+  ObjectApprover::Object object;
+
+  Try<bool> approved = flagsApprover->approved(object);
+  if (approved.isError()) {
+    LOG(WARNING) << "Error during Flags authorization: " << approved.error();
+    // TODO(joerg84): Consider exposing these errors to the caller.
+    return false;
+  }
+  return approved.get();
+}
+
+
+process::Future<bool> authorizeEndpoint(
+    const string& endpoint,
+    const string& method,
+    const Option<Authorizer*>& authorizer,
+    const Option<Principal>& principal)
+{
+  if (authorizer.isNone()) {
+    return true;
+  }
+
+  authorization::Request request;
+
+  // TODO(nfnt): Add an additional case when POST requests
+  // need to be authorized separately from GET requests.
+  if (method == "GET") {
+    request.set_action(authorization::GET_ENDPOINT_WITH_PATH);
+  } else {
+    return Failure("Unexpected request method '" + method + "'");
+  }
+
+  if (!internal::AUTHORIZABLE_ENDPOINTS.contains(endpoint)) {
+    return Failure(
+        "Endpoint '" + endpoint + "' is not an authorizable endpoint.");
+  }
+
+  Option<authorization::Subject> subject =
+    authorization::createSubject(principal);
+  if (subject.isSome()) {
+    request.mutable_subject()->CopyFrom(subject.get());
+  }
+
+  request.mutable_object()->set_value(endpoint);
+
+  LOG(INFO) << "Authorizing principal '"
+            << (principal.isSome() ? stringify(principal.get()) : "ANY")
+            << "' to " <<  method
+            << " the '" << endpoint << "' endpoint";
+
+  return authorizer.get()->authorized(request);
+}
+
+
+bool approveViewRole(
+    const Owned<ObjectApprover>& rolesApprover,
+    const string& role)
+{
+  ObjectApprover::Object object;
+  object.value = &role;
+
+  Try<bool> approved = rolesApprover->approved(object);
+  if (approved.isError()) {
+    LOG(WARNING) << "Error during Roles authorization: " << approved.error();
+    // TODO(joerg84): Consider exposing these errors to the caller.
+    return false;
+  }
+  return approved.get();
+}
+
+namespace {
+
+Result<Authenticator*> createBasicAuthenticator(
+    const string& realm,
+    const string& authenticatorName,
+    const Option<Credentials>& credentials)
+{
+  if (credentials.isNone()) {
+    return Error(
+        "No credentials provided for the default '" +
+        string(internal::DEFAULT_HTTP_AUTHENTICATOR) +
+        "' HTTP authenticator for realm '" + realm + "'");
+  }
+
+  LOG(INFO) << "Creating default '" << internal::DEFAULT_HTTP_AUTHENTICATOR
+            << "' HTTP authenticator for realm '" << realm << "'";
+
+  return BasicAuthenticatorFactory::create(realm, credentials.get());
+}
+
+
+Result<Authenticator*> createCustomAuthenticator(
+    const string& realm,
+    const string& authenticatorName)
+{
+  if (!modules::ModuleManager::contains<Authenticator>(authenticatorName)) {
+    return Error(
+        "HTTP authenticator '" + authenticatorName + "' not found. "
+        "Check the spelling (compare to '" +
+        string(internal::DEFAULT_HTTP_AUTHENTICATOR) +
+        "') or verify that the authenticator was loaded "
+        "successfully (see --modules)");
+  }
+
+  LOG(INFO) << "Creating '" << authenticatorName << "' HTTP authenticator "
+            << "for realm '" << realm << "'";
+
+  return modules::ModuleManager::create<Authenticator>(authenticatorName);
+}
+
+} // namespace {
+
+Try<Nothing> initializeHttpAuthenticators(
+    const string& realm,
+    const vector<string>& authenticatorNames,
+    const Option<Credentials>& credentials)
+{
+  if (authenticatorNames.empty()) {
+    return Error(
+        "No HTTP authenticators specified for realm '" + realm + "'");
+  }
+
+  Option<Authenticator*> authenticator;
+
+  if (authenticatorNames.size() == 1) {
+    Result<Authenticator*> authenticator_ = None();
+    if (authenticatorNames[0] == internal::DEFAULT_HTTP_AUTHENTICATOR) {
+      authenticator_ =
+        createBasicAuthenticator(realm, authenticatorNames[0], credentials);
+    } else {
+      authenticator_ = createCustomAuthenticator(realm, authenticatorNames[0]);
+    }
+
+    if (authenticator_.isError()) {
+      return Error(
+          "Failed to create HTTP authenticator module '" +
+          authenticatorNames[0] + "': " + authenticator_.error());
+    }
+
+    CHECK_SOME(authenticator_);
+    authenticator = authenticator_.get();
+  } else {
+    // There are multiple authenticators loaded for this realm,
+    // so construct a `CombinedAuthenticator` to handle them.
+    vector<Owned<Authenticator>> authenticators;
+    foreach (const string& name, authenticatorNames) {
+      Result<Authenticator*> authenticator_ = None();
+      if (name == internal::DEFAULT_HTTP_AUTHENTICATOR) {
+        authenticator_ = createBasicAuthenticator(realm, name, credentials);
+      } else {
+        authenticator_ = createCustomAuthenticator(realm, name);
+      }
+
+      if (authenticator_.isError()) {
+        return Error(
+            "Failed to create HTTP authenticator module '" +
+            name + "': " + authenticator_.error());
+      }
+
+      CHECK_SOME(authenticator_);
+      authenticators.push_back(Owned<Authenticator>(authenticator_.get()));
+    }
+
+    authenticator = new CombinedAuthenticator(realm, std::move(authenticators));
+  }
+
+  CHECK(authenticator.isSome());
+
+  // Ownership of the authenticator is passed to libprocess.
+  process::http::authentication::setAuthenticator(
+      realm, Owned<Authenticator>(authenticator.get()));
+
+  return Nothing();
 }
 
 }  // namespace mesos {

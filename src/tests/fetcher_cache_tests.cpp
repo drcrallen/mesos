@@ -209,8 +209,7 @@ void FetcherCacheTest::SetUp()
   driver.reset(new MesosSchedulerDriver(
     &scheduler, frameworkInfo, master->pid, DEFAULT_CREDENTIAL));
 
-  EXPECT_CALL(scheduler, registered(driver.get(), _, _))
-    .Times(1);
+  EXPECT_CALL(scheduler, registered(driver.get(), _, _));
 
   // This installs a temporary reaction to resourceOffers calls, which
   // must be in place BEFORE starting the scheduler driver. This
@@ -225,7 +224,7 @@ void FetcherCacheTest::SetUp()
 // there are only text files.
 static void logFile(const Path& path, const string& filename)
 {
-  string filePath = path::join(path.value, filename);
+  string filePath = path::join(path.string(), filename);
   Try<string> text = os::read(filePath);
   if (text.isSome()) {
     cout << "Begin file contents of `" << filename << "`:" << endl;
@@ -241,15 +240,15 @@ static void logFile(const Path& path, const string& filename)
 // there are only text files.
 static void logSandbox(const Path& path)
 {
-  Try<list<string>> entries = os::ls(path.value);
+  Try<list<string>> entries = os::ls(path.string());
   if (entries.isSome()) {
-    cout << "Begin listing sandbox `" << path.value << "`:" << endl;
+    cout << "Begin listing sandbox `" << path.string() << "`:" << endl;
     foreach (const string& entry, entries.get()) {
       logFile(path, entry);
     }
     cout << "End sandbox" << endl;
   } else {
-    cout << "Could not list sandbox `" << path.value
+    cout << "Could not list sandbox `" << path.string()
          << "`: " << entries.error() << endl;
   }
 }
@@ -300,7 +299,7 @@ void FetcherCacheTest::startSlave()
   slave = _slave.get();
 
   AWAIT_READY(slaveRegisteredMessage);
-  slaveId = slaveRegisteredMessage.get().slave_id();
+  slaveId = slaveRegisteredMessage->slave_id();
 
   cacheDirectory =
     slave::paths::getSlavePath(flags.fetcher_cache_dir, slaveId);
@@ -391,7 +390,7 @@ static Future<list<Nothing>> awaitFinished(
 // given queue, which later on shall be queried by awaitFinished().
 ACTION_P(PushTaskStatus, taskStatusQueue)
 {
-  TaskStatus taskStatus = arg1;
+  const TaskStatus& taskStatus = arg1;
 
   // Input parameters of ACTION_P are const. We make a mutable copy
   // so that we can use put().
@@ -425,7 +424,9 @@ Try<FetcherCacheTest::Task> FetcherCacheTest::launchTask(
            (offers.isFailed() ? offers.failure() : "discarded"));
   }
 
-  CHECK_NE(0u, offers.get().size());
+  if (offers->empty()) {
+    return Error("Received empty list of offers");
+  }
   const Offer offer = offers.get()[0];
 
   TaskInfo task;
@@ -478,7 +479,7 @@ ACTION_TEMPLATE(PushIndexedTaskStatus,
                 HAS_1_TEMPLATE_PARAMS(int, k),
                 AND_1_VALUE_PARAMS(tasks))
 {
-  TaskStatus taskStatus = ::std::tr1::get<k>(args);
+  const TaskStatus& taskStatus = ::std::tr1::get<k>(args);
   Try<int> taskId = numify<int>(taskStatus.task_id().value());
   ASSERT_SOME(taskId);
   Queue<TaskStatus> queue = (tasks)[taskId.get()].statusQueue;
@@ -536,7 +537,7 @@ Try<vector<FetcherCacheTest::Task>> FetcherCacheTest::launchTasks(
            (offers.isFailed() ? offers.failure() : "discarded"));
   }
 
-  EXPECT_NE(0u, offers.get().size());
+  EXPECT_NE(0u, offers->size());
   const Offer offer = offers.get()[0];
 
   vector<TaskInfo> tasks;
@@ -620,9 +621,9 @@ TEST_F(FetcherCacheTest, LocalUncached)
 
   EXPECT_EQ(0u, fetcherProcess->cacheSize());
   ASSERT_SOME(fetcherProcess->cacheFiles(slaveId, flags));
-  EXPECT_EQ(0u, fetcherProcess->cacheFiles(slaveId, flags).get().size());
+  EXPECT_EQ(0u, fetcherProcess->cacheFiles(slaveId, flags)->size());
 
-  const string path = path::join(task.get().runDirectory.value, COMMAND_NAME);
+  const string path = path::join(task->runDirectory.string(), COMMAND_NAME);
   EXPECT_TRUE(isExecutable(path));
   EXPECT_TRUE(os::exists(path + taskName(index)));
 }
@@ -651,13 +652,13 @@ TEST_F(FetcherCacheTest, LocalCached)
 
     AWAIT_READY(awaitFinished(task.get()));
 
-    const string path = path::join(task.get().runDirectory.value, COMMAND_NAME);
+    const string path = path::join(task->runDirectory.string(), COMMAND_NAME);
     EXPECT_TRUE(isExecutable(path));
     EXPECT_TRUE(os::exists(path + taskName(i)));
 
     EXPECT_EQ(1u, fetcherProcess->cacheSize());
     ASSERT_SOME(fetcherProcess->cacheFiles(slaveId, flags));
-    EXPECT_EQ(1u, fetcherProcess->cacheFiles(slaveId, flags).get().size());
+    EXPECT_EQ(1u, fetcherProcess->cacheFiles(slaveId, flags)->size());
   }
 }
 
@@ -686,11 +687,11 @@ TEST_F(FetcherCacheTest, CachedCustomFilename)
 
   EXPECT_EQ(1u, fetcherProcess->cacheSize());
   ASSERT_SOME(fetcherProcess->cacheFiles(slaveId, flags));
-  EXPECT_EQ(1u, fetcherProcess->cacheFiles(slaveId, flags).get().size());
+  EXPECT_EQ(1u, fetcherProcess->cacheFiles(slaveId, flags)->size());
 
   // Verify that the downloaded executable lives at our custom output path.
   const string executablePath = path::join(
-    task.get().runDirectory.value, customOutputFile);
+    task->runDirectory.string(), customOutputFile);
 
   EXPECT_TRUE(isExecutable(executablePath));
 
@@ -698,7 +699,7 @@ TEST_F(FetcherCacheTest, CachedCustomFilename)
   // named $COMMAND_NAME + $1, so if we want to verify that it ran here we have
   // to check this path in addition to the custom-named executable we saved.
   const string outputPath = path::join(
-    task.get().runDirectory.value, COMMAND_NAME);
+    task->runDirectory.string(), COMMAND_NAME);
 
   EXPECT_TRUE(os::exists(outputPath + taskName(index)));
 }
@@ -728,12 +729,12 @@ TEST_F(FetcherCacheTest, CachedCustomOutputFileWithSubdirectory)
 
   EXPECT_EQ(1u, fetcherProcess->cacheSize());
   ASSERT_SOME(fetcherProcess->cacheFiles(slaveId, flags));
-  EXPECT_EQ(1u, fetcherProcess->cacheFiles(slaveId, flags).get().size());
+  EXPECT_EQ(1u, fetcherProcess->cacheFiles(slaveId, flags)->size());
 
   // Verify that the downloaded executable lives at our custom output file
   // path.
   const string executablePath = path::join(
-      task.get().runDirectory.value, customOutputFile);
+      task->runDirectory.string(), customOutputFile);
 
   EXPECT_TRUE(isExecutable(executablePath));
 
@@ -741,7 +742,7 @@ TEST_F(FetcherCacheTest, CachedCustomOutputFileWithSubdirectory)
   // named $COMMAND_NAME + $1, so if we want to verify that it ran here we have
   // to check this path in addition to the custom-named executable we saved.
   const string outputPath = path::join(
-      task.get().runDirectory.value, COMMAND_NAME);
+      task->runDirectory.string(), COMMAND_NAME);
 
   EXPECT_TRUE(os::exists(outputPath + taskName(index)));
 }
@@ -780,19 +781,19 @@ TEST_F(FetcherCacheTest, CachedFallback)
 
   AWAIT_READY(awaitFinished(task.get()));
 
-  const string path = path::join(task.get().runDirectory.value, COMMAND_NAME);
+  const string path = path::join(task->runDirectory.string(), COMMAND_NAME);
   EXPECT_TRUE(isExecutable(path));
   EXPECT_TRUE(os::exists(path + taskName(0)));
 
   AWAIT_READY(fetcherInfo);
 
-  ASSERT_EQ(1, fetcherInfo.get().items_size());
+  ASSERT_EQ(1, fetcherInfo->items_size());
   EXPECT_EQ(FetcherInfo::Item::BYPASS_CACHE,
-            fetcherInfo.get().items(0).action());
+            fetcherInfo->items(0).action());
 
   EXPECT_EQ(0u, fetcherProcess->cacheSize());
   ASSERT_SOME(fetcherProcess->cacheFiles(slaveId, flags));
-  EXPECT_EQ(0u, fetcherProcess->cacheFiles(slaveId, flags).get().size());
+  EXPECT_EQ(0u, fetcherProcess->cacheFiles(slaveId, flags)->size());
 }
 
 
@@ -818,18 +819,18 @@ TEST_F(FetcherCacheTest, LocalUncachedExtract)
   AWAIT_READY(awaitFinished(task.get()));
 
   EXPECT_TRUE(os::exists(
-      path::join(task.get().runDirectory.value, ARCHIVE_NAME)));
+      path::join(task->runDirectory.string(), ARCHIVE_NAME)));
   EXPECT_FALSE(isExecutable(
-      path::join(task.get().runDirectory.value, ARCHIVE_NAME)));
+      path::join(task->runDirectory.string(), ARCHIVE_NAME)));
 
   const string path =
-    path::join(task.get().runDirectory.value, ARCHIVED_COMMAND_NAME);
+    path::join(task->runDirectory.string(), ARCHIVED_COMMAND_NAME);
   EXPECT_TRUE(isExecutable(path));
   EXPECT_TRUE(os::exists(path + taskName(index)));
 
   EXPECT_EQ(0u, fetcherProcess->cacheSize());
   ASSERT_SOME(fetcherProcess->cacheFiles(slaveId, flags));
-  EXPECT_EQ(0u, fetcherProcess->cacheFiles(slaveId, flags).get().size());
+  EXPECT_EQ(0u, fetcherProcess->cacheFiles(slaveId, flags)->size());
 }
 
 
@@ -855,16 +856,16 @@ TEST_F(FetcherCacheTest, LocalCachedExtract)
     AWAIT_READY(awaitFinished(task.get()));
 
     EXPECT_FALSE(os::exists(
-        path::join(task.get().runDirectory.value, ARCHIVE_NAME)));
+        path::join(task->runDirectory.string(), ARCHIVE_NAME)));
 
     const string path =
-      path::join(task.get().runDirectory.value, ARCHIVED_COMMAND_NAME);
+      path::join(task->runDirectory.string(), ARCHIVED_COMMAND_NAME);
     EXPECT_TRUE(isExecutable(path));
     EXPECT_TRUE(os::exists(path + taskName(i)));
 
     EXPECT_EQ(1u, fetcherProcess->cacheSize());
     ASSERT_SOME(fetcherProcess->cacheFiles(slaveId, flags));
-    EXPECT_EQ(1u, fetcherProcess->cacheFiles(slaveId, flags).get().size());
+    EXPECT_EQ(1u, fetcherProcess->cacheFiles(slaveId, flags)->size());
   }
 }
 
@@ -1007,13 +1008,13 @@ TEST_F(FetcherCacheHttpTest, HttpCachedSerialized)
     AWAIT_READY(awaitFinished(task.get()));
 
     const string path =
-      path::join(task.get().runDirectory.value, COMMAND_NAME);
+      path::join(task->runDirectory.string(), COMMAND_NAME);
     EXPECT_TRUE(isExecutable(path));
     EXPECT_TRUE(os::exists(path + taskName(i)));
 
     EXPECT_EQ(1u, fetcherProcess->cacheSize());
     ASSERT_SOME(fetcherProcess->cacheFiles(slaveId, flags));
-    EXPECT_EQ(1u, fetcherProcess->cacheFiles(slaveId, flags).get().size());
+    EXPECT_EQ(1u, fetcherProcess->cacheFiles(slaveId, flags)->size());
 
     // 2 requests: 1 for content-length, 1 for download.
     EXPECT_EQ(2u, httpServer->countCommandRequests);
@@ -1062,7 +1063,7 @@ TEST_F(FetcherCacheHttpTest, HttpCachedConcurrent)
   Try<vector<Task>> tasks = launchTasks(commandInfos);
   ASSERT_SOME(tasks);
 
-  CHECK_EQ(countTasks, tasks.get().size());
+  ASSERT_EQ(countTasks, tasks->size());
 
   // Having paused the HTTP server, ensure that FetcherProcess::_fetch()
   // has been called for each task, which means that all tasks are competing
@@ -1078,7 +1079,7 @@ TEST_F(FetcherCacheHttpTest, HttpCachedConcurrent)
 
   EXPECT_EQ(1u, fetcherProcess->cacheSize());
   ASSERT_SOME(fetcherProcess->cacheFiles(slaveId, flags));
-  EXPECT_EQ(1u, fetcherProcess->cacheFiles(slaveId, flags).get().size());
+  EXPECT_EQ(1u, fetcherProcess->cacheFiles(slaveId, flags)->size());
 
   // HTTP requests regarding the archive asset as follows. Archive
   // "content-length" requests: 1, archive file downloads: 2.
@@ -1090,11 +1091,11 @@ TEST_F(FetcherCacheHttpTest, HttpCachedConcurrent)
 
   for (size_t i = 0; i < countTasks; i++) {
     EXPECT_EQ(i % 2 == 1, os::exists(
-        path::join(tasks.get()[i].runDirectory.value, ARCHIVE_NAME)));
+        path::join(tasks->at(i).runDirectory.string(), ARCHIVE_NAME)));
     EXPECT_TRUE(isExecutable(
-        path::join(tasks.get()[i].runDirectory.value, COMMAND_NAME)));
+        path::join(tasks->at(i).runDirectory.string(), COMMAND_NAME)));
     EXPECT_TRUE(os::exists(
-        path::join(tasks.get()[i].runDirectory.value,
+        path::join(tasks->at(i).runDirectory.string(),
                    COMMAND_NAME + taskName(i))));
   }
 }
@@ -1171,7 +1172,7 @@ TEST_F(FetcherCacheHttpTest, HttpMixed)
   Try<vector<Task>> tasks = launchTasks(commandInfos);
   ASSERT_SOME(tasks);
 
-  CHECK_EQ(3u, tasks.get().size());
+  ASSERT_EQ(3u, tasks->size());
 
   // Having paused the HTTP server, ensure that FetcherProcess::_fetch()
   // has been called for each task, which means that all tasks are competing
@@ -1187,7 +1188,7 @@ TEST_F(FetcherCacheHttpTest, HttpMixed)
 
   EXPECT_EQ(1u, fetcherProcess->cacheSize());
   ASSERT_SOME(fetcherProcess->cacheFiles(slaveId, flags));
-  EXPECT_EQ(1u, fetcherProcess->cacheFiles(slaveId, flags).get().size());
+  EXPECT_EQ(1u, fetcherProcess->cacheFiles(slaveId, flags)->size());
 
   // HTTP requests regarding the command asset as follows. Command
   // "content-length" requests: 0, command file downloads: 3.
@@ -1200,39 +1201,47 @@ TEST_F(FetcherCacheHttpTest, HttpMixed)
   // Task 0.
 
   EXPECT_FALSE(isExecutable(
-      path::join(tasks.get()[0].runDirectory.value, ARCHIVE_NAME)));
+      path::join(tasks->at(0).runDirectory.string(), ARCHIVE_NAME)));
   EXPECT_FALSE(os::exists(
-      path::join(tasks.get()[0].runDirectory.value, ARCHIVED_COMMAND_NAME)));
+      path::join(tasks->at(0).runDirectory.string(), ARCHIVED_COMMAND_NAME)));
 
   EXPECT_TRUE(isExecutable(
-      path::join(tasks.get()[0].runDirectory.value, COMMAND_NAME)));
+      path::join(tasks->at(0).runDirectory.string(), COMMAND_NAME)));
   EXPECT_TRUE(os::exists(
-      path::join(tasks.get()[0].runDirectory.value,
+      path::join(tasks->at(0).runDirectory.string(),
                  COMMAND_NAME + taskName(0))));
 
   // Task 1.
 
-  EXPECT_FALSE(isExecutable(
-      path::join(tasks.get()[1].runDirectory.value, ARCHIVE_NAME)));
-  EXPECT_TRUE(isExecutable(
-      path::join(tasks.get()[1].runDirectory.value, ARCHIVED_COMMAND_NAME)));
+  EXPECT_FALSE(isExecutable(path::join(
+      tasks->at(1).runDirectory.string(),
+      ARCHIVE_NAME)));
+  EXPECT_TRUE(isExecutable(path::join(
+      tasks->at(1).runDirectory.string(),
+      ARCHIVED_COMMAND_NAME)));
   EXPECT_TRUE(os::exists(path::join(
-      tasks.get()[1].runDirectory.value, ARCHIVED_COMMAND_NAME + taskName(1))));
+      tasks->at(1).runDirectory.string(),
+      ARCHIVED_COMMAND_NAME + taskName(1))));
 
-  EXPECT_FALSE(isExecutable(
-      path::join(tasks.get()[1].runDirectory.value, COMMAND_NAME)));
+  EXPECT_FALSE(isExecutable(path::join(
+      tasks->at(1).runDirectory.string(),
+      COMMAND_NAME)));
 
   // Task 2.
 
-  EXPECT_FALSE(os::exists(
-      path::join(tasks.get()[2].runDirectory.value, ARCHIVE_NAME)));
-  EXPECT_TRUE(isExecutable(
-      path::join(tasks.get()[2].runDirectory.value, ARCHIVED_COMMAND_NAME)));
+  EXPECT_FALSE(os::exists(path::join(
+      tasks->at(2).runDirectory.string(),
+      ARCHIVE_NAME)));
+  EXPECT_TRUE(isExecutable(path::join(
+      tasks->at(2).runDirectory.string(),
+      ARCHIVED_COMMAND_NAME)));
   EXPECT_TRUE(os::exists(path::join(
-      tasks.get()[2].runDirectory.value, ARCHIVED_COMMAND_NAME + taskName(2))));
+      tasks->at(2).runDirectory.string(),
+      ARCHIVED_COMMAND_NAME + taskName(2))));
 
-  EXPECT_FALSE(isExecutable(
-      path::join(tasks.get()[2].runDirectory.value, COMMAND_NAME)));
+  EXPECT_FALSE(isExecutable(path::join(
+      tasks->at(2).runDirectory.string(),
+      COMMAND_NAME)));
 }
 
 
@@ -1260,13 +1269,13 @@ TEST_F(FetcherCacheHttpTest, DISABLED_HttpCachedRecovery)
 
     AWAIT_READY(awaitFinished(task.get()));
 
-    const string path = path::join(task.get().runDirectory.value, COMMAND_NAME);
+    const string path = path::join(task->runDirectory.string(), COMMAND_NAME);
     EXPECT_TRUE(isExecutable(path));
     EXPECT_TRUE(os::exists(path + taskName(i)));
 
     EXPECT_EQ(1u, fetcherProcess->cacheSize());
     ASSERT_SOME(fetcherProcess->cacheFiles(slaveId, flags));
-    EXPECT_EQ(1u, fetcherProcess->cacheFiles(slaveId, flags).get().size());
+    EXPECT_EQ(1u, fetcherProcess->cacheFiles(slaveId, flags)->size());
 
     // content-length requests: 1
     // downloads: 1
@@ -1322,13 +1331,13 @@ TEST_F(FetcherCacheHttpTest, DISABLED_HttpCachedRecovery)
     AWAIT_READY(awaitFinished(task.get()));
 
     const string path =
-      path::join(task.get().runDirectory.value, COMMAND_NAME);
+      path::join(task->runDirectory.string(), COMMAND_NAME);
     EXPECT_TRUE(isExecutable(path));
     EXPECT_TRUE(os::exists(path + taskName(i)));
 
     EXPECT_EQ(1u, fetcherProcess->cacheSize());
     ASSERT_SOME(fetcherProcess->cacheFiles(slaveId, flags));
-    EXPECT_EQ(1u, fetcherProcess->cacheFiles(slaveId, flags).get().size());
+    EXPECT_EQ(1u, fetcherProcess->cacheFiles(slaveId, flags)->size());
 
     // content-length requests: 1
     // downloads: 1
@@ -1373,19 +1382,19 @@ TEST_F(FetcherCacheTest, SimpleEviction)
 
     // Check that the task succeeded.
     EXPECT_TRUE(isExecutable(
-        path::join(task.get().runDirectory.value, commandFilename)));
+        path::join(task->runDirectory.string(), commandFilename)));
     EXPECT_TRUE(os::exists(
-        path::join(task.get().runDirectory.value, COMMAND_NAME + taskName(i))));
+        path::join(task->runDirectory.string(), COMMAND_NAME + taskName(i))));
 
     if (i < countCacheEntries) {
       EXPECT_EQ(i + 1, fetcherProcess->cacheSize());
       ASSERT_SOME(fetcherProcess->cacheFiles(slaveId, flags));
-      EXPECT_EQ(i+1u, fetcherProcess->cacheFiles(slaveId, flags).get().size());
+      EXPECT_EQ(i+1u, fetcherProcess->cacheFiles(slaveId, flags)->size());
     } else {
       EXPECT_EQ(countCacheEntries, fetcherProcess->cacheSize());
       ASSERT_SOME(fetcherProcess->cacheFiles(slaveId, flags));
       EXPECT_EQ(countCacheEntries,
-                fetcherProcess->cacheFiles(slaveId, flags).get().size());
+                fetcherProcess->cacheFiles(slaveId, flags)->size());
     }
   }
 }
@@ -1451,24 +1460,24 @@ TEST_F(FetcherCacheTest, FallbackFromEviction)
 
   // Check that the task succeeded.
   EXPECT_TRUE(isExecutable(
-      path::join(task0.get().runDirectory.value, commandFilename0)));
+      path::join(task0->runDirectory.string(), commandFilename0)));
   EXPECT_TRUE(os::exists(
-      path::join(task0.get().runDirectory.value, COMMAND_NAME + taskName(0))));
+      path::join(task0->runDirectory.string(), COMMAND_NAME + taskName(0))));
 
   AWAIT_READY(fetcherInfo0);
 
-  ASSERT_EQ(1, fetcherInfo0.get().items_size());
+  ASSERT_EQ(1, fetcherInfo0->items_size());
   EXPECT_EQ(FetcherInfo::Item::DOWNLOAD_AND_CACHE,
-            fetcherInfo0.get().items(0).action());
+            fetcherInfo0->items(0).action());
 
   // We have put a file of size 'COMMAND_SCRIPT.size()' in the cache
   // with space 'COMMAND_SCRIPT.size() + growth'. So we must have 'growth'
   // space left.
-  CHECK_EQ(Bytes(growth), fetcherProcess->availableCacheSpace());
+  ASSERT_EQ(Bytes(growth), fetcherProcess->availableCacheSpace());
 
   EXPECT_EQ(1u, fetcherProcess->cacheSize());
   ASSERT_SOME(fetcherProcess->cacheFiles(slaveId, flags));
-  EXPECT_EQ(1u, fetcherProcess->cacheFiles(slaveId, flags).get().size());
+  EXPECT_EQ(1u, fetcherProcess->cacheFiles(slaveId, flags)->size());
 
 
   // Task 1:
@@ -1500,22 +1509,22 @@ TEST_F(FetcherCacheTest, FallbackFromEviction)
 
   // Check that the task succeeded.
   EXPECT_TRUE(isExecutable(
-      path::join(task1.get().runDirectory.value, commandFilename1)));
+      path::join(task1->runDirectory.string(), commandFilename1)));
   EXPECT_TRUE(os::exists(
-      path::join(task1.get().runDirectory.value, COMMAND_NAME + taskName(1))));
+      path::join(task1->runDirectory.string(), COMMAND_NAME + taskName(1))));
 
   AWAIT_READY(fetcherInfo1);
 
-  ASSERT_EQ(1, fetcherInfo1.get().items_size());
+  ASSERT_EQ(1, fetcherInfo1->items_size());
   EXPECT_EQ(FetcherInfo::Item::DOWNLOAD_AND_CACHE,
-            fetcherInfo1.get().items(0).action());
+            fetcherInfo1->items(0).action());
 
   // The cache must now be full.
-  CHECK_EQ(Bytes(0u), fetcherProcess->availableCacheSpace());
+  ASSERT_EQ(Bytes(0u), fetcherProcess->availableCacheSpace());
 
   EXPECT_EQ(1u, fetcherProcess->cacheSize());
   ASSERT_SOME(fetcherProcess->cacheFiles(slaveId, flags));
-  EXPECT_EQ(1u, fetcherProcess->cacheFiles(slaveId, flags).get().size());
+  EXPECT_EQ(1u, fetcherProcess->cacheFiles(slaveId, flags)->size());
 
 
   // Task 2:
@@ -1548,19 +1557,19 @@ TEST_F(FetcherCacheTest, FallbackFromEviction)
 
   // Check that the task succeeded.
   EXPECT_TRUE(isExecutable(
-      path::join(task2.get().runDirectory.value, commandFilename2)));
+      path::join(task2->runDirectory.string(), commandFilename2)));
   EXPECT_TRUE(os::exists(
-      path::join(task2.get().runDirectory.value, COMMAND_NAME + taskName(2))));
+      path::join(task2->runDirectory.string(), COMMAND_NAME + taskName(2))));
 
   AWAIT_READY(fetcherInfo2);
 
-  ASSERT_EQ(1, fetcherInfo2.get().items_size());
+  ASSERT_EQ(1, fetcherInfo2->items_size());
   EXPECT_EQ(FetcherInfo::Item::BYPASS_CACHE,
-            fetcherInfo2.get().items(0).action());
+            fetcherInfo2->items(0).action());
 
   EXPECT_EQ(1u, fetcherProcess->cacheSize());
   ASSERT_SOME(fetcherProcess->cacheFiles(slaveId, flags));
-  EXPECT_EQ(1u, fetcherProcess->cacheFiles(slaveId, flags).get().size());
+  EXPECT_EQ(1u, fetcherProcess->cacheFiles(slaveId, flags)->size());
 }
 
 // Tests LRU cache eviction strategy.
@@ -1607,8 +1616,8 @@ TEST_F(FetcherCacheTest, RemoveLRUCacheEntries)
 
     // Check that the task succeeded.
     EXPECT_TRUE(isExecutable(
-        path::join(task.get().runDirectory.value, commandFilename)));
-    EXPECT_TRUE(os::exists(path::join(task.get().runDirectory.value,
+        path::join(task->runDirectory.string(), commandFilename)));
+    EXPECT_TRUE(os::exists(path::join(task->runDirectory.string(),
                                       COMMAND_NAME + taskName(taskIndex))));
 
     ++taskIndex;

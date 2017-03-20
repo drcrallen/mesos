@@ -18,6 +18,8 @@
 
 #include <glog/logging.h>
 
+#include <process/id.hpp>
+
 #include <stout/check.hpp>
 #include <stout/foreach.hpp>
 #include <stout/os.hpp>
@@ -101,8 +103,21 @@ static Option<Bytes> getDiskResource(
 
 Try<Isolator*> XfsDiskIsolatorProcess::create(const Flags& flags)
 {
-  if (!xfs::pathIsXfs(flags.work_dir)) {
+  if (!xfs::isPathXfs(flags.work_dir)) {
     return Error("'" + flags.work_dir + "' is not an XFS filesystem");
+  }
+
+  Try<bool> enabled = xfs::isQuotaEnabled(flags.work_dir);
+  if (enabled.isError()) {
+    return Error(
+        "Failed to get quota status for '" +
+        flags.work_dir + "': " + enabled.error());
+  }
+
+  if (!enabled.get()) {
+    return Error(
+        "XFS project quotas are not enabled on '" +
+        flags.work_dir + "'");
   }
 
   Result<uid_t> uid = os::getuid();
@@ -118,8 +133,7 @@ Try<Isolator*> XfsDiskIsolatorProcess::create(const Flags& flags)
   if (projects.isError()) {
     return Error(
         "Failed to parse XFS project range '" +
-        flags.xfs_project_range +
-        "'");
+        flags.xfs_project_range + "'");
   }
 
   if (projects.get().type() != Value::RANGES) {
@@ -150,7 +164,8 @@ Try<Isolator*> XfsDiskIsolatorProcess::create(const Flags& flags)
 XfsDiskIsolatorProcess::XfsDiskIsolatorProcess(
     const Flags& _flags,
     const IntervalSet<prid_t>& projectIds)
-  : flags(_flags),
+  : ProcessBase(process::ID::generate("xfs-disk-isolator")),
+    flags(_flags),
     totalProjectIds(projectIds),
     freeProjectIds(projectIds)
 {
@@ -172,7 +187,7 @@ Future<Nothing> XfsDiskIsolatorProcess::recover(
   // concerned with the on-disk state. We scan all the sandbox directories
   // for project IDs that we have not recovered and make a best effort to
   // remove all the corresponding on-disk state.
-  Try<std::list<std::string>> sandboxes = os::glob(path::join(
+  Try<list<string>> sandboxes = os::glob(path::join(
       paths::getSandboxRootDir(flags.work_dir),
       "*",
       "frameworks",
@@ -292,7 +307,10 @@ Future<Nothing> XfsDiskIsolatorProcess::update(
     const ContainerID& containerId,
     const Resources& resources)
 {
-  CHECK(infos.contains(containerId));
+  if (!infos.contains(containerId)) {
+    LOG(INFO) << "Ignoring update for unknown container " << containerId;
+    return Nothing();
+  }
 
   const Owned<Info>& info = infos[containerId];
 
@@ -329,7 +347,8 @@ Future<ResourceStatistics> XfsDiskIsolatorProcess::usage(
     const ContainerID& containerId)
 {
   if (!infos.contains(containerId)) {
-    return Failure("Unknown container");
+    LOG(INFO) << "Ignoring usage for unknown container " << containerId;
+    return ResourceStatistics();
   }
 
   ResourceStatistics statistics;
@@ -411,6 +430,7 @@ Option<prid_t> XfsDiskIsolatorProcess::nextProjectId()
   freeProjectIds -= projectId;
   return projectId;
 }
+
 
 void XfsDiskIsolatorProcess::returnProjectId(
     prid_t projectId)

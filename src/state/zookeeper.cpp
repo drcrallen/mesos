@@ -32,6 +32,7 @@
 
 #include <process/dispatch.hpp>
 #include <process/future.hpp>
+#include <process/id.hpp>
 #include <process/process.hpp>
 
 #include <stout/duration.hpp>
@@ -179,7 +180,8 @@ ZooKeeperStorageProcess::ZooKeeperStorageProcess(
     const Duration& _timeout,
     const string& _znode,
     const Option<Authentication>& _auth)
-  : servers(_servers),
+  : ProcessBase(process::ID::generate("zookeeper-storage")),
+    servers(_servers),
     timeout(_timeout),
     znode(strings::remove(_znode, "/", strings::SUFFIX)),
     auth(_auth),
@@ -500,11 +502,11 @@ Result<bool> ZooKeeperStorageProcess::doSet(const Entry& entry,
   if (code == ZNONODE) {
     // Create directory path znodes as necessary.
     CHECK(znode.size() == 0 || znode.at(znode.size() - 1) != '/');
-    size_t index = znode.find("/", 0);
+    size_t index = znode.find('/', 0);
 
     while (index < string::npos) {
       // Get out the prefix to create.
-      index = znode.find("/", index + 1);
+      index = znode.find('/', index + 1);
       string prefix = znode.substr(0, index);
 
       // Create the znode (even if it already exists).
@@ -551,7 +553,7 @@ Result<bool> ZooKeeperStorageProcess::doSet(const Entry& entry,
     return Error("Failed to deserialize Entry");
   }
 
-  if (UUID::fromBytes(current.uuid()) != uuid) {
+  if (UUID::fromBytes(current.uuid()).get() != uuid) {
     return false;
   }
 
@@ -602,7 +604,8 @@ Result<bool> ZooKeeperStorageProcess::doExpunge(const Entry& entry)
     return Error("Failed to deserialize Entry");
   }
 
-  if (UUID::fromBytes(current.uuid()) != UUID::fromBytes(entry.uuid())) {
+  if (UUID::fromBytes(current.uuid()).get() !=
+      UUID::fromBytes(entry.uuid()).get()) {
     return false;
   }
 

@@ -19,6 +19,7 @@
 
 #include <stout/flags.hpp>
 
+#include "common/http.hpp"
 #include "common/parse.hpp"
 #include "master/constants.hpp"
 #include "master/flags.hpp"
@@ -36,7 +37,7 @@ mesos::internal::master::Flags::Flags()
       "hostname",
       "The hostname the master should advertise in ZooKeeper.\n"
       "If left unset, the hostname is resolved from the IP address\n"
-      "that the agent binds to; unless the user explicitly prevents\n"
+      "that the master advertises; unless the user explicitly prevents\n"
       "that, using `--no-hostname_lookup`, in which case the IP itself\n"
       "is used.");
 
@@ -83,17 +84,23 @@ mesos::internal::master::Flags::Flags()
       "ZooKeeper session timeout.",
       ZOOKEEPER_SESSION_TIMEOUT);
 
-  // TODO(bmahler): Set the default to true in 0.20.0.
+  // TODO(neilc): This flag is deprecated in 1.0 and will be removed 6
+  // months later.
   add(&Flags::registry_strict,
       "registry_strict",
       "Whether the master will take actions based on the persistent\n"
-      "information stored in the Registry. Setting this to false means\n"
-      "that the Registrar will never reject the admission, readmission,\n"
-      "or removal of an agent. Consequently, `false` can be used to\n"
-      "bootstrap the persistent state on a running cluster.\n"
-      "NOTE: This flag is *experimental* and should not be used in\n"
-      "production yet.",
-      false);
+      "information stored in the Registry.\n"
+      "NOTE: This flag is *disabled* and will be removed in a future\n"
+      "version of Mesos.",
+      false,
+      [](bool value) -> Option<Error> {
+        if (value) {
+          return Error("Support for '--registry_strict' has been "
+                       "disabled and will be removed in a future "
+                       "version of Mesos");
+        }
+        return None();
+      });
 
   add(&Flags::registry_fetch_timeout,
       "registry_fetch_timeout",
@@ -117,10 +124,12 @@ mesos::internal::master::Flags::Flags()
   add(&Flags::agent_reregister_timeout,
       "agent_reregister_timeout",
       flags::DeprecatedName("slave_reregister_timeout"),
-      "The timeout within which all agents are expected to re-register\n"
-      "when a new master is elected as the leader. Agents that do not\n"
-      "re-register within the timeout will be removed from the registry\n"
-      "and will be shutdown if they attempt to communicate with master.\n"
+      "The timeout within which an agent is expected to re-register.\n"
+      "Agents re-register when they become disconnected from the master\n"
+      "or when a new master is elected as the leader. Agents that do not\n"
+      "re-register within the timeout will be marked unreachable in the\n"
+      "registry; if/when the agent re-registers with the master, any\n"
+      "non-partition-aware tasks running on the agent will be terminated.\n"
       "NOTE: This value has to be at least " +
         stringify(MIN_AGENT_REREGISTER_TIMEOUT) + ".",
       MIN_AGENT_REREGISTER_TIMEOUT);
@@ -222,11 +231,21 @@ mesos::internal::master::Flags::Flags()
       "If `false`, unauthenticated agents are also allowed to register.",
       false);
 
-  add(&Flags::authenticate_http,
-      "authenticate_http",
-      "If `true`, only authenticated requests for HTTP endpoints supporting\n"
-      "authentication are allowed. If `false`, unauthenticated requests to\n"
-      "HTTP endpoints are also allowed.\n",
+  // TODO(zhitao): Remove deprecated `--authenticate_http` flag name after
+  // the deprecation cycle which started with Mesos 1.0.
+  add(&Flags::authenticate_http_readwrite,
+      "authenticate_http_readwrite",
+      flags::DeprecatedName("authenticate_http"),
+      "If `true`, only authenticated requests for read-write HTTP endpoints\n"
+      "supporting authentication are allowed. If `false`, unauthenticated\n"
+      "requests to such HTTP endpoints are also allowed.",
+      false);
+
+  add(&Flags::authenticate_http_readonly,
+      "authenticate_http_readonly",
+      "If `true`, only authenticated requests for read-only HTTP endpoints\n"
+      "supporting authentication are allowed. If `false`, unauthenticated\n"
+      "requests to such HTTP endpoints are also allowed.",
       false);
 
   add(&Flags::authenticate_http_frameworks,
@@ -431,6 +450,16 @@ mesos::internal::master::Flags::Flags()
       "load an alternate allocator module using `--modules`.",
       DEFAULT_ALLOCATOR);
 
+  add(&Flags::fair_sharing_excluded_resource_names,
+      "fair_sharing_excluded_resource_names",
+      "A comma-separated list of the resource names (e.g. 'gpus')\n"
+      "that will be excluded from fair sharing constraints.\n"
+      "This may be useful in cases where the fair sharing\n"
+      "implementation currently has limitations. E.g. See the\n"
+      "problem of \"scarce\" resources:\n"
+      "  http://www.mail-archive.com/dev@mesos.apache.org/msg35631.html\n"
+      "  https://issues.apache.org/jira/browse/MESOS-5377");
+
   add(&Flags::hooks,
       "hooks",
       "A comma-separated list of hook modules to be\n"
@@ -439,7 +468,7 @@ mesos::internal::master::Flags::Flags()
   add(&Flags::agent_ping_timeout,
       "agent_ping_timeout",
       flags::DeprecatedName("slave_ping_timeout"),
-      "The timeout within which each agent is expected to respond to a\n"
+      "The timeout within which an agent is expected to respond to a\n"
       "ping from the master. Agents that do not respond within\n"
       "max_agent_ping_timeouts ping retries will be asked to shutdown.\n"
       "NOTE: The total ping timeout (`agent_ping_timeout` multiplied by\n"
@@ -514,6 +543,11 @@ mesos::internal::master::Flags::Flags()
       "Maximum number of completed tasks per framework to store in memory.",
       DEFAULT_MAX_COMPLETED_TASKS_PER_FRAMEWORK);
 
+  add(&Flags::max_unreachable_tasks_per_framework,
+      "max_unreachable_tasks_per_framework",
+      "Maximum number of unreachable tasks per framework to store in memory.",
+      DEFAULT_MAX_UNREACHABLE_TASKS_PER_FRAMEWORK);
+
   add(&Flags::master_contender,
       "master_contender",
       "The symbol name of the master contender to use.\n"
@@ -527,4 +561,35 @@ mesos::internal::master::Flags::Flags()
       "should exist in a module specified through the --modules flag.\n"
       "Cannot be used in conjunction with --zk.\n"
       "Must be used in conjunction with --master_contender.");
+
+  add(&Flags::registry_gc_interval,
+      "registry_gc_interval",
+      "How often to garbage collect the registry. The current leading\n"
+      "master will periodically discard information from the registry.\n"
+      "How long registry state is retained is controlled by other\n"
+      "parameters (e.g., registry_max_agent_age, registry_max_agent_count);\n"
+      "this parameter controls how often the master will examine the\n"
+      "registry to see if data should be discarded.",
+      DEFAULT_REGISTRY_GC_INTERVAL);
+
+  add(&Flags::registry_max_agent_age,
+      "registry_max_agent_age",
+      "Maximum length of time to store information in the registry about\n"
+      "agents that are not currently connected to the cluster. This\n"
+      "information allows frameworks to determine the status of unreachable\n"
+      "and removed agents. Note that the registry always stores information\n"
+      "on all connected agents. If there are more than\n"
+      "`registry_max_agent_count` partitioned or removed agents, agent\n"
+      "information may be discarded from the registry sooner than indicated\n"
+      "by this parameter.",
+      DEFAULT_REGISTRY_MAX_AGENT_AGE);
+
+  add(&Flags::registry_max_agent_count,
+      "registry_max_agent_count",
+      "Maximum number of disconnected agents to store in the registry.\n"
+      "This informtion allows frameworks to determine the status of\n"
+      "disconnected agents. Note that the registry always stores\n"
+      "information about all connected agents. See also the\n"
+      "`registry_max_agent_age` flag.",
+      DEFAULT_REGISTRY_MAX_AGENT_COUNT);
 }

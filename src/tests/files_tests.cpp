@@ -33,6 +33,9 @@
 
 #include <stout/tests/utils.hpp>
 
+#include "common/http.hpp"
+#include "common/protobuf_utils.hpp"
+
 #include "files/files.hpp"
 
 #include "tests/mesos.hpp"
@@ -48,6 +51,8 @@ using process::http::NotFound;
 using process::http::OK;
 using process::http::Response;
 using process::http::Unauthorized;
+
+using process::http::authentication::Principal;
 
 using std::string;
 
@@ -107,7 +112,7 @@ TEST_F(FilesTest, AttachTest)
   AWAIT_EXPECT_READY(files.attach("file", "myname"));       // Re-attach.
   AWAIT_EXPECT_FAILED(files.attach("missing", "somename")); // Missing file.
 
-  auto authorization = [](const Option<string>&) { return true; };
+  auto authorization = [](const Option<Principal>&) { return true; };
 
   // Attach with required authorization.
   AWAIT_EXPECT_READY(files.attach("file", "myname", authorization));
@@ -180,7 +185,7 @@ TEST_F(FilesTest, ReadTest)
 
   // Test reads with authorization enabled.
   bool authorized = true;
-  auto authorization = [&authorized](const Option<std::string>&) {
+  auto authorization = [&authorized](const Option<Principal>&) {
     return authorized;
   };
 
@@ -235,7 +240,7 @@ TEST_F(FilesTest, ReadTest)
 }
 
 
-TEST_F(FilesTest, ResolveTest)
+TEST_F_TEMP_DISABLED_ON_WINDOWS(FilesTest, ResolveTest)
 {
   Files files;
   process::UPID upid("files", process::address());
@@ -303,6 +308,9 @@ TEST_F(FilesTest, ResolveTest)
   AWAIT_EXPECT_RESPONSE_STATUS_EQ(
       BadRequest().status,
       process::http::get(upid, "read", "path=one/"));
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(
+      BadRequest().status,
+      process::http::get(upid, "read", "path=one/two/"));
 
   // Breaking out of sandbox.
   AWAIT_EXPECT_RESPONSE_STATUS_EQ(
@@ -311,7 +319,7 @@ TEST_F(FilesTest, ResolveTest)
 }
 
 
-TEST_F(FilesTest, BrowseTest)
+TEST_F_TEMP_DISABLED_ON_WINDOWS(FilesTest, BrowseTest)
 {
   Files files;
   process::UPID upid("files", process::address());
@@ -320,6 +328,7 @@ TEST_F(FilesTest, BrowseTest)
   ASSERT_SOME(os::mkdir("1/3"));
   ASSERT_SOME(os::write("1/two", "two"));
   ASSERT_SOME(os::write("1/three", "three"));
+  ASSERT_SOME(os::mkdir("2"));
 
   AWAIT_EXPECT_READY(files.attach("1", "one"));
 
@@ -327,13 +336,13 @@ TEST_F(FilesTest, BrowseTest)
   struct stat s;
   JSON::Array expected;
   ASSERT_EQ(0, stat("1/2", &s));
-  expected.values.push_back(jsonFileInfo("one/2", s));
+  expected.values.push_back(model(protobuf::createFileInfo("one/2", s)));
   ASSERT_EQ(0, stat("1/3", &s));
-  expected.values.push_back(jsonFileInfo("one/3", s));
+  expected.values.push_back(model(protobuf::createFileInfo("one/3", s)));
   ASSERT_EQ(0, stat("1/three", &s));
-  expected.values.push_back(jsonFileInfo("one/three", s));
+  expected.values.push_back(model(protobuf::createFileInfo("one/three", s)));
   ASSERT_EQ(0, stat("1/two", &s));
-  expected.values.push_back(jsonFileInfo("one/two", s));
+  expected.values.push_back(model(protobuf::createFileInfo("one/two", s)));
 
   Future<Response> response =
       process::http::get(upid, "browse", "path=one/");
@@ -366,20 +375,56 @@ TEST_F(FilesTest, BrowseTest)
   files.detach("one");
 
   bool authorized = true;
-  auto authorization = [&authorized](const Option<std::string>&) {
+  auto authorization = [&authorized](const Option<Principal>&) {
     return authorized;
   };
 
+  ASSERT_SOME(os::mkdir("2"));
+
   AWAIT_EXPECT_READY(files.attach("1", "one", authorization));
+  AWAIT_EXPECT_READY(files.attach("2", "/two/", authorization));
+
+  // The `FilesProcess` stores authorization callbacks in a map keyed by path.
+  // If no callback is found for the requested path, then it is assumed that
+  // authorization for that path is not enabled - the request is authorized.
+  // Because of this, it is worth testing several permutations of the process's
+  // handling of trailing slashes in path names when authorization is enabled.
+  // We sometimes remove trailing slashes, so it's possible that we could fail
+  // to find the callback in the map.
 
   response = process::http::get(upid, "browse", "path=one");
 
   AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
   AWAIT_EXPECT_RESPONSE_BODY_EQ(stringify(expected), response);
 
+  response = process::http::get(upid, "browse", "path=one/");
+
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
+  AWAIT_EXPECT_RESPONSE_BODY_EQ(stringify(expected), response);
+
+  response = process::http::get(upid, "browse", "path=/two");
+
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
+
+  response = process::http::get(upid, "browse", "path=/two/");
+
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
+
   authorized = false;
 
   response = process::http::get(upid, "browse", "path=one");
+
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(Forbidden().status, response);
+
+  response = process::http::get(upid, "browse", "path=one/");
+
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(Forbidden().status, response);
+
+  response = process::http::get(upid, "browse", "path=/two");
+
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(Forbidden().status, response);
+
+  response = process::http::get(upid, "browse", "path=/two/");
 
   AWAIT_EXPECT_RESPONSE_STATUS_EQ(Forbidden().status, response);
 }
@@ -420,7 +465,7 @@ TEST_F(FilesTest, DownloadTest)
 
   // Test downloads with authorization enabled.
   bool authorized = true;
-  auto authorization = [&authorized](const Option<std::string>&) {
+  auto authorization = [&authorized](const Option<Principal>&) {
     return authorized;
   };
 
@@ -444,25 +489,74 @@ TEST_F(FilesTest, DownloadTest)
 // Tests that the '/files/debug' endpoint works as expected.
 TEST_F(FilesTest, DebugTest)
 {
-  Files files;
-  process::UPID upid("files", process::address());
+  // Verifies that without any authorizer or authenticator, the '/files/debug'
+  // endpoint works as expected.
+  {
+    Files files;
+    process::UPID upid("files", process::address());
 
-  ASSERT_SOME(os::mkdir("real-path-1"));
-  ASSERT_SOME(os::mkdir("real-path-2"));
+    ASSERT_SOME(os::mkdir("real-path-1"));
+    ASSERT_SOME(os::mkdir("real-path-2"));
 
-  AWAIT_EXPECT_READY(files.attach("real-path-1", "virtual-path-1"));
-  AWAIT_EXPECT_READY(files.attach("real-path-2", "virtual-path-2"));
+    AWAIT_EXPECT_READY(files.attach("real-path-1", "virtual-path-1"));
+    AWAIT_EXPECT_READY(files.attach("real-path-2", "virtual-path-2"));
 
-  // Construct the expected JSON output.
-  const string cwd = os::getcwd();
-  JSON::Object expected;
-  expected.values["virtual-path-1"] = path::join(cwd, "real-path-1");
-  expected.values["virtual-path-2"] = path::join(cwd, "real-path-2");
+    // Construct the expected JSON output.
+    const string cwd = os::getcwd();
+    JSON::Object expected;
+    expected.values["virtual-path-1"] = path::join(cwd, "real-path-1");
+    expected.values["virtual-path-2"] = path::join(cwd, "real-path-2");
 
-  Future<Response> response = process::http::get(upid, "debug");
+    Future<Response> response = process::http::get(upid, "debug");
 
-  AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
-  AWAIT_EXPECT_RESPONSE_BODY_EQ(stringify(expected), response);
+    AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
+    AWAIT_EXPECT_RESPONSE_BODY_EQ(stringify(expected), response);
+  }
+
+  // Verifies that unauthorized requests for the '/files/debug' endpoint are
+  // properly rejected.
+  {
+    MockAuthorizer mockAuthorizer;
+
+    Files files(None(), &mockAuthorizer);
+    process::UPID upid("files", process::address());
+
+    EXPECT_CALL(mockAuthorizer, authorized(_))
+      .WillOnce(Return(false));
+
+    Future<Response> response = process::http::get(upid, "debug");
+
+    AWAIT_EXPECT_RESPONSE_STATUS_EQ(Forbidden().status, response);
+  }
+
+  // Verifies that with an authorizer, the '/files/debug' endpoint works as
+  // expected.
+  {
+    MockAuthorizer mockAuthorizer;
+
+    Files files(None(), &mockAuthorizer);
+    process::UPID upid("files", process::address());
+
+    EXPECT_CALL(mockAuthorizer, authorized(_))
+      .WillOnce(Return(true));
+
+    ASSERT_SOME(os::mkdir("real-path-1"));
+    ASSERT_SOME(os::mkdir("real-path-2"));
+
+    AWAIT_EXPECT_READY(files.attach("real-path-1", "virtual-path-1"));
+    AWAIT_EXPECT_READY(files.attach("real-path-2", "virtual-path-2"));
+
+    // Construct the expected JSON output.
+    const string cwd = os::getcwd();
+    JSON::Object expected;
+    expected.values["virtual-path-1"] = path::join(cwd, "real-path-1");
+    expected.values["virtual-path-2"] = path::join(cwd, "real-path-2");
+
+    Future<Response> response = process::http::get(upid, "debug");
+
+    AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
+    AWAIT_EXPECT_RESPONSE_BODY_EQ(stringify(expected), response);
+  }
 }
 
 
@@ -491,22 +585,22 @@ TEST_F(FilesTest, AuthenticationTest)
 
   Future<Response> response = process::http::get(upid, "browse");
   AWAIT_EXPECT_RESPONSE_STATUS_EQ(Unauthorized({}).status, response);
-  EXPECT_EQ(response.get().headers.at("WWW-Authenticate"),
+  EXPECT_EQ(response->headers.at("WWW-Authenticate"),
             expectedAuthorizationHeader);
 
   response = process::http::get(upid, "read");
   AWAIT_EXPECT_RESPONSE_STATUS_EQ(Unauthorized({}).status, response);
-  EXPECT_EQ(response.get().headers.at("WWW-Authenticate"),
+  EXPECT_EQ(response->headers.at("WWW-Authenticate"),
             expectedAuthorizationHeader);
 
   response = process::http::get(upid, "download");
   AWAIT_EXPECT_RESPONSE_STATUS_EQ(Unauthorized({}).status, response);
-  EXPECT_EQ(response.get().headers.at("WWW-Authenticate"),
+  EXPECT_EQ(response->headers.at("WWW-Authenticate"),
             expectedAuthorizationHeader);
 
   response = process::http::get(upid, "debug");
   AWAIT_EXPECT_RESPONSE_STATUS_EQ(Unauthorized({}).status, response);
-  EXPECT_EQ(response.get().headers.at("WWW-Authenticate"),
+  EXPECT_EQ(response->headers.at("WWW-Authenticate"),
             expectedAuthorizationHeader);
 }
 

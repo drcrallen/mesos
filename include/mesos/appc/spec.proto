@@ -14,6 +14,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+syntax = "proto2";
+
 package appc.spec;
 
 /**
@@ -39,6 +41,20 @@ message ImageManifest {
   }
 
   repeated Label labels = 4;
+
+
+  message Environment {
+    required string name = 1;
+    required string value = 2;
+  }
+
+  message App {
+    repeated string exec = 1;
+    optional string workingDirectory = 2;
+    repeated Environment environment = 3;
+  }
+
+  optional App app = 7;
 
   message Annotation {
     required string name = 1;

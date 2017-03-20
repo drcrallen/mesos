@@ -89,7 +89,7 @@ TEST_F(HttpFaultToleranceTest, SchedulerSubscribeAfterFailoverTimeout)
   master::Flags flags = CreateMasterFlags();
   flags.authenticate_frameworks = false;
 
-  v1::FrameworkInfo frameworkInfo = DEFAULT_V1_FRAMEWORK_INFO;
+  v1::FrameworkInfo frameworkInfo = v1::DEFAULT_FRAMEWORK_INFO;
   frameworkInfo.set_failover_timeout(Weeks(2).secs());
 
   Try<Owned<cluster::Master>> master = StartMaster(flags);
@@ -105,15 +105,16 @@ TEST_F(HttpFaultToleranceTest, SchedulerSubscribeAfterFailoverTimeout)
   // Launch the first (i.e., failing) scheduler and wait until it receives
   // a `SUBSCRIBED` event to launch the second (i.e., failover) scheduler.
   {
-    auto scheduler = std::make_shared<MockV1HTTPScheduler>();
+    auto scheduler = std::make_shared<v1::MockHTTPScheduler>();
 
     Future<Nothing> connected;
     EXPECT_CALL(*scheduler, connected(_))
-      .WillOnce(FutureSatisfy(&connected))
-      .WillRepeatedly(Return()); // Ignore future invocations.
+      .WillOnce(FutureSatisfy(&connected));
 
-    scheduler::TestV1Mesos schedulerLibrary(
-        master.get()->pid, contentType, scheduler);
+    v1::scheduler::TestMesos schedulerLibrary(
+        master.get()->pid,
+        contentType,
+        scheduler);
 
     AWAIT_READY(connected);
 
@@ -154,6 +155,7 @@ TEST_F(HttpFaultToleranceTest, SchedulerSubscribeAfterFailoverTimeout)
     FUTURE_DISPATCH(_, &Master::frameworkFailoverTimeout);
 
   Clock::advance(failoverTimeout.get());
+  Clock::resume();
 
   // Wait until master actually marks the framework as completed.
   AWAIT_READY(frameworkFailoverTimeout);
@@ -161,15 +163,17 @@ TEST_F(HttpFaultToleranceTest, SchedulerSubscribeAfterFailoverTimeout)
   // Now launch the second (i.e., failover) scheduler using the
   // framework id recorded from the first scheduler.
   {
-    auto scheduler = std::make_shared<MockV1HTTPScheduler>();
+    auto scheduler = std::make_shared<v1::MockHTTPScheduler>();
 
     Future<Nothing> connected;
     EXPECT_CALL(*scheduler, connected(_))
       .WillOnce(FutureSatisfy(&connected))
       .WillRepeatedly(Return()); // Ignore future invocations.
 
-    scheduler::TestV1Mesos schedulerLibrary(
-        master.get()->pid, contentType, scheduler);
+    v1::scheduler::TestMesos schedulerLibrary(
+        master.get()->pid,
+        contentType,
+        scheduler);
 
     AWAIT_READY(connected);
 
@@ -188,7 +192,7 @@ TEST_F(HttpFaultToleranceTest, SchedulerSubscribeAfterFailoverTimeout)
       call.set_type(Call::SUBSCRIBE);
 
       Call::Subscribe* subscribe = call.mutable_subscribe();
-      subscribe->mutable_framework_info()->CopyFrom(DEFAULT_V1_FRAMEWORK_INFO);
+      subscribe->mutable_framework_info()->CopyFrom(v1::DEFAULT_FRAMEWORK_INFO);
       subscribe->mutable_framework_info()->mutable_id()->CopyFrom(frameworkId);
 
       schedulerLibrary.send(call);
@@ -216,15 +220,17 @@ TEST_F(HttpFaultToleranceTest, SchedulerSubscribeAfterTeardown)
   // Launch the first (i.e., failing) scheduler and wait until it receives
   // a `SUBSCRIBED` event to launch the second (i.e., failover) scheduler.
   {
-    auto scheduler = std::make_shared<MockV1HTTPScheduler>();
+    auto scheduler = std::make_shared<v1::MockHTTPScheduler>();
 
     Future<Nothing> connected;
     EXPECT_CALL(*scheduler, connected(_))
       .WillOnce(FutureSatisfy(&connected))
       .WillRepeatedly(Return()); // Ignore future invocations.
 
-    scheduler::TestV1Mesos schedulerLibrary(
-        master.get()->pid, contentType, scheduler);
+    v1::scheduler::TestMesos schedulerLibrary(
+        master.get()->pid,
+        contentType,
+        scheduler);
 
     AWAIT_READY(connected);
 
@@ -240,7 +246,7 @@ TEST_F(HttpFaultToleranceTest, SchedulerSubscribeAfterTeardown)
       call.set_type(Call::SUBSCRIBE);
 
       Call::Subscribe* subscribe = call.mutable_subscribe();
-      subscribe->mutable_framework_info()->CopyFrom(DEFAULT_V1_FRAMEWORK_INFO);
+      subscribe->mutable_framework_info()->CopyFrom(v1::DEFAULT_FRAMEWORK_INFO);
 
       schedulerLibrary.send(call);
     }
@@ -271,6 +277,7 @@ TEST_F(HttpFaultToleranceTest, SchedulerSubscribeAfterTeardown)
     // Wait for `removeFramework()` to be completed on the master.
     Clock::pause();
     Clock::settle();
+    Clock::resume();
 
     // The scheduler should eventually realize the disconnection.
     AWAIT_READY(disconnected);
@@ -279,15 +286,17 @@ TEST_F(HttpFaultToleranceTest, SchedulerSubscribeAfterTeardown)
   // Now launch the second (i.e., failover) scheduler using the
   // framework id recorded from the first scheduler.
   {
-    auto scheduler = std::make_shared<MockV1HTTPScheduler>();
+    auto scheduler = std::make_shared<v1::MockHTTPScheduler>();
 
     Future<Nothing> connected;
     EXPECT_CALL(*scheduler, connected(_))
       .WillOnce(FutureSatisfy(&connected))
       .WillRepeatedly(Return()); // Ignore future invocations.
 
-    scheduler::TestV1Mesos schedulerLibrary(
-        master.get()->pid, contentType, scheduler);
+    v1::scheduler::TestMesos schedulerLibrary(
+        master.get()->pid,
+        contentType,
+        scheduler);
 
     AWAIT_READY(connected);
 
@@ -306,7 +315,7 @@ TEST_F(HttpFaultToleranceTest, SchedulerSubscribeAfterTeardown)
       call.set_type(Call::SUBSCRIBE);
 
       Call::Subscribe* subscribe = call.mutable_subscribe();
-      subscribe->mutable_framework_info()->CopyFrom(DEFAULT_V1_FRAMEWORK_INFO);
+      subscribe->mutable_framework_info()->CopyFrom(v1::DEFAULT_FRAMEWORK_INFO);
       subscribe->mutable_framework_info()->mutable_id()->CopyFrom(frameworkId);
 
       schedulerLibrary.send(call);
@@ -327,8 +336,8 @@ TEST_F(HttpFaultToleranceTest, SchedulerFailoverStatusUpdate)
   Try<Owned<cluster::Master>> master = StartMaster(flags);
   ASSERT_SOME(master);
 
-  auto scheduler = std::make_shared<MockV1HTTPScheduler>();
-  auto executor = std::make_shared<MockV1HTTPExecutor>();
+  auto scheduler = std::make_shared<v1::MockHTTPScheduler>();
+  auto executor = std::make_shared<v1::MockHTTPExecutor>();
 
   ExecutorID executorId = DEFAULT_EXECUTOR_ID;
   TestContainerizer containerizer(executorId, executor);
@@ -345,8 +354,10 @@ TEST_F(HttpFaultToleranceTest, SchedulerFailoverStatusUpdate)
 
   ContentType contentType = ContentType::PROTOBUF;
 
-  scheduler::TestV1Mesos schedulerLibrary(
-      master.get()->pid, contentType, scheduler);
+  v1::scheduler::TestMesos schedulerLibrary(
+      master.get()->pid,
+      contentType,
+      scheduler);
 
   AWAIT_READY(connected);
 
@@ -366,25 +377,25 @@ TEST_F(HttpFaultToleranceTest, SchedulerFailoverStatusUpdate)
     call.set_type(Call::SUBSCRIBE);
 
     Call::Subscribe* subscribe = call.mutable_subscribe();
-    subscribe->mutable_framework_info()->CopyFrom(DEFAULT_V1_FRAMEWORK_INFO);
+    subscribe->mutable_framework_info()->CopyFrom(v1::DEFAULT_FRAMEWORK_INFO);
 
     schedulerLibrary.send(call);
   }
 
   AWAIT_READY(subscribed);
 
-  v1::FrameworkID frameworkId(subscribed.get().framework_id());
+  v1::FrameworkID frameworkId(subscribed->framework_id());
 
   AWAIT_READY(offers);
   EXPECT_NE(0, offers->offers().size());
 
   EXPECT_CALL(*executor, connected(_))
-    .WillOnce(executor::SendSubscribe(frameworkId, evolve(executorId)));
+    .WillOnce(v1::executor::SendSubscribe(frameworkId, evolve(executorId)));
 
   EXPECT_CALL(*executor, subscribed(_, _));
 
   EXPECT_CALL(*executor, launch(_, _))
-    .WillOnce(executor::SendUpdateFromTask(
+    .WillOnce(v1::executor::SendUpdateFromTask(
         frameworkId, evolve(executorId), v1::TASK_RUNNING));
 
   Future<Nothing> acknowledged;
@@ -426,17 +437,19 @@ TEST_F(HttpFaultToleranceTest, SchedulerFailoverStatusUpdate)
 
   // Failover the scheduler without acknowledging the status update.
 
-  auto scheduler2 = std::make_shared<MockV1HTTPScheduler>();
+  auto scheduler2 = std::make_shared<v1::MockHTTPScheduler>();
 
+  Future<Nothing> connected2;
   EXPECT_CALL(*scheduler2, connected(_))
-    .WillOnce(FutureSatisfy(&connected))
-    .WillRepeatedly(Return()); // Ignore future invocations.
+    .WillOnce(FutureSatisfy(&connected2));
 
   // Failover to another scheduler instance.
-  scheduler::TestV1Mesos schedulerLibrary2(
-      master.get()->pid, contentType, scheduler2);
+  v1::scheduler::TestMesos schedulerLibrary2(
+      master.get()->pid,
+      contentType,
+      scheduler2);
 
-  AWAIT_READY(connected);
+  AWAIT_READY(connected2);
 
   // The previously connected scheduler instance should receive an
   // error/disconnected event.
@@ -466,7 +479,7 @@ TEST_F(HttpFaultToleranceTest, SchedulerFailoverStatusUpdate)
     call.set_type(Call::SUBSCRIBE);
 
     Call::Subscribe* subscribe = call.mutable_subscribe();
-    subscribe->mutable_framework_info()->CopyFrom(DEFAULT_V1_FRAMEWORK_INFO);
+    subscribe->mutable_framework_info()->CopyFrom(v1::DEFAULT_FRAMEWORK_INFO);
     subscribe->mutable_framework_info()->mutable_id()->CopyFrom(frameworkId);
 
     schedulerLibrary2.send(call);
@@ -476,7 +489,7 @@ TEST_F(HttpFaultToleranceTest, SchedulerFailoverStatusUpdate)
   AWAIT_READY(disconnected);
   AWAIT_READY(subscribed);
 
-  EXPECT_EQ(frameworkId, subscribed.get().framework_id());
+  EXPECT_EQ(frameworkId, subscribed->framework_id());
 
   Clock::pause();
 
@@ -491,12 +504,6 @@ TEST_F(HttpFaultToleranceTest, SchedulerFailoverStatusUpdate)
 
   EXPECT_CALL(*executor, disconnected(_))
     .Times(AtMost(1));
-
-  EXPECT_CALL(*scheduler, disconnected(_))
-    .Times(AtMost(1));
-
-  EXPECT_CALL(*scheduler2, disconnected(_))
-    .Times(AtMost(1));
 }
 
 
@@ -510,8 +517,8 @@ TEST_F(HttpFaultToleranceTest, SchedulerFailoverExecutorToFrameworkMessage)
   Try<Owned<cluster::Master>> master = StartMaster(flags);
   ASSERT_SOME(master);
 
-  auto scheduler = std::make_shared<MockV1HTTPScheduler>();
-  auto executor = std::make_shared<MockV1HTTPExecutor>();
+  auto scheduler = std::make_shared<v1::MockHTTPScheduler>();
+  auto executor = std::make_shared<v1::MockHTTPExecutor>();
 
   ExecutorID executorId = DEFAULT_EXECUTOR_ID;
   TestContainerizer containerizer(executorId, executor);
@@ -528,8 +535,10 @@ TEST_F(HttpFaultToleranceTest, SchedulerFailoverExecutorToFrameworkMessage)
 
   ContentType contentType = ContentType::PROTOBUF;
 
-  scheduler::TestV1Mesos schedulerLibrary(
-      master.get()->pid, contentType, scheduler);
+  v1::scheduler::TestMesos schedulerLibrary(
+      master.get()->pid,
+      contentType,
+      scheduler);
 
   AWAIT_READY(connected);
 
@@ -549,20 +558,20 @@ TEST_F(HttpFaultToleranceTest, SchedulerFailoverExecutorToFrameworkMessage)
     call.set_type(Call::SUBSCRIBE);
 
     Call::Subscribe* subscribe = call.mutable_subscribe();
-    subscribe->mutable_framework_info()->CopyFrom(DEFAULT_V1_FRAMEWORK_INFO);
+    subscribe->mutable_framework_info()->CopyFrom(v1::DEFAULT_FRAMEWORK_INFO);
 
     schedulerLibrary.send(call);
   }
 
   AWAIT_READY(subscribed);
 
-  v1::FrameworkID frameworkId(subscribed.get().framework_id());
+  v1::FrameworkID frameworkId(subscribed->framework_id());
 
   AWAIT_READY(offers);
   EXPECT_NE(0, offers->offers().size());
 
   EXPECT_CALL(*executor, connected(_))
-    .WillOnce(executor::SendSubscribe(frameworkId, evolve(executorId)));
+    .WillOnce(v1::executor::SendSubscribe(frameworkId, evolve(executorId)));
 
   v1::executor::Mesos* executorLib;
   EXPECT_CALL(*executor, subscribed(_, _))
@@ -594,17 +603,19 @@ TEST_F(HttpFaultToleranceTest, SchedulerFailoverExecutorToFrameworkMessage)
 
   AWAIT_READY(launch);
 
-  auto scheduler2 = std::make_shared<MockV1HTTPScheduler>();
+  auto scheduler2 = std::make_shared<v1::MockHTTPScheduler>();
 
+  Future<Nothing> connected2;
   EXPECT_CALL(*scheduler2, connected(_))
-    .WillOnce(FutureSatisfy(&connected))
-    .WillRepeatedly(Return()); // Ignore future invocations.
+    .WillOnce(FutureSatisfy(&connected2));
 
   // Failover to another scheduler instance.
-  scheduler::TestV1Mesos schedulerLibrary2(
-      master.get()->pid, contentType, scheduler2);
+  v1::scheduler::TestMesos schedulerLibrary2(
+      master.get()->pid,
+      contentType,
+      scheduler2);
 
-  AWAIT_READY(connected);
+  AWAIT_READY(connected2);
 
   // The previously connected scheduler instance should receive an
   // error/disconnected event.
@@ -628,7 +639,7 @@ TEST_F(HttpFaultToleranceTest, SchedulerFailoverExecutorToFrameworkMessage)
     call.set_type(Call::SUBSCRIBE);
 
     Call::Subscribe* subscribe = call.mutable_subscribe();
-    subscribe->mutable_framework_info()->CopyFrom(DEFAULT_V1_FRAMEWORK_INFO);
+    subscribe->mutable_framework_info()->CopyFrom(v1::DEFAULT_FRAMEWORK_INFO);
     subscribe->mutable_framework_info()->mutable_id()->CopyFrom(frameworkId);
 
     schedulerLibrary2.send(call);
@@ -638,7 +649,7 @@ TEST_F(HttpFaultToleranceTest, SchedulerFailoverExecutorToFrameworkMessage)
   AWAIT_READY(disconnected);
   AWAIT_READY(subscribed);
 
-  EXPECT_EQ(frameworkId, subscribed.get().framework_id());
+  EXPECT_EQ(frameworkId, subscribed->framework_id());
 
   Future<Event::Message> message;
   EXPECT_CALL(*scheduler2, message(_, _))
@@ -665,12 +676,6 @@ TEST_F(HttpFaultToleranceTest, SchedulerFailoverExecutorToFrameworkMessage)
 
   EXPECT_CALL(*executor, disconnected(_))
     .Times(AtMost(1));
-
-  EXPECT_CALL(*scheduler, disconnected(_))
-    .Times(AtMost(1));
-
-  EXPECT_CALL(*scheduler2, disconnected(_))
-    .Times(AtMost(1));
 }
 
 
@@ -684,8 +689,8 @@ TEST_F(HttpFaultToleranceTest, SchedulerFailoverFrameworkToExecutorMessage)
   Try<Owned<cluster::Master>> master = StartMaster(flags);
   ASSERT_SOME(master);
 
-  auto scheduler = std::make_shared<MockV1HTTPScheduler>();
-  auto executor = std::make_shared<MockV1HTTPExecutor>();
+  auto scheduler = std::make_shared<v1::MockHTTPScheduler>();
+  auto executor = std::make_shared<v1::MockHTTPExecutor>();
 
   ExecutorID executorId = DEFAULT_EXECUTOR_ID;
   TestContainerizer containerizer(executorId, executor);
@@ -702,8 +707,10 @@ TEST_F(HttpFaultToleranceTest, SchedulerFailoverFrameworkToExecutorMessage)
 
   ContentType contentType = ContentType::PROTOBUF;
 
-  scheduler::TestV1Mesos schedulerLibrary(
-      master.get()->pid, contentType, scheduler);
+  v1::scheduler::TestMesos schedulerLibrary(
+      master.get()->pid,
+      contentType,
+      scheduler);
 
   AWAIT_READY(connected);
 
@@ -723,20 +730,20 @@ TEST_F(HttpFaultToleranceTest, SchedulerFailoverFrameworkToExecutorMessage)
     call.set_type(Call::SUBSCRIBE);
 
     Call::Subscribe* subscribe = call.mutable_subscribe();
-    subscribe->mutable_framework_info()->CopyFrom(DEFAULT_V1_FRAMEWORK_INFO);
+    subscribe->mutable_framework_info()->CopyFrom(v1::DEFAULT_FRAMEWORK_INFO);
 
     schedulerLibrary.send(call);
   }
 
   AWAIT_READY(subscribed);
 
-  v1::FrameworkID frameworkId(subscribed.get().framework_id());
+  v1::FrameworkID frameworkId(subscribed->framework_id());
 
   AWAIT_READY(offers);
   EXPECT_NE(0, offers->offers().size());
 
   EXPECT_CALL(*executor, connected(_))
-    .WillOnce(executor::SendSubscribe(frameworkId, evolve(executorId)));
+    .WillOnce(v1::executor::SendSubscribe(frameworkId, evolve(executorId)));
 
   EXPECT_CALL(*executor, subscribed(_, _));
 
@@ -766,17 +773,19 @@ TEST_F(HttpFaultToleranceTest, SchedulerFailoverFrameworkToExecutorMessage)
 
   AWAIT_READY(launch);
 
-  auto scheduler2 = std::make_shared<MockV1HTTPScheduler>();
+  auto scheduler2 = std::make_shared<v1::MockHTTPScheduler>();
 
+  Future<Nothing> connected2;
   EXPECT_CALL(*scheduler2, connected(_))
-    .WillOnce(FutureSatisfy(&connected))
-    .WillRepeatedly(Return()); // Ignore future invocations.
+    .WillOnce(FutureSatisfy(&connected2));
 
   // Failover to another scheduler instance.
-  scheduler::TestV1Mesos schedulerLibrary2(
-      master.get()->pid, contentType, scheduler2);
+  v1::scheduler::TestMesos schedulerLibrary2(
+      master.get()->pid,
+      contentType,
+      scheduler2);
 
-  AWAIT_READY(connected);
+  AWAIT_READY(connected2);
 
   // The previously connected scheduler instance should receive an
   // error/disconnected event.
@@ -800,7 +809,7 @@ TEST_F(HttpFaultToleranceTest, SchedulerFailoverFrameworkToExecutorMessage)
     call.set_type(Call::SUBSCRIBE);
 
     Call::Subscribe* subscribe = call.mutable_subscribe();
-    subscribe->mutable_framework_info()->CopyFrom(DEFAULT_V1_FRAMEWORK_INFO);
+    subscribe->mutable_framework_info()->CopyFrom(v1::DEFAULT_FRAMEWORK_INFO);
     subscribe->mutable_framework_info()->mutable_id()->CopyFrom(frameworkId);
 
     schedulerLibrary2.send(call);
@@ -810,7 +819,7 @@ TEST_F(HttpFaultToleranceTest, SchedulerFailoverFrameworkToExecutorMessage)
   AWAIT_READY(disconnected);
   AWAIT_READY(subscribed);
 
-  EXPECT_EQ(frameworkId, subscribed.get().framework_id());
+  EXPECT_EQ(frameworkId, subscribed->framework_id());
 
   Future<v1::executor::Event::Message> message;
   EXPECT_CALL(*executor, message(_, _))
@@ -823,7 +832,7 @@ TEST_F(HttpFaultToleranceTest, SchedulerFailoverFrameworkToExecutorMessage)
 
     Call::Message* message = call.mutable_message();
     message->mutable_agent_id()->CopyFrom(offer.agent_id());
-    message->mutable_executor_id()->CopyFrom(DEFAULT_V1_EXECUTOR_ID);
+    message->mutable_executor_id()->CopyFrom(v1::DEFAULT_EXECUTOR_ID);
     message->set_data("hello world");
 
     schedulerLibrary2.send(call);
@@ -837,12 +846,6 @@ TEST_F(HttpFaultToleranceTest, SchedulerFailoverFrameworkToExecutorMessage)
 
   EXPECT_CALL(*executor, disconnected(_))
     .Times(AtMost(1));
-
-  EXPECT_CALL(*scheduler, disconnected(_))
-    .Times(AtMost(1));
-
-  EXPECT_CALL(*scheduler2, disconnected(_))
-    .Times(AtMost(1));
 }
 
 
@@ -855,8 +858,8 @@ TEST_F(HttpFaultToleranceTest, SchedulerExit)
   Try<Owned<cluster::Master>> master = StartMaster(flags);
   ASSERT_SOME(master);
 
-  auto scheduler = std::make_shared<MockV1HTTPScheduler>();
-  auto executor = std::make_shared<MockV1HTTPExecutor>();
+  auto scheduler = std::make_shared<v1::MockHTTPScheduler>();
+  auto executor = std::make_shared<v1::MockHTTPExecutor>();
 
   ExecutorID executorId = DEFAULT_EXECUTOR_ID;
   TestContainerizer containerizer(executorId, executor);
@@ -873,8 +876,10 @@ TEST_F(HttpFaultToleranceTest, SchedulerExit)
 
   ContentType contentType = ContentType::PROTOBUF;
 
-  scheduler::TestV1Mesos schedulerLibrary(
-      master.get()->pid, contentType, scheduler);
+  v1::scheduler::TestMesos schedulerLibrary(
+      master.get()->pid,
+      contentType,
+      scheduler);
 
   AWAIT_READY(connected);
 
@@ -894,20 +899,20 @@ TEST_F(HttpFaultToleranceTest, SchedulerExit)
     call.set_type(Call::SUBSCRIBE);
 
     Call::Subscribe* subscribe = call.mutable_subscribe();
-    subscribe->mutable_framework_info()->CopyFrom(DEFAULT_V1_FRAMEWORK_INFO);
+    subscribe->mutable_framework_info()->CopyFrom(v1::DEFAULT_FRAMEWORK_INFO);
 
     schedulerLibrary.send(call);
   }
 
   AWAIT_READY(subscribed);
 
-  v1::FrameworkID frameworkId(subscribed.get().framework_id());
+  v1::FrameworkID frameworkId(subscribed->framework_id());
 
   AWAIT_READY(offers);
   EXPECT_NE(0, offers->offers().size());
 
   EXPECT_CALL(*executor, connected(_))
-    .WillOnce(executor::SendSubscribe(frameworkId, evolve(executorId)));
+    .WillOnce(v1::executor::SendSubscribe(frameworkId, evolve(executorId)));
 
   EXPECT_CALL(*executor, subscribed(_, _));
 

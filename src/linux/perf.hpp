@@ -26,6 +26,7 @@
 
 #include <stout/duration.hpp>
 #include <stout/hashmap.hpp>
+#include <stout/version.hpp>
 
 // For PerfStatistics protobuf.
 #include "mesos/mesos.hpp"
@@ -49,6 +50,14 @@ bool valid(const std::set<std::string>& events);
 // Returns whether perf is supported on this host. Returns false if
 // the kernel is too old (requires >= 2.6.39).
 bool supported();
+
+
+// Returns the detected perf version. Exposed for testing.
+process::Future<Version> version();
+
+
+// Parse a perf(1) version string. Exposed for testing.
+Try<Version> parseVersion(const std::string& output);
 
 
 // Note: The parse function is exposed to allow testing of the

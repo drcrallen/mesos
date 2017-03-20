@@ -14,21 +14,28 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#ifndef __WINDOWS__
 #include <dlfcn.h>
+#endif // __WINDOWS__
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef __WINDOWS__
 #include <unistd.h>
+#endif // __WINDOWS__
 
+#ifndef __WINDOWS__
 #include <arpa/inet.h>
+#endif // __WINDOWS__
 
+#include <cmath>
 #include <iostream>
 #include <map>
 #include <memory>
 #include <mutex>
-#include <string>
 #include <sstream>
+#include <string>
 
 #include <mesos/mesos.hpp>
 #include <mesos/module.hpp>
@@ -219,7 +226,8 @@ public:
       authenticatee(nullptr),
       authenticating(None()),
       authenticated(false),
-      reauthenticate(false)
+      reauthenticate(false),
+      failedAuthentications(0)
   {
     LOG(INFO) << "Version: " << MESOS_VERSION;
   }
@@ -328,11 +336,16 @@ protected:
       LOG(INFO) << "New master detected at " << master.get().pid();
       link(master.get().pid());
 
+      // Cancel the pending registration timer to avoid spurious attempts
+      // at reregistration. `Clock::cancel` is idempotent, so this call
+      // is safe even if no timer is active or pending.
+      Clock::cancel(frameworkRegistrationTimer);
+
 #ifdef HAS_AUTHENTICATION
       if (credential.isSome()) {
         // Authenticate with the master.
-        // TODO(vinod): Do a backoff for authentication similar to what
-        // we do for registration.
+        // TODO(adam-mesos): Consider adding an initial delay like we do for
+        // slave registration, to combat thundering herds on master failover.
         authenticate();
       } else {
         // Proceed with registration without authentication.
@@ -429,7 +442,7 @@ protected:
       authenticatee->authenticate(master.get().pid(), self(), credential.get())
         .onAny(defer(self(), &Self::_authenticate));
 
-    delay(Seconds(5),
+    delay(flags.authentication_timeout,
           self(),
           &Self::authenticationTimeout,
           authenticating.get());
@@ -469,8 +482,24 @@ protected:
       authenticating = None();
       reauthenticate = false;
 
+      ++failedAuthentications;
+
+      // Backoff.
+      // The backoff is a random duration in the interval [0, b * 2^N)
+      // where `b = authentication_backoff_factor` and `N` the number
+      // of failed authentication attempts. It is capped by
+      // `REGISTER_RETRY_INTERVAL_MAX`.
+      Duration backoff = flags.authentication_backoff_factor *
+                         std::pow(2, failedAuthentications);
+      backoff = std::min(backoff, scheduler::AUTHENTICATION_RETRY_INTERVAL_MAX);
+
+      // Determine the delay for next attempt by picking a random
+      // duration between 0 and 'maxBackoff'.
+      // TODO(vinod): Use random numbers from <random> header.
+      backoff *= double(os::random()) / RAND_MAX;
+
       // TODO(vinod): Add a limit on number of retries.
-      dispatch(self(), &Self::authenticate); // Retry.
+      delay(backoff, self(), &Self::authenticate);
       return;
     }
 
@@ -486,6 +515,8 @@ protected:
 
     authenticated = true;
     authenticating = None();
+
+    failedAuthentications = 0;
 
     doReliableRegistration(flags.registration_backoff_factor);
   }
@@ -534,6 +565,11 @@ protected:
         }
 
         const FrameworkID& frameworkId = event.subscribed().framework_id();
+
+        // Cancel the pending registration timer to avoid spurious attempts
+        // at reregistration. `Clock::cancel` is idempotent, so this call
+        // is safe even if no timer is active or pending.
+        Clock::cancel(frameworkRegistrationTimer);
 
         // We match the existing registration semantics of the
         // driver, except for the 3rd case in MESOS-786 (since
@@ -833,7 +869,7 @@ protected:
     VLOG(1) << "Will retry registration in " << delay << " if necessary";
 
     // Backoff.
-    process::delay(
+    frameworkRegistrationTimer = process::delay(
         delay, self(), &Self::doReliableRegistration, maxBackoff * 2);
   }
 
@@ -1164,7 +1200,7 @@ protected:
 
   void stop(bool failover)
   {
-    LOG(INFO) << "Stopping framework '" << framework.id() << "'";
+    LOG(INFO) << "Stopping framework " << framework.id();
 
     // Whether or not we send an unregister message, we want to
     // terminate this process.
@@ -1194,7 +1230,7 @@ protected:
   // SchedulerProcess::stop.
   void abort()
   {
-    LOG(INFO) << "Aborting framework '" << framework.id() << "'";
+    LOG(INFO) << "Aborting framework " << framework.id();
 
     CHECK(!running.load());
 
@@ -1280,8 +1316,15 @@ protected:
     if (!connected) {
       VLOG(1) << "Ignoring accept offers message as master is disconnected";
 
-      // NOTE: Reply to the framework with TASK_LOST messages for each
-      // task launch. See details from notes in launchTasks.
+      // Reply to the framework with TASK_DROPPED messages for each
+      // task launch. If the framework is not partition-aware, we send
+      // TASK_LOST instead. See details from notes in `launchTasks`.
+      TaskState newTaskState = TASK_DROPPED;
+      if (!protobuf::frameworkHasCapability(
+              framework, FrameworkInfo::Capability::PARTITION_AWARE)) {
+        newTaskState = TASK_LOST;
+      }
+
       foreach (const Offer::Operation& operation, operations) {
         if (operation.type() != Offer::Operation::LAUNCH) {
           continue;
@@ -1292,7 +1335,7 @@ protected:
               framework.id(),
               None(),
               task.task_id(),
-              TASK_LOST,
+              newTaskState,
               TaskStatus::SOURCE_MASTER,
               None(),
               "Master disconnected",
@@ -1622,6 +1665,9 @@ private:
 
   const internal::scheduler::Flags flags;
 
+  // Timer for triggering registration of the framework with the master.
+  process::Timer frameworkRegistrationTimer;
+
   hashmap<OfferID, hashmap<SlaveID, UPID>> savedOffers;
   hashmap<SlaveID, UPID> savedSlavePids;
 
@@ -1644,6 +1690,9 @@ private:
 
   // Indicates if a new authentication attempt should be enforced.
   bool reauthenticate;
+
+  // Indicates the number of failed authentication attempts.
+  uint64_t failedAuthentications;
 };
 
 } // namespace internal {
@@ -1667,7 +1716,11 @@ void MesosSchedulerDriver::initialize() {
     return;
   }
 
-  // Initialize libprocess.
+  // Initialize libprocess. NOTE: We need to ensure this happens
+  // before we invoke anything in libprocess. While libprocess will
+  // call `process::initialize` internally if needed, it will do so
+  // without passing any parameters; any subsequent calls to
+  // `process::initialize` (with non-empty arguments) will be ignored.
   process::initialize(schedulerId);
 
   if (process::address().ip.isLoopback()) {
@@ -1751,6 +1804,7 @@ MesosSchedulerDriver::MesosSchedulerDriver(
     framework(_framework),
     master(_master),
     process(nullptr),
+    latch(nullptr),
     status(DRIVER_NOT_STARTED),
     implicitAcknowlegements(true),
     credential(nullptr),
@@ -1770,6 +1824,7 @@ MesosSchedulerDriver::MesosSchedulerDriver(
     framework(_framework),
     master(_master),
     process(nullptr),
+    latch(nullptr),
     status(DRIVER_NOT_STARTED),
     implicitAcknowlegements(true),
     credential(new Credential(_credential)),
@@ -1789,6 +1844,7 @@ MesosSchedulerDriver::MesosSchedulerDriver(
     framework(_framework),
     master(_master),
     process(nullptr),
+    latch(nullptr),
     status(DRIVER_NOT_STARTED),
     implicitAcknowlegements(_implicitAcknowlegements),
     credential(nullptr),
@@ -1809,6 +1865,7 @@ MesosSchedulerDriver::MesosSchedulerDriver(
     framework(_framework),
     master(_master),
     process(nullptr),
+    latch(nullptr),
     status(DRIVER_NOT_STARTED),
     implicitAcknowlegements(_implicitAcknowlegements),
     credential(new Credential(_credential)),

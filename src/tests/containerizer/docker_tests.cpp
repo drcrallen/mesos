@@ -14,6 +14,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <list>
+#include <string>
+#include <vector>
+
 #include <gtest/gtest.h>
 
 #include <process/future.hpp>
@@ -24,6 +28,8 @@
 #include <stout/duration.hpp>
 #include <stout/option.hpp>
 #include <stout/gtest.hpp>
+
+#include <stout/os/constants.hpp>
 
 #include "docker/docker.hpp"
 
@@ -37,6 +43,7 @@ using namespace process;
 
 using std::list;
 using std::string;
+using std::vector;
 
 namespace mesos {
 namespace internal {
@@ -67,6 +74,26 @@ class DockerTest : public MesosTest
       AWAIT_READY_FOR(docker.get()->rm(container.id, true), Seconds(30));
     }
   }
+
+protected:
+  Volume createDockerVolume(
+      const string& driver,
+      const string& name,
+      const string& containerPath)
+  {
+    Volume volume;
+    volume.set_mode(Volume::RW);
+    volume.set_container_path(containerPath);
+
+    Volume::Source* source = volume.mutable_source();
+    source->set_type(Volume::Source::DOCKER_VOLUME);
+
+    Volume::Source::DockerVolume* docker = source->mutable_docker_volume();
+    docker->set_driver(driver);
+    docker->set_name(name);
+
+    return volume;
+  }
 };
 
 
@@ -82,7 +109,7 @@ TEST_F(DockerTest, ROOT_DOCKER_interface)
       false).get();
 
   // Verify that we do not see the container.
-  Future<list<Docker::Container> > containers = docker->ps(true, containerName);
+  Future<list<Docker::Container>> containers = docker->ps(true, containerName);
   AWAIT_READY(containers);
   foreach (const Docker::Container& container, containers.get()) {
     EXPECT_NE("/" + containerName, container.name);
@@ -101,14 +128,18 @@ TEST_F(DockerTest, ROOT_DOCKER_interface)
   CommandInfo commandInfo;
   commandInfo.set_value("sleep 120");
 
-  // Start the container.
-  Future<Option<int>> status = docker->run(
+  Try<Docker::RunOptions> runOptions = Docker::RunOptions::create(
       containerInfo,
       commandInfo,
       containerName,
       directory.get(),
       "/mnt/mesos/sandbox",
       resources);
+
+  ASSERT_SOME(runOptions);
+
+  // Start the container.
+  Future<Option<int>> status = docker->run(runOptions.get());
 
   Future<Docker::Container> inspect =
     docker->inspect(containerName, Seconds(1));
@@ -128,18 +159,15 @@ TEST_F(DockerTest, ROOT_DOCKER_interface)
   EXPECT_TRUE(found);
 
   // Test some fields of the container.
-  EXPECT_NE("", inspect.get().id);
-  EXPECT_EQ("/" + containerName, inspect.get().name);
-  EXPECT_SOME(inspect.get().pid);
+  EXPECT_NE("", inspect->id);
+  EXPECT_EQ("/" + containerName, inspect->name);
+  EXPECT_SOME(inspect->pid);
 
   // Stop the container.
   Future<Nothing> stop = docker->stop(containerName);
   AWAIT_READY(stop);
 
-  AWAIT_READY(status);
-  ASSERT_SOME(status.get());
-  EXPECT_TRUE(WIFEXITED(status->get())) << status->get();
-  EXPECT_EQ(128 + SIGKILL, WEXITSTATUS(status->get())) << status->get();
+  AWAIT_EXPECT_WEXITSTATUS_EQ(128 + SIGKILL, status);
 
   // Now, the container should not appear in the result of ps().
   // But it should appear in the result of ps(true).
@@ -166,9 +194,9 @@ TEST_F(DockerTest, ROOT_DOCKER_interface)
   inspect = docker->inspect(containerName);
   AWAIT_READY(inspect);
 
-  EXPECT_NE("", inspect.get().id);
-  EXPECT_EQ("/" + containerName, inspect.get().name);
-  EXPECT_NONE(inspect.get().pid);
+  EXPECT_NE("", inspect->id);
+  EXPECT_EQ("/" + containerName, inspect->name);
+  EXPECT_NONE(inspect->pid);
 
   // Remove the container.
   Future<Nothing> rm = docker->rm(containerName);
@@ -186,15 +214,19 @@ TEST_F(DockerTest, ROOT_DOCKER_interface)
     EXPECT_NE("/" + containerName, container.name);
   }
 
-  // Start the container again, this time we will do a "rm -f"
-  // directly, instead of stopping and rm.
-  status = docker->run(
+  runOptions = Docker::RunOptions::create(
       containerInfo,
       commandInfo,
       containerName,
       directory.get(),
       "/mnt/mesos/sandbox",
       resources);
+
+  ASSERT_SOME(runOptions);
+
+  // Start the container again, this time we will do a "rm -f"
+  // directly, instead of stopping and rm.
+  status = docker->run(runOptions.get());
 
   inspect = docker->inspect(containerName, Seconds(1));
   AWAIT_READY(inspect);
@@ -215,10 +247,7 @@ TEST_F(DockerTest, ROOT_DOCKER_interface)
   rm = docker->rm(containerName, true);
   AWAIT_READY(rm);
 
-  AWAIT_READY(status);
-  ASSERT_SOME(status.get());
-  EXPECT_TRUE(WIFEXITED(status->get())) << status->get();
-  EXPECT_EQ(128 + SIGKILL, WEXITSTATUS(status->get())) << status->get();
+  AWAIT_EXPECT_WEXITSTATUS_EQ(128 + SIGKILL, status);
 
   // Verify that the container is totally removed, that is we can't
   // find it by ps() or ps(true).
@@ -259,14 +288,18 @@ TEST_F(DockerTest, ROOT_DOCKER_kill)
   CommandInfo commandInfo;
   commandInfo.set_value("sleep 120");
 
-  // Start the container, kill it, and expect it to terminate.
-  Future<Option<int>> run = docker->run(
+  Try<Docker::RunOptions> runOptions = Docker::RunOptions::create(
       containerInfo,
       commandInfo,
       containerName,
       directory.get(),
       "/mnt/mesos/sandbox",
       resources);
+
+  ASSERT_SOME(runOptions);
+
+  // Start the container, kill it, and expect it to terminate.
+  Future<Option<int>> run = docker->run(runOptions.get());
 
   // Note that we cannot issue the kill until we know that the
   // run has been processed. We check for this by waiting for
@@ -282,10 +315,7 @@ TEST_F(DockerTest, ROOT_DOCKER_kill)
 
   AWAIT_READY(kill);
 
-  AWAIT_READY(run);
-  ASSERT_SOME(run.get());
-  EXPECT_TRUE(WIFEXITED(run->get())) << run->get();
-  EXPECT_EQ(128 + SIGKILL, WEXITSTATUS(run->get())) << run->get();
+  AWAIT_EXPECT_WEXITSTATUS_EQ(128 + SIGKILL, run);
 }
 
 
@@ -335,14 +365,14 @@ TEST_F(DockerTest, ROOT_DOCKER_CheckCommandWithShell)
   CommandInfo commandInfo;
   commandInfo.set_shell(true);
 
-  Future<Option<int>> run = docker->run(
+  Try<Docker::RunOptions> runOptions = Docker::RunOptions::create(
       containerInfo,
       commandInfo,
       "testContainer",
       "dir",
       "/mnt/mesos/sandbox");
 
-  ASSERT_TRUE(run.isFailed());
+  ASSERT_ERROR(runOptions);
 }
 
 
@@ -381,7 +411,7 @@ TEST_F(DockerTest, ROOT_DOCKER_CheckPortResource)
   Resources resources =
     Resources::parse("ports:[9998-9999];ports:[10001-11000]").get();
 
-  Future<Option<int>> run = docker->run(
+  Try<Docker::RunOptions> runOptions = Docker::RunOptions::create(
       containerInfo,
       commandInfo,
       containerName,
@@ -389,15 +419,14 @@ TEST_F(DockerTest, ROOT_DOCKER_CheckPortResource)
       "/mnt/mesos/sandbox",
       resources);
 
-  // Port should be out side of the provided ranges.
-  AWAIT_EXPECT_FAILED(run);
+  ASSERT_ERROR(runOptions);
 
   resources = Resources::parse("ports:[9998-9999];ports:[10000-11000]").get();
 
   Try<string> directory = environment->mkdtemp();
   ASSERT_SOME(directory);
 
-  run = docker->run(
+  runOptions = Docker::RunOptions::create(
       containerInfo,
       commandInfo,
       containerName,
@@ -405,10 +434,11 @@ TEST_F(DockerTest, ROOT_DOCKER_CheckPortResource)
       "/mnt/mesos/sandbox",
       resources);
 
-  AWAIT_READY(run);
-  ASSERT_SOME(run.get());
-  EXPECT_TRUE(WIFEXITED(run->get())) << run->get();
-  EXPECT_EQ(0, WEXITSTATUS(run->get())) << run->get();
+  ASSERT_SOME(runOptions);
+
+  Future<Option<int>> run = docker->run(runOptions.get());
+
+  AWAIT_EXPECT_WEXITSTATUS_EQ(0, run);
 }
 
 
@@ -418,13 +448,13 @@ TEST_F(DockerTest, ROOT_DOCKER_CancelPull)
 
   Try<Subprocess> s = process::subprocess(
       tests::flags.docker + " rmi lingmann/1gb",
-      Subprocess::PATH("/dev/null"),
-      Subprocess::PATH("/dev/null"),
-      Subprocess::PATH("/dev/null"));
+      Subprocess::PATH(os::DEV_NULL),
+      Subprocess::PATH(os::DEV_NULL),
+      Subprocess::PATH(os::DEV_NULL));
 
   ASSERT_SOME(s);
 
-  AWAIT_READY_FOR(s.get().status(), Seconds(30));
+  AWAIT_READY_FOR(s->status(), Seconds(30));
 
   Owned<Docker> docker = Docker::create(
       tests::flags.docker,
@@ -446,9 +476,9 @@ TEST_F(DockerTest, ROOT_DOCKER_CancelPull)
 }
 
 
-// This test verifies mounting in a relative path when running a
+// This test verifies mounting in a relative host path when running a
 // docker container works.
-TEST_F(DockerTest, ROOT_DOCKER_MountRelative)
+TEST_F(DockerTest, ROOT_DOCKER_MountRelativeHostPath)
 {
   Owned<Docker> docker = Docker::create(
       tests::flags.docker,
@@ -478,23 +508,22 @@ TEST_F(DockerTest, ROOT_DOCKER_MountRelative)
   const string testFile = path::join(directory.get(), "test_file");
   EXPECT_SOME(os::write(testFile, "data"));
 
-  Future<Option<int>> run = docker->run(
+  Try<Docker::RunOptions> runOptions = Docker::RunOptions::create(
       containerInfo,
       commandInfo,
-      NAME_PREFIX + "-mount-relative-test",
+      NAME_PREFIX + "-mount-relative-host-path-test",
       directory.get(),
-      directory.get());
+      "/mnt/mesos/sandbox");
 
-  AWAIT_READY(run);
-  ASSERT_SOME(run.get());
-  EXPECT_TRUE(WIFEXITED(run->get())) << run->get();
-  EXPECT_EQ(0, WEXITSTATUS(run->get())) << run->get();
+  Future<Option<int>> run = docker->run(runOptions.get());
+
+  AWAIT_EXPECT_WEXITSTATUS_EQ(0, run);
 }
 
 
-// This test verifies mounting in an absolute path when running a
+// This test verifies mounting in an absolute host path when running a
 // docker container works.
-TEST_F(DockerTest, ROOT_DOCKER_MountAbsolute)
+TEST_F(DockerTest, ROOT_DOCKER_MountAbsoluteHostPath)
 {
   Owned<Docker> docker = Docker::create(
       tests::flags.docker,
@@ -524,17 +553,108 @@ TEST_F(DockerTest, ROOT_DOCKER_MountAbsolute)
   commandInfo.set_shell(true);
   commandInfo.set_value("ls /tmp/test_file");
 
-  Future<Option<int>> run = docker->run(
+  Try<Docker::RunOptions> runOptions = Docker::RunOptions::create(
       containerInfo,
       commandInfo,
-      NAME_PREFIX + "-mount-absolute-test",
+      NAME_PREFIX + "-mount-absolute-host-path-test",
       directory.get(),
-      directory.get());
+      "/mnt/mesos/sandbox");
 
-  AWAIT_READY(run);
-  ASSERT_SOME(run.get());
-  EXPECT_TRUE(WIFEXITED(run->get())) << run->get();
-  EXPECT_EQ(0, WEXITSTATUS(run->get())) << run->get();
+  ASSERT_SOME(runOptions);
+
+  Future<Option<int>> run = docker->run(runOptions.get());
+  AWAIT_EXPECT_WEXITSTATUS_EQ(0, run);
+}
+
+
+// This test verifies mounting in an absolute host path to
+// a relative container path when running a docker container
+// works.
+TEST_F(DockerTest, ROOT_DOCKER_MountRelativeContainerPath)
+{
+  Owned<Docker> docker = Docker::create(
+      tests::flags.docker,
+      tests::flags.docker_socket,
+      false).get();
+
+  ContainerInfo containerInfo;
+  containerInfo.set_type(ContainerInfo::DOCKER);
+
+  Try<string> directory = environment->mkdtemp();
+  ASSERT_SOME(directory);
+
+  const string testFile = path::join(directory.get(), "test_file");
+  EXPECT_SOME(os::write(testFile, "data"));
+
+  Volume* volume = containerInfo.add_volumes();
+  volume->set_host_path(testFile);
+  volume->set_container_path("tmp/test_file");
+  volume->set_mode(Volume::RO);
+
+  ContainerInfo::DockerInfo dockerInfo;
+  dockerInfo.set_image("alpine");
+
+  containerInfo.mutable_docker()->CopyFrom(dockerInfo);
+
+  CommandInfo commandInfo;
+  commandInfo.set_shell(true);
+  commandInfo.set_value("ls /mnt/mesos/sandbox/tmp/test_file");
+
+  Try<Docker::RunOptions> runOptions = Docker::RunOptions::create(
+      containerInfo,
+      commandInfo,
+      NAME_PREFIX + "-mount-relative-container-path-test",
+      directory.get(),
+      "/mnt/mesos/sandbox");
+
+  ASSERT_SOME(runOptions);
+
+  Future<Option<int>> run = docker->run(runOptions.get());
+
+  AWAIT_EXPECT_WEXITSTATUS_EQ(0, run);
+}
+
+
+// This test verifies a docker container mounting relative host
+// path to a relative container path fails.
+TEST_F(DockerTest, ROOT_DOCKER_MountRelativeHostPathRelativeContainerPath)
+{
+  Owned<Docker> docker = Docker::create(
+      tests::flags.docker,
+      tests::flags.docker_socket,
+      false).get();
+
+  ContainerInfo containerInfo;
+  containerInfo.set_type(ContainerInfo::DOCKER);
+
+  Volume* volume = containerInfo.add_volumes();
+  volume->set_host_path("test_file");
+  volume->set_container_path("tmp/test_file");
+  volume->set_mode(Volume::RO);
+
+  ContainerInfo::DockerInfo dockerInfo;
+  dockerInfo.set_image("alpine");
+
+  containerInfo.mutable_docker()->CopyFrom(dockerInfo);
+
+  CommandInfo commandInfo;
+  commandInfo.set_shell(true);
+  commandInfo.set_value("ls /mnt/mesos/sandbox/tmp/test_file");
+
+  Try<string> directory = environment->mkdtemp();
+  ASSERT_SOME(directory);
+
+  const string testFile = path::join(directory.get(), "test_file");
+  EXPECT_SOME(os::write(testFile, "data"));
+
+  Try<Docker::RunOptions> runOptions = Docker::RunOptions::create(
+      containerInfo,
+      commandInfo,
+      NAME_PREFIX + "-mount-relative-host-path/container-path-test",
+      directory.get(),
+      "/mnt/mesos/sandbox");
+
+  ASSERT_ERROR(runOptions);
 }
 
 
@@ -643,17 +763,219 @@ TEST_F(DockerImageTest, ParseInspectonImage)
   Try<Docker::Image> image = Docker::Image::create(json.get());
   ASSERT_SOME(image);
 
-  EXPECT_EQ("./bin/start", image.get().entrypoint.get().front());
-  EXPECT_EQ("C.UTF-8", image.get().environment.get().at("LANG"));
-  EXPECT_EQ("8u66", image.get().environment.get().at("JAVA_VERSION"));
+  EXPECT_EQ("./bin/start", image->entrypoint->front());
+  EXPECT_EQ("C.UTF-8", image->environment->at("LANG"));
+  EXPECT_EQ("8u66", image->environment->at("JAVA_VERSION"));
   EXPECT_EQ("8u66-b01-1~bpo8+1",
-            image.get().environment.get().at("JAVA_DEBIAN_VERSION"));
+            image->environment->at("JAVA_DEBIAN_VERSION"));
   EXPECT_EQ("--driver-java-options=-Xms1024M "
             "--driver-java-options=-Xmx4096M "
             "--driver-java-options=-Dlog4j.logLevel=info",
-            image.get().environment.get().at("SPARK_OPTS"));
+            image->environment->at("SPARK_OPTS"));
   EXPECT_EQ("20140324",
-            image.get().environment.get().at("CA_CERTIFICATES_JAVA_VERSION"));
+            image->environment->at("CA_CERTIFICATES_JAVA_VERSION"));
+}
+
+
+// Tests the --devices flag of 'docker run' by adding the
+// /dev/nvidiactl device (present alongside Nvidia GPUs).
+//
+// TODO(bmahler): Avoid needing Nvidia GPUs to test this.
+TEST_F(DockerTest, ROOT_DOCKER_NVIDIA_GPU_DeviceAllow)
+{
+  const string containerName = NAME_PREFIX + "-test";
+  Resources resources = Resources::parse("cpus:1;mem:512;gpus:1").get();
+
+  Owned<Docker> docker = Docker::create(
+      tests::flags.docker,
+      tests::flags.docker_socket,
+      false).get();
+
+  Try<string> directory = environment->mkdtemp();
+  ASSERT_SOME(directory);
+
+  ContainerInfo containerInfo;
+  containerInfo.set_type(ContainerInfo::DOCKER);
+
+  ContainerInfo::DockerInfo dockerInfo;
+  dockerInfo.set_image("alpine");
+  containerInfo.mutable_docker()->CopyFrom(dockerInfo);
+
+  // Make sure the additional device is exposed (/dev/nvidiactl) and
+  // make sure that the default devices (e.g. /dev/null) are still
+  // accessible.
+  CommandInfo commandInfo;
+  commandInfo.set_value("touch /dev/nvidiactl && touch /dev/null");
+
+  Docker::Device nvidiaCtl;
+  nvidiaCtl.hostPath = Path("/dev/nvidiactl");
+  nvidiaCtl.containerPath = Path("/dev/nvidiactl");
+  nvidiaCtl.access.read = true;
+  nvidiaCtl.access.write = true;
+  nvidiaCtl.access.mknod = true;
+
+  vector<Docker::Device> devices = { nvidiaCtl };
+
+  Try<Docker::RunOptions> runOptions = Docker::RunOptions::create(
+      containerInfo,
+      commandInfo,
+      containerName,
+      directory.get(),
+      "/mnt/mesos/sandbox",
+      resources,
+      false,
+      None(),
+      devices);
+
+  ASSERT_SOME(runOptions);
+
+  Future<Option<int>> status = docker->run(runOptions.get());
+
+  AWAIT_EXPECT_WEXITSTATUS_EQ(0, status);
+}
+
+
+// Tests that devices are parsed correctly from 'docker inspect'.
+//
+// TODO(bmahler): Avoid needing Nvidia GPUs to test this and
+// merge this into a more general inspect test.
+TEST_F(DockerTest, ROOT_DOCKER_NVIDIA_GPU_InspectDevices)
+{
+  const string containerName = NAME_PREFIX + "-test";
+  Resources resources = Resources::parse("cpus:1;mem:512;gpus:1").get();
+
+  Owned<Docker> docker = Docker::create(
+      tests::flags.docker,
+      tests::flags.docker_socket,
+      false).get();
+
+  Try<string> directory = environment->mkdtemp();
+  ASSERT_SOME(directory);
+
+  ContainerInfo containerInfo;
+  containerInfo.set_type(ContainerInfo::DOCKER);
+
+  ContainerInfo::DockerInfo dockerInfo;
+  dockerInfo.set_image("alpine");
+  containerInfo.mutable_docker()->CopyFrom(dockerInfo);
+
+  // Make sure the additional device is exposed (/dev/nvidiactl) and
+  // make sure that the default devices (e.g. /dev/null) are still
+  // accessible. We then sleep to allow time to inspect and verify
+  // that the device is correctly parsed from the json.
+  CommandInfo commandInfo;
+  commandInfo.set_value("touch /dev/nvidiactl && touch /dev/null && sleep 120");
+
+  Docker::Device nvidiaCtl;
+  nvidiaCtl.hostPath = Path("/dev/nvidiactl");
+  nvidiaCtl.containerPath = Path("/dev/nvidiactl");
+  nvidiaCtl.access.read = true;
+  nvidiaCtl.access.write = true;
+  nvidiaCtl.access.mknod = false;
+
+  vector<Docker::Device> devices = { nvidiaCtl };
+
+  Try<Docker::RunOptions> runOptions = Docker::RunOptions::create(
+      containerInfo,
+      commandInfo,
+      containerName,
+      directory.get(),
+      "/mnt/mesos/sandbox",
+      resources,
+      false,
+      None(),
+      devices);
+
+  ASSERT_SOME(runOptions);
+
+  Future<Option<int>> status = docker->run(runOptions.get());
+
+  Future<Docker::Container> container =
+    docker->inspect(containerName, Milliseconds(1));
+
+  AWAIT_READY(container);
+
+  EXPECT_EQ(1u, container->devices.size());
+  EXPECT_EQ(nvidiaCtl.hostPath, container->devices[0].hostPath);
+  EXPECT_EQ(nvidiaCtl.containerPath, container->devices[0].hostPath);
+  EXPECT_EQ(nvidiaCtl.access.read, container->devices[0].access.read);
+  EXPECT_EQ(nvidiaCtl.access.write, container->devices[0].access.write);
+  EXPECT_EQ(nvidiaCtl.access.mknod, container->devices[0].access.mknod);
+
+  AWAIT_READY(docker->kill(containerName, SIGKILL));
+
+  AWAIT_EXPECT_WEXITSTATUS_EQ(128 + SIGKILL, status);
+}
+
+
+// This tests verifies that a task requiring more than one volume driver (in
+// multiple Volumes) is rejected.
+TEST_F(DockerTest, ROOT_DOCKER_ConflictingVolumeDriversInMultipleVolumes)
+{
+  Owned<Docker> docker = Docker::create(
+      tests::flags.docker,
+      tests::flags.docker_socket,
+      false).get();
+
+  ContainerInfo containerInfo;
+  containerInfo.set_type(ContainerInfo::DOCKER);
+
+  Volume volume1 = createDockerVolume("driver1", "name1", "/tmp/test1");
+  containerInfo.add_volumes()->CopyFrom(volume1);
+
+  Volume volume2 = createDockerVolume("driver2", "name2", "/tmp/test2");
+  containerInfo.add_volumes()->CopyFrom(volume2);
+
+  ContainerInfo::DockerInfo dockerInfo;
+  dockerInfo.set_image("alpine");
+  containerInfo.mutable_docker()->CopyFrom(dockerInfo);
+
+  CommandInfo commandInfo;
+  commandInfo.set_shell(false);
+
+  Try<Docker::RunOptions> runOptions = Docker::RunOptions::create(
+      containerInfo,
+      commandInfo,
+      "testContainer",
+      "dir",
+      "/mnt/mesos/sandbox");
+
+  ASSERT_ERROR(runOptions);
+}
+
+
+// This tests verifies that a task requiring more than one volume driver (via
+// Volume.Source.DockerInfo.driver and ContainerInfo.DockerInfo.volume_driver)
+// is rejected.
+TEST_F(DockerTest, ROOT_DOCKER_ConflictingVolumeDrivers)
+{
+  Owned<Docker> docker = Docker::create(
+      tests::flags.docker,
+      tests::flags.docker_socket,
+      false).get();
+
+  ContainerInfo containerInfo;
+  containerInfo.set_type(ContainerInfo::DOCKER);
+
+  Volume volume1 = createDockerVolume("driver", "name1", "/tmp/test1");
+  containerInfo.add_volumes()->CopyFrom(volume1);
+
+  ContainerInfo::DockerInfo dockerInfo;
+  dockerInfo.set_image("alpine");
+  dockerInfo.set_volume_driver("driver1");
+  containerInfo.mutable_docker()->CopyFrom(dockerInfo);
+
+  CommandInfo commandInfo;
+  commandInfo.set_shell(false);
+
+  Try<Docker::RunOptions> runOptions = Docker::RunOptions::create(
+      containerInfo,
+      commandInfo,
+      "testContainer",
+      "dir",
+      "/mnt/mesos/sandbox");
+
+  ASSERT_ERROR(runOptions);
 }
 
 } // namespace tests {

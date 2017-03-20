@@ -49,6 +49,7 @@ bool operator==(const Credential& left, const Credential& right);
 bool operator==(const DiscoveryInfo& left, const DiscoveryInfo& right);
 bool operator==(const Environment& left, const Environment& right);
 bool operator==(const ExecutorInfo& left, const ExecutorInfo& right);
+bool operator==(const FileInfo& left, const FileInfo& right);
 bool operator==(const Label& left, const Label& right);
 bool operator==(const Labels& left, const Labels& right);
 bool operator==(const MasterInfo& left, const MasterInfo& right);
@@ -243,6 +244,11 @@ inline bool operator<(const TaskID& left, const TaskID& right)
 }
 
 
+std::ostream& operator<<(
+    std::ostream& stream,
+    const CapabilityInfo& capabilityInfo);
+
+
 std::ostream& operator<<(std::ostream& stream, const ContainerID& containerId);
 
 
@@ -269,6 +275,9 @@ std::ostream& operator<<(std::ostream& stream, const OfferID& offerId);
 std::ostream& operator<<(std::ostream& stream, const RateLimits& limits);
 
 
+std::ostream& operator<<(std::ostream& stream, const RLimitInfo& limits);
+
+
 std::ostream& operator<<(std::ostream& stream, const AgentID& agentId);
 
 
@@ -284,12 +293,20 @@ std::ostream& operator<<(std::ostream& stream, const MachineID& machineId);
 std::ostream& operator<<(std::ostream& stream, const TaskInfo& task);
 
 
+std::ostream& operator<<(
+    std::ostream& stream,
+    const TaskGroupInfo& taskGroupInfo);
+
+
 std::ostream& operator<<(std::ostream& stream, const TaskState& state);
 
 
 std::ostream& operator<<(
     std::ostream& stream,
     const std::vector<TaskID>& taskIds);
+
+
+std::ostream& operator<<(std::ostream& stream, const CheckInfo::Type& type);
 
 
 std::ostream& operator<<(

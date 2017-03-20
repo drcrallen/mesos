@@ -43,6 +43,61 @@ We categorize the changes as follows:
   </thead>
 <tr>
   <td style="word-wrap: break-word; overflow-wrap: break-word;"><!--Version-->
+  1.2.x
+  </td>
+  <td style="word-wrap: break-word; overflow-wrap: break-word;"><!--Mesos Core-->
+  </td>
+  <td style="word-wrap: break-word; overflow-wrap: break-word;"><!--Flags-->
+    <ul style="padding-left:10px;">
+      <li>A <a href="#1-2-x-heartbeat-flag">http_heartbeat_interval</a></li>
+      <li>A <a href="#1-2-x-backend-flag">image_provisioner_backend</a></li>
+      <li>A <a href="#1-2-x-unreachable-flag">max_unreachable_tasks_per_framework</a></li>
+    </ul>
+  </td>
+  <td style="word-wrap: break-word; overflow-wrap: break-word;"><!--Framework API-->
+    <ul style="padding-left:10px;">
+      <li>A <a href="#1-2-x-revive-suppress">Revive and Suppress v1 scheduler Calls</a></li>
+    </ul>
+  </td>
+  <td style="word-wrap: break-word; overflow-wrap: break-word;"><!--Module API-->
+    <ul style="padding-left:10px;">
+      <li>C <a href="#1-2-x-container-logger-interface">Container Logger prepare method</a></li>
+      <li>C <a href="#1-2-x-allocator-module-changes">Allocator module changes</a></li>
+      <li>A <a href="#1-2-x-new-authz-actions">New Authorizer module actions</a></li>
+      <li>D <a href="#1-2-x-renamed-authz-actions">Renamed Authorizer module actions (deprecated old aliases)</a></li>
+      <li>R <a href="#1-2-x-removed-hooks">Removed slavePreLaunchDockerEnvironmentDecorator and slavePreLaunchDockerHook</a></li>
+    </ul>
+  </td>
+  <td style="word-wrap: break-word; overflow-wrap: break-word;"><!--Endpoints-->
+    <ul style="padding-left:10px;">
+      <li>A <a href="#1-2-x-debug-endpoints">LAUNCH_NESTED_CONTAINER_SESSION, ATTACH_CONTAINER_INPUT, ATTACH_CONTAINER_OUTPUT</a></li>
+      <li>D <a href="#1-2-x-recovered-frameworks">v1 GetFrameworks recovered_frameworks</a></li>
+      <li>D <a href="#1-2-x-orphan-executors">v1 GetExecutors orphan_executors</a></li>
+      <li>D <a href="#1-2-x-orphan-tasks">v1 GetTasks orphan_tasks</a></li>
+    </ul>
+  </td>
+</tr>
+<tr>
+  <td style="word-wrap: break-word; overflow-wrap: break-word;"><!--Version-->
+  1.1.x
+  </td>
+  <td style="word-wrap: break-word; overflow-wrap: break-word;"><!--Mesos Core-->
+  </td>
+  <td style="word-wrap: break-word; overflow-wrap: break-word;"><!--Flags-->
+  </td>
+  <td style="word-wrap: break-word; overflow-wrap: break-word;"><!--Framework API-->
+  </td>
+  <td style="word-wrap: break-word; overflow-wrap: break-word;"><!--Module API-->
+    <ul style="padding-left:10px;">
+      <li>R <a href="#1-1-x-container-logger-interface">Container Logger recovery method</a></li>
+      <li>C <a href="#1-1-x-allocator-updateallocation">Allocator updateAllocation method</a></li>
+    </ul>
+  </td>
+  <td style="word-wrap: break-word; overflow-wrap: break-word;"><!--Endpoints-->
+  </td>
+</tr>
+<tr>
+  <td style="word-wrap: break-word; overflow-wrap: break-word;"><!--Version-->
   1.0.x
   </td>
   <td style="word-wrap: break-word; overflow-wrap: break-word;"><!--Mesos Core-->
@@ -51,6 +106,10 @@ We categorize the changes as follows:
       <li>C <a href="#1-0-x-persistent-volume">Destruction of persistent volumes</a></li>
       <li>C <a href="#1-0-x-slave">Slave to Agent rename</a></li>
       <li>C <a href="#1-0-x-quota-acls">Quota ACLs</a></li>
+      <li>R <a href="#1-0-x-executor-environment-variables">Executor environment variables inheritance</a></li>
+      <li>R <a href="#1-0-x-deprecated-fields-in-container-config">Deprecated fields in ContainerConfig</a></li>
+      <li>C <a href="#1-0-x-persistent-volume-ownership">Persistent volume ownership</a></li>
+      <li>C <a href="#1-0-x-fetcher-user">Fetcher assumes same user as task</a></li>
     </ul>
   </td>
   <td style="word-wrap: break-word; overflow-wrap: break-word;"><!--Flags-->
@@ -59,21 +118,31 @@ We categorize the changes as follows:
       <li>D <a href="#1-0-x-credentials-file">credential(s) (plain text format)</a></li>
       <li>C <a href="#1-0-x-slave">Slave to Agent rename</a></li>
       <li>R <a href="#1-0-x-workdir">work_dir default value</a></li>
+      <li>D <a href="#1-0-x-deprecated-ssl-env-variables">SSL environment variables</a></li>
+      <li>ACD <a href="#1-0-x-http-authentication-flags">HTTP authentication</a></li>
+      <li>R <a href="#1-0-x-registry-strict">registry_strict</a></li>
     </ul>
   </td>
   <td style="word-wrap: break-word; overflow-wrap: break-word;"><!--Framework API-->
+    <ul style="padding-left:10px;">
       <li>DC <a href="#1-0-x-executorinfo">ExecutorInfo.source</a></li>
-      <li>N <a href="#1-0-x-v1-commandinfo">CommandInfo.URI output_file</a></li>
+      <li>A <a href="#1-0-x-v1-commandinfo">CommandInfo.URI output_file</a></li>
       <li>C <a href="#1-0-x-scheduler-proto">scheduler.proto optional fields</a></li>
       <li>C <a href="#1-0-x-executor-proto">executor.proto optional fields</a></li>
+    </ul>
   </td>
   <td style="word-wrap: break-word; overflow-wrap: break-word;"><!--Module API-->
-    <li>C <a href="#1-0-x-authorizer">Authorizer</a></li>
+    <ul style="padding-left:10px;">
+      <li>C <a href="#1-0-x-authorizer">Authorizer</a></li>
+      <li>C <a href="#1-0-x-allocator">Allocator</a></li>
+    </ul>
   </td>
   <td style="word-wrap: break-word; overflow-wrap: break-word;"><!--Endpoints-->
-    <li>C <a href="#1-0-x-status-code">HTTP return codes</a></li>
-    <li>R <a href="#1-0-x-status-code">/observe</a></li>
-    <li>C <a href="#1-0-x-endpoint-authorization">Added authorization</a></li>
+    <ul style="padding-left:10px;">
+      <li>C <a href="#1-0-x-status-code">HTTP return codes</a></li>
+      <li>R <a href="#1-0-x-status-code">/observe</a></li>
+      <li>C <a href="#1-0-x-endpoint-authorization">Added authorization</a></li>
+    </ul>
   </td>
 </tr>
 <tr>
@@ -169,8 +238,85 @@ We categorize the changes as follows:
 </tr>
 </table>
 
+## Upgrading from 1.1.x to 1.2.x ##
+
+<a name="1-2-x-heartbeat-flag"></a>
+* New Agent flag http_heartbeat_interval: This flag sets a heartbeat interval for messages to be sent over persistent connections made against the agent HTTP API. Currently, this only applies to the LAUNCH_NESTED_CONTAINER_SESSION and ATTACH_CONTAINER_OUTPUT calls. (default: 30secs)
+
+<a name="1-2-x-backend-flag"></a>
+* New Agent flag image_provisioner_backend: Strategy for provisioning container rootfs from images, e.g., aufs, bind, copy, overlay.
+
+<a name="1-2-x-unreachable-flag"></a>
+* New Master flag max_unreachable_tasks_per_framework: Maximum number of unreachable tasks per framework to store in memory. (default: 1000)
+
+<a name="1-2-x-revive-suppress"></a>
+* New Revive and Suppress v1 scheduler Calls: Revive or Suppress offers for a specified role. If role is unset, the call will revive/suppress offers for all of the roles the framework is subscribed to. (Especially for multi-role frameworks.)
+
+<a name="1-2-x-container-logger-interface"></a>
+* Mesos 1.2 modifies the `ContainerLogger`'s `prepare()` method.  The method now takes an additional argument for the `user` the logger should run a subprocess as.  Please see [MESOS-5856](https://issues.apache.org/jira/browse/MESOS-5856) for more information.
+
+<a name="1-2-x-allocator-module-changes"></a>
+* Allocator module changes to support inactive frameworks, multi-role frameworks, and suppress/revive. See `allocator.hpp` for interface changes.
+
+<a name="1-2-x-new-authz-actions"></a>
+* New Authorizer module actions: LAUNCH_NESTED_CONTAINER, KILL_NESTED_CONTAINER, WAIT_NESTED_CONTAINER, LAUNCH_NESTED_CONTAINER_SESSION, ATTACH_CONTAINER_INPUT, ATTACH_CONTAINER_OUTPUT, VIEW_CONTAINER, and SET_LOG_LEVEL. See `authorizer.proto` for module interface changes, and `acls.proto` for corresponding LocalAuthorizer ACL changes.
+
+<a name="1-2-x-renamed-authz-actions"></a>
+* Renamed Authorizer module actions (and deprecated old aliases): REGISTER_FRAMEWORK, TEARDOWN_FRAMEWORK, RESERVE_RESOURCES, UNRESERVE_RESOURCES, CREATE_VOLUME, DESTROY_VOLUME, UPDATE_WEIGHT, GET_QUOTA. See `authorizer.proto` for interface changes.
+
+<a name="1-2-x-removed-hooks"></a>
+* Removed slavePreLaunchDockerEnvironmentDecorator and slavePreLaunchDockerHook in favor of slavePreLaunchDockerTaskExecutorDecorator.
+
+<a name="1-2-x-debug-endpoints"></a>
+* New Agent v1 operator API calls: LAUNCH_NESTED_CONTAINER_SESSION, ATTACH_CONTAINER_INPUT, ATTACH_CONTAINER_OUTPUT for debugging into running containers (Mesos containerizer only).
+
+<a name="1-2-x-recovered-frameworks"></a>
+* Deprecated `recovered_frameworks` in v1 GetFrameworks call. Now it will be empty.
+
+<a name="1-2-x-orphan-executors"></a>
+* Deprecated `orphan_executors` in v1 GetExecutors call. Now it will be empty.
+
+<a name="1-2-x-orphan-tasks"></a>
+* Deprecated `orphan_tasks` in v1 GetTasks call. Now it will be empty.
+
+In order to upgrade a running cluster:
+
+1. Rebuild and install any modules so that upgraded masters/agents/schedulers can use them.
+2. Install the new master binaries and restart the masters.
+3. Install the new agent binaries and restart the agents.
+4. Upgrade the schedulers by linking the latest native library / jar / egg (if necessary).
+5. Restart the schedulers.
+6. Upgrade the executors by linking the latest native library / jar / egg (if necessary).
+
+## Upgrading from 1.0.x to 1.1.x ##
+
+<a name="1-1-x-container-logger-interface"></a>
+
+* Mesos 1.1 removes the `ContainerLogger`'s `recover()` method.  The `ContainerLogger` had an incomplete interface for a stateful implementation.  This removes the incomplete parts to avoid adding tech debt in the containerizer.  Please see [MESOS-6371](https://issues.apache.org/jira/browse/MESOS-6371) for more information.
+
+<a name="1-1-x-allocator-updateallocation"></a>
+
+* Mesos 1.1 adds an `offeredResources` argument to the `Allocator::updateAllocation()` method. It is used to indicate the resources that the operations passed to `updateAllocation()` are applied to. [MESOS-4431](https://issues.apache.org/jira/browse/MESOS-4431) (paticularly [/r/45961/](https://reviews.apache.org/r/45961/)) has more details on the motivation.
 
 ## Upgrading from 0.28.x to 1.0.x ##
+
+<a name="1-0-x-deprecated-ssl-env-variables"></a>
+
+* Prior to Mesos 1.0, environment variables prefixed by `SSL_` are used to control libprocess SSL support. However, it was found that those environment variables may collide with some libraries or programs (e.g., openssl, curl). From Mesos 1.0, `SSL_*` environment variables are deprecated in favor of the corresponding `LIBPROCESS_SSL_*` variables.
+
+<a name="1-0-x-persistent-volume-ownership"></a>
+
+* Prior to Mesos 1.0, Mesos agent recursively changes the ownership of the persistent volumes every time they are mounted to a container. From Mesos 1.0, this behavior has been changed. Mesos agent will do a _non-recursive_ change of ownership of the persistent volumes.
+
+<a name="1-0-x-deprecated-fields-in-container-config"></a>
+
+* Mesos 1.0 removed the camel cased protobuf fields in `ContainerConfig` (see `include/mesos/slave/isolator.proto`):
+  * `required ExecutorInfo executorInfo = 1;`
+  * `optional TaskInfo taskInfo = 2;`
+
+<a name="1-0-x-executor-environment-variables"></a>
+
+* By default, executors will no longer inherit environment variables from the agent. The operator can still use the `--executor-environment-variables` flag on the agent to explicitly specify what environment variables the executors will get. Mesos generated environment variables (i.e., `$MESOS_`, `$LIBPROCESS_`) will not be affected. If `$PATH` is not specified for an executor, a default value `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin` will be used.
 
 <a name="1-0-x-allocator-metrics"></a>
 
@@ -194,6 +340,10 @@ We categorize the changes as follows:
 <a name="1-0-x-workdir"></a>
 
 * Mesos 1.0 removes the default value for the agent's `work_dir` command-line flag. This flag is now required; the agent will exit immediately if it is not provided.
+
+<a name="1-0-x-registry-strict"></a>
+
+* Mesos 1.0 disables support for the master's `registry_strict` command-line flag. If this flag is specified, the master will exit immediately. Note that this flag was previously marked as experimental and not recommended for production use.
 
 <a name="1-0-x-credentials-file"></a>
 
@@ -243,11 +393,32 @@ We categorize the changes as follows:
 * Mesos 1.0 contains a number of authorizer changes that particularly effect custom authorizer modules:
   * The authorizer interface has been refactored in order to decouple the ACL definition language from the interface. It additionally includes the option of retrieving `ObjectApprover`. An `ObjectApprover` can be used to synchronously check authorizations for a given object and is hence useful when authorizing a large number of objects and/or large objects (which need to be copied using request-based authorization). NOTE: This is a **breaking change** for authorizer modules.
   * Authorization-based HTTP endpoint filtering enables operators to restrict which parts of the cluster state a user is authorized to see. Consider for example the `/state` master endpoint: an operator can now authorize users to only see a subset of the running frameworks, tasks, or executors.
-  * The ``subject` and `object` fields in the authorization::Request protobuf message have been changed to be optional. If these fields are not set, the request should only be allowed for ACLs with `ANY` semantics. NOTE: This is a semantic change for authorizer modules.
+  * The `subject` and `object` fields in the authorization::Request protobuf message have been changed to be optional. If these fields are not set, the request should only be allowed for ACLs with `ANY` semantics. NOTE: This is a semantic change for authorizer modules.
+
+<a name="1-0-x-allocator"></a>
+
+* Namespace and header file of `Allocator` has been moved to be consistent with other packages.
+
+<a name="1-0-x-fetcher-user"></a>
+
+* When a task is run as a particular user, the fetcher now fetches files as that user also. Note, this means that filesystem permissions for that user will be enforced when fetching local files.
+
+<a name="1-0-x-http-authentication-flags"></a>
+
+* The `--authenticate_http` flag has been deprecated in favor of `--authenticate_http_readwrite`. Setting `--authenticate_http_readwrite` will now enable authentication for all endpoints which previously had authentication support. These happen to be the endpoints which allow modifiication of the cluster state, or "read-write" endpoints. Note that `/logging/toggle`, `/profiler/start`, `/profiler/stop`, `/maintenance/schedule`, `/machine/up`, and `/machine/down` previously did not have authentication support, but in 1.0 if either `--authenticate_http` or `--authenticate_http_readwrite` is set, those endpoints will now require authentication. A new flag has also been introduced, `--authenticate_http_readonly`, which enables authentication for endpoints which support authentication and do not allow modification of the state of the cluster, like `/state` or `/flags`.
 
 <a name="1-0-x-endpoint-authorization"></a>
 
 * Mesos 1.0 introduces authorization support for several HTTP endpoints. Note that some of these endpoints are used by the web UI, and thus using the web UI in a cluster with authorization enabled will require that ACLs be set appropriately. Please refer to the [authorization documentation](authorization.md) for details.
+
+* The endpoints with coarse-grained authorization enabled are:
+  - `/files/debug`
+  - `/logging/toggle`
+  - `/metrics/snapshot`
+  - `/slave(id)/containers`
+  - `/slave(id)/monitor/statistics`
+
+* If the defined ACLs used `permissive: false`, the listed HTTP endpoints will stop working unless ACLs for the `get_endpoints` actions are defined.
 
 In order to upgrade a running cluster:
 

@@ -15,11 +15,13 @@
 
 #include <direct.h>
 #include <io.h>
-#include <TlHelp32.h>
 #include <Psapi.h>
+#include <TlHelp32.h>
+#include <Userenv.h>
 
 #include <sys/utime.h>
 
+#include <codecvt>
 #include <list>
 #include <map>
 #include <set>
@@ -30,13 +32,17 @@
 #include <stout/nothing.hpp>
 #include <stout/option.hpp>
 #include <stout/path.hpp>
+#include <stout/strings.hpp>
 #include <stout/try.hpp>
 #include <stout/windows.hpp>
 
 #include <stout/os/os.hpp>
+#include <stout/os/getenv.hpp>
+#include <stout/os/process.hpp>
 #include <stout/os/read.hpp>
 
 #include <stout/os/raw/environment.hpp>
+#include <stout/os/windows/fd.hpp>
 
 namespace os {
 namespace internal {
@@ -45,10 +51,16 @@ inline Try<OSVERSIONINFOEX> os_version()
 {
   OSVERSIONINFOEX os_version;
   os_version.dwOSVersionInfoSize = sizeof(OSVERSIONINFOEX);
+#pragma warning(push)
+#pragma warning(disable : 4996)
+  // Disable compiler warning asking us to use the Unicode version of
+  // `GetVersionEx`, because Mesos currently does not support Unicode. See
+  // MESOS-6817.
   if (!::GetVersionEx(reinterpret_cast<LPOSVERSIONINFO>(&os_version))) {
     return WindowsError(
         "os::internal::os_version: Call to `GetVersionEx` failed");
   }
+#pragma warning(pop)
 
   return os_version;
 }
@@ -151,8 +163,12 @@ inline Try<std::set<pid_t>> pids(Option<pid_t> group, Option<pid_t> session)
     // TODO(alexnaparu): Set a limit to the memory that can be used.
     processes.resize(max_items);
     size_in_bytes = processes.size() * sizeof(pid_t);
-    BOOL result = ::EnumProcesses(processes.data(), size_in_bytes,
-                                  &bytes_returned);
+    CHECK_LE(size_in_bytes, MAXDWORD);
+
+    BOOL result = ::EnumProcesses(
+        processes.data(),
+        static_cast<DWORD>(size_in_bytes),
+        &bytes_returned);
 
     if (!result) {
       return WindowsError("os::pids: Call to `EnumProcesses` failed");
@@ -369,12 +385,6 @@ inline std::string hstrerror(int err)
 }
 
 
-// This function is a portable version of execvpe ('p' means searching
-// executable from PATH and 'e' means setting environments). We add
-// this function because it is not available on all systems.
-inline int execvpe(const char* file, char** argv, char** envp) = delete;
-
-
 inline Try<Nothing> chown(
     uid_t uid,
     gid_t gid,
@@ -426,8 +436,8 @@ inline Try<Load> loadavg()
   // No Windows equivalent, return an error until there is a need. We can
   // construct an approximation of this function by periodically polling
   // `GetSystemTimes` and using a sliding window of statistics.
-  return WindowsErrorBase(ERROR_NOT_SUPPORTED,
-                          "Failed to determine system load averages");
+  return WindowsError(ERROR_NOT_SUPPORTED,
+                      "Failed to determine system load averages");
 }
 
 
@@ -455,9 +465,15 @@ inline Try<Version> release()
 {
   OSVERSIONINFOEX os_version;
   os_version.dwOSVersionInfoSize = sizeof(OSVERSIONINFOEX);
+#pragma warning(push)
+#pragma warning(disable : 4996)
+  // Disable compiler warning asking us to use the Unicode version of
+  // `GetVersionEx`, because Mesos currently does not support Unicode. See
+  // MESOS-6817.
   if (!::GetVersionEx(reinterpret_cast<LPOSVERSIONINFO>(&os_version))) {
     return WindowsError("os::release: Call to `GetVersionEx` failed");
   }
+#pragma warning(pop)
 
   return Version(os_version.dwMajorVersion, os_version.dwMinorVersion, 0);
 }
@@ -490,32 +506,6 @@ inline Try<UTSInfo> uname()
 }
 
 
-// Looks in the environment variables for the specified key and
-// returns a string representation of its value. If no environment
-// variable matching key is found, None() is returned.
-inline Option<std::string> getenv(const std::string& key)
-{
-  DWORD buffer_size = ::GetEnvironmentVariable(key.c_str(), nullptr, 0);
-  if (buffer_size == 0) {
-    return None();
-  }
-
-  std::unique_ptr<char[]> environment(new char[buffer_size]);
-
-  DWORD value_size =
-    ::GetEnvironmentVariable(key.c_str(), environment.get(), buffer_size);
-
-  if (value_size == 0) {
-    // If `value_size == 0` here, that probably means the environment variable
-    // was deleted between when we checked and when we allocated the buffer. We
-    // report `None` to indicate the environment variable was not found.
-    return None();
-  }
-
-  return std::string(environment.get());
-}
-
-
 inline tm* gmtime_r(const time_t* timep, tm* result)
 {
   return ::gmtime_s(result, timep) == ERROR_SUCCESS ? result : nullptr;
@@ -543,8 +533,8 @@ inline Result<PROCESSENTRY32> process_entry(pid_t pid)
   // Get first process so that we can loop through process entries until we
   // find the one we care about.
   SetLastError(ERROR_SUCCESS);
-  bool has_next = Process32First(safe_snapshot_handle.get(), &process_entry);
-  if (!has_next) {
+  BOOL has_next = Process32First(safe_snapshot_handle.get(), &process_entry);
+  if (has_next == FALSE) {
     // No first process was found. We should never be here; it is arguable we
     // should return `None`, since we won't find the PID we're looking for, but
     // we elect to return `Error` because something terrible has probably
@@ -557,14 +547,14 @@ inline Result<PROCESSENTRY32> process_entry(pid_t pid)
   }
 
   // Loop through processes until we find the one we're looking for.
-  while (has_next) {
+  while (has_next == TRUE) {
     if (process_entry.th32ProcessID == pid) {
       // Process found.
       return process_entry;
     }
 
     has_next = Process32Next(safe_snapshot_handle.get(), &process_entry);
-    if (!has_next) {
+    if (has_next == FALSE) {
       DWORD last_error = GetLastError();
       if (last_error != ERROR_NO_MORE_FILES && last_error != ERROR_SUCCESS) {
         return WindowsError(
@@ -747,75 +737,44 @@ inline Try<Nothing> kill_job(pid_t pid)
 }
 
 
-inline std::string temp()
+inline Try<std::string> var()
 {
-  // Get temp folder for current user.
-  char temp_folder[MAX_PATH + 2];
-  if (::GetTempPath(MAX_PATH + 2, temp_folder) == 0) {
-    // Failed, try current folder.
-    if (::GetCurrentDirectory(MAX_PATH + 2, temp_folder) == 0) {
-      // Failed, use relative path.
-      return ".";
-    }
+  // Get the `ProgramData` path. First, find the size of the output buffer.
+  // This size includes the null-terminating character.
+  DWORD size = 0;
+  if (::GetAllUsersProfileDirectoryW(nullptr, &size)) {
+    // The expected behavior here is for the function to "fail"
+    // and return `false`, and `size` receives necessary buffer size.
+    return WindowsError(
+        "os::var: `GetAllUsersProfileDirectory` succeeded unexpectedly");
   }
 
-  return std::string(temp_folder);
+  std::vector<wchar_t> var_folder(size);
+  if (!::GetAllUsersProfileDirectoryW(&var_folder[0], &size)) {
+    return WindowsError(
+        "os::var: `GetAllUsersProfileDirectory` failed");
+  }
+
+  // Convert UTF-16 `wchar[]` to UTF-8 `string`.
+  std::wstring wvar_folder(&var_folder[0]);
+  std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>, wchar_t> converter;
+  return converter.to_bytes(wvar_folder);
 }
 
 
-// Create pipes for interprocess communication. Since the pipes cannot
-// be used directly by Posix `read/write' functions they are wrapped
-// in file descriptors, a process-local concept.
-inline Try<Nothing> pipe(int pipe[2])
+// Returns a host-specific default for the `PATH` environment variable, based
+// on the configuration of the host.
+inline std::string host_default_path()
 {
-  // Create inheritable pipe, as described in MSDN[1].
-  //
-  // [1] https://msdn.microsoft.com/en-us/library/windows/desktop/aa365782(v=vs.85).aspx
-  SECURITY_ATTRIBUTES securityAttr;
-  securityAttr.nLength = sizeof(SECURITY_ATTRIBUTES);
-  securityAttr.bInheritHandle = TRUE;
-  securityAttr.lpSecurityDescriptor = nullptr;
+  // NOTE: On Windows, this code must run on the host where we are
+  // expecting to `exec` the task, because the value of
+  // `%SYSTEMROOT%` is not identical on all platforms.
+  const Option<std::string> systemRootEnv = os::getenv("SYSTEMROOT");
+  const std::string systemRoot = systemRootEnv.isSome()
+    ? systemRootEnv.get()
+    : "C:\\WINDOWS";
 
-  HANDLE read_handle;
-  HANDLE write_handle;
-
-  const BOOL result = ::CreatePipe(
-      &read_handle,
-      &write_handle,
-      &securityAttr,
-      0);
-
-  pipe[0] = _open_osfhandle(
-      reinterpret_cast<intptr_t>(read_handle),
-      _O_RDONLY | _O_TEXT);
-
-  if (pipe[0] == -1) {
-    return ErrnoError();
-  }
-
-  pipe[1] = _open_osfhandle(reinterpret_cast<intptr_t>(write_handle), _O_TEXT);
-  if (pipe[1] == -1) {
-    return ErrnoError();
-  }
-
-  return Nothing();
-}
-
-
-// Prepare the file descriptors to be shared with a different process.
-// Under Windows we have to obtain the underlying handles to be shared
-// with a different processs.
-inline intptr_t fd_to_handle(int in)
-{
-  return ::_get_osfhandle(in);
-}
-
-
-// Convert the global file handle into a file descriptor, which on
-// Windows is only valid within the current process.
-inline int handle_to_fd(intptr_t in, int flags)
-{
-  return ::_open_osfhandle(in, flags);
+  return strings::join(";", systemRoot, path::join(systemRoot, "system32"));
 }
 
 } // namespace os {

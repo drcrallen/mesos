@@ -22,6 +22,7 @@
 
 #include <stout/stringify.hpp>
 
+#include <stout/os/constants.hpp>
 #include <stout/os/killtree.hpp>
 
 #include "common/status_utils.hpp"
@@ -36,8 +37,6 @@ using std::vector;
 
 using process::Failure;
 using process::Future;
-using process::MONITOR;
-using process::NO_SETSID;
 using process::Owned;
 using process::Subprocess;
 
@@ -51,7 +50,7 @@ constexpr Duration MOUNT_TIMEOUT = Seconds(120);
 constexpr Duration UNMOUNT_TIMEOUT = Seconds(120);
 
 Try<Owned<DriverClient>> DriverClient::create(
-    const std::string& dvdcli)
+    const string& dvdcli)
 {
   return Owned<DriverClient>(new DriverClient(dvdcli));
 }
@@ -87,16 +86,14 @@ Future<string> DriverClient::mount(
   Try<Subprocess> s = subprocess(
       dvdcli,
       argv,
-      Subprocess::PATH("/dev/null"),
+      Subprocess::PATH(os::DEV_NULL),
       Subprocess::PIPE(),
       Subprocess::PIPE(),
-      NO_SETSID,
-      None(),
+      nullptr,
       None(),
       None(),
       {},
-      None(),
-      MONITOR);
+      {Subprocess::ChildHook::SUPERVISOR()});
 
   if (s.isError()) {
     return Failure("Failed to execute '" + command + "': " + s.error());
@@ -173,16 +170,14 @@ Future<Nothing> DriverClient::unmount(
   Try<Subprocess> s = subprocess(
       dvdcli,
       argv,
-      Subprocess::PATH("/dev/null"),
+      Subprocess::PATH(os::DEV_NULL),
       Subprocess::PIPE(),
       Subprocess::PIPE(),
-      NO_SETSID,
-      None(),
+      nullptr,
       None(),
       None(),
       {},
-      None(),
-      MONITOR);
+      {Subprocess::ChildHook::SUPERVISOR()});
 
   if (s.isError()) {
     return Failure("Failed to execute '" + command + "': " + s.error());

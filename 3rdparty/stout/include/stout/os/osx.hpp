@@ -32,6 +32,7 @@
 #include <stout/none.hpp>
 #include <stout/strings.hpp>
 
+#include <stout/os/os.hpp>
 #include <stout/os/pagesize.hpp>
 #include <stout/os/process.hpp>
 #include <stout/os/sysctl.hpp>
@@ -166,7 +167,7 @@ inline Result<Process> process(pid_t pid)
 }
 
 
-inline Try<std::set<pid_t> > pids()
+inline Try<std::set<pid_t>> pids()
 {
   const Try<int> maxproc = os::sysctl(CTL_KERN, KERN_MAXPROC).integer();
 
@@ -203,10 +204,7 @@ inline Try<Memory> memory()
 
   // Size of free memory is available in terms of number of
   // free pages on Mac OS X.
-  const int pageSize = os::pagesize();
-  if (pageSize < 0) {
-    return ErrnoError();
-  }
+  const size_t pageSize = os::pagesize();
 
   unsigned int freeCount;
   size_t length = sizeof(freeCount);

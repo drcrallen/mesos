@@ -25,9 +25,16 @@
 
 #include <mesos/type_utils.hpp>
 
+#include "common/http.hpp"
 #include "common/parse.hpp"
 
 #include "slave/constants.hpp"
+
+#ifdef __linux__
+#include "slave/containerizer/mesos/linux_launcher.hpp"
+#endif // __linux__
+
+#include "slave/containerizer/mesos/provisioner/constants.hpp"
 
 using std::string;
 
@@ -37,7 +44,7 @@ mesos::internal::slave::Flags::Flags()
       "hostname",
       "The hostname the agent should report.\n"
       "If left unset, the hostname is resolved from the IP address\n"
-      "that the agent binds to; unless the user explicitly prevents\n"
+      "that the agent advertises; unless the user explicitly prevents\n"
       "that, using `--no-hostname_lookup`, in which case the IP itself\n"
       "is used.");
 
@@ -89,15 +96,20 @@ mesos::internal::slave::Flags::Flags()
 
   add(&Flags::isolation,
       "isolation",
-      "Isolation mechanisms to use, e.g., `posix/cpu,posix/mem`, or\n"
+      "Isolation mechanisms to use, e.g., `posix/cpu,posix/mem` (or \n"
+      "`windows/cpu` if you are on Windows), or\n"
       "`cgroups/cpu,cgroups/mem`, or network/port_mapping\n"
       "(configure with flag: `--with-network-isolator` to enable),\n"
-      "or `cgroups/devices/gpus/nvidia` for nvidia specific gpu isolation\n"
-      "(configure with flag: `--enable-nvidia-gpu-support` to enable),\n"
-      "or `external`, or load an alternate isolator module using\n"
-      "the `--modules` flag. Note that this flag is only relevant\n"
-      "for the Mesos Containerizer.",
-      "posix/cpu,posix/mem");
+      "or `gpu/nvidia` for nvidia specific gpu isolation,\n"
+      "or load an alternate isolator module using the `--modules`\n"
+      "flag. Note that this flag is only relevant for the Mesos\n"
+      "Containerizer.",
+#ifndef __WINDOWS__
+      "posix/cpu,posix/mem"
+#else
+      "windows/cpu"
+#endif // __WINDOWS__
+      );
 
   add(&Flags::launcher,
       "launcher",
@@ -105,7 +117,15 @@ mesos::internal::slave::Flags::Flags()
       "`linux` or `posix`. The Linux launcher is required for cgroups\n"
       "isolation and for any isolators that require Linux namespaces such as\n"
       "network, pid, etc. If unspecified, the agent will choose the Linux\n"
-      "launcher if it's running as root on Linux.");
+      "launcher if it's running as root on Linux.",
+#ifdef __linux__
+      LinuxLauncher::available() ? "linux" : "posix"
+#elif __WINDOWS__
+      "windows"
+#else
+      "posix"
+#endif // __linux__
+      );
 
   add(&Flags::image_providers,
       "image_providers",
@@ -115,8 +135,7 @@ mesos::internal::slave::Flags::Flags()
   add(&Flags::image_provisioner_backend,
       "image_provisioner_backend",
       "Strategy for provisioning container rootfs from images,\n"
-      "e.g., `bind`, `copy`, `overlay`.",
-      "copy");
+      "e.g., `aufs`, `bind`, `copy`, `overlay`.");
 
   add(&Flags::appc_simple_discovery_uri_prefix,
       "appc_simple_discovery_uri_prefix",
@@ -190,11 +209,42 @@ mesos::internal::slave::Flags::Flags()
       "production, since long-running agents could lose data when cleanup\n"
       "occurs. (Example: `/var/lib/mesos/agent`)");
 
+  add(&Flags::runtime_dir,
+      "runtime_dir",
+      "Path of the agent runtime directory. This is where runtime data\n"
+      "is stored by an agent that it needs to persist across crashes (but\n"
+      "not across reboots). This directory will be cleared on reboot.\n"
+      "(Example: `/var/run/mesos`)",
+      []() -> string {
+        Try<string> var = os::var();
+        if (var.isSome()) {
+#ifdef __WINDOWS__
+          const string prefix(var.get());
+#else
+          const string prefix(path::join(var.get(), "run"));
+#endif // __WINDOWS__
+
+          // We check for access on the prefix because the remainder
+          // of the directory structure is created by the agent later.
+          Try<bool> access = os::access(prefix, R_OK | W_OK);
+          if (access.isSome() && access.get()) {
+#ifdef __WINDOWS__
+            return path::join(prefix, "mesos", "runtime");
+#else
+            return path::join(prefix, "mesos");
+#endif // __WINDOWS__
+          }
+        }
+
+        // We provide a fallback path for ease of use in case `os::var()`
+        // errors or if the directory is not accessible.
+        return path::join(os::temp(), "mesos", "runtime");
+      }());
+
   add(&Flags::launcher_dir, // TODO(benh): This needs a better name.
       "launcher_dir",
-      "Directory path of Mesos binaries. Mesos looks for the health-check,\n"
-      "fetcher, containerizer, and executor binary files under this\n"
-      "directory.",
+      "Directory path of Mesos binaries. Mesos looks for the fetcher,\n"
+      "containerizer, and executor binary files under this directory.",
       PKGLIBEXECDIR);
 
   add(&Flags::hadoop_home,
@@ -220,6 +270,14 @@ mesos::internal::slave::Flags::Flags()
       true);
 #endif // __WINDOWS__
 
+  add(&Flags::http_heartbeat_interval,
+      "http_heartbeat_interval",
+      "This flag sets a heartbeat interval (e.g. '5secs', '10mins') for\n"
+      "messages to be sent over persistent connections made against\n"
+      "the agent HTTP API. Currently, this only applies to the\n"
+      "'LAUNCH_NESTED_CONTAINER_SESSION' and 'ATTACH_CONTAINER_OUTPUT' calls.",
+      Seconds(30));
+
   add(&Flags::frameworks_home,
       "frameworks_home",
       "Directory path prepended to relative executor URIs", "");
@@ -231,15 +289,25 @@ mesos::internal::slave::Flags::Flags()
       "Subsequent retries are exponentially backed off based on this\n"
       "interval (e.g., 1st retry uses a random value between `[0, b * 2^1]`,\n"
       "2nd retry between `[0, b * 2^2]`, 3rd retry between `[0, b * 2^3]`,\n"
-      "etc) up to a maximum of " +
-        stringify(REGISTER_RETRY_INTERVAL_MAX),
+      "etc) up to a maximum of " + stringify(REGISTER_RETRY_INTERVAL_MAX),
       DEFAULT_REGISTRATION_BACKOFF_FACTOR);
+
+  add(&Flags::authentication_backoff_factor,
+      "authentication_backoff_factor",
+      "After a failed authentication the agent picks a random amount of time\n"
+      "between `[0, b]`, where `b = authentication_backoff_factor`, to\n"
+      "authenticate with a new master. Subsequent retries are exponentially\n"
+      "backed off based on this interval (e.g., 1st retry uses a random\n"
+      "value between `[0, b * 2^1]`, 2nd retry between `[0, b * 2^2]`, 3rd\n"
+      "retry between `[0, b * 2^3]`, etc up to a maximum of " +
+          stringify(AUTHENTICATION_RETRY_INTERVAL_MAX),
+      DEFAULT_AUTHENTICATION_BACKOFF_FACTOR);
 
   add(&Flags::executor_environment_variables,
       "executor_environment_variables",
       "JSON object representing the environment variables that should be\n"
-      "passed to the executor, and thus subsequently task(s). By default the\n"
-      "executor will inherit the agent's environment variables.\n"
+      "passed to the executor, and thus subsequently task(s). By default this\n"
+      "flag is none. Users have to define executor environment explicitly.\n"
       "Example:\n"
       "{\n"
       "  \"PATH\": \"/bin:/usr/bin\",\n"
@@ -332,6 +400,12 @@ mesos::internal::slave::Flags::Flags()
       "state as possible is recovered.\n",
       true);
 
+  add(&Flags::max_completed_executors_per_framework,
+      "max_completed_executors_per_framework",
+      "Maximum number of completed executors per framework to store\n"
+      "in memory.\n",
+      DEFAULT_MAX_COMPLETED_EXECUTORS_PER_FRAMEWORK);
+
 #ifdef __linux__
   add(&Flags::cgroups_hierarchy,
       "cgroups_hierarchy",
@@ -389,7 +463,7 @@ mesos::internal::slave::Flags::Flags()
       "numbers that correspond to Nvidia's NVML device enumeration (as\n"
       "seen by running the command `nvidia-smi` on an Nvidia GPU\n"
       "equipped system).  The GPUs listed will only be isolated if the\n"
-      "`--isolation` flag contains the string `cgroups/devices/gpus/nvidia`.");
+      "`--isolation` flag contains the string `gpu/nvidia`.");
 
   add(&Flags::perf_events,
       "perf_events",
@@ -434,6 +508,34 @@ mesos::internal::slave::Flags::Flags()
       "systemd_runtime_directory",
       "The path to the systemd system run time directory\n",
       "/run/systemd/system");
+
+  add(&Flags::allowed_capabilities,
+      "allowed_capabilities",
+      "JSON representation of system capabilities that the operator will\n"
+      "allow for a task that will be run in a container launched by the\n"
+      "containerizer (currently only supported in MesosContainerizer).\n"
+      "This set overrides the default capabilities for the user and the\n"
+      "capabilities requested by the framework.\n"
+      "\n"
+      "The net capability for a task running in the container would be:\n"
+      "   ((F & A) & U)\n"
+      "   where F = capabilities requested by the framework.\n"
+      "         U = permitted capabilities for the agent process.\n"
+      "         A = allowed capabilities specified by this flag.\n"
+      "\n"
+      "To set capabilities the agent should have the `SETPCAP` capability.\n"
+      "\n"
+      "This flag is effective iff `capabilities` isolation is enabled.\n"
+      "When `capabilities` isolation is enabled, the absence of this flag\n"
+      "would imply that the operator would allow ALL capabilities.\n"
+      "\n"
+      "Example:\n"
+      "{\n"
+      "   \"capabilities\": [\n"
+      "       \"NET_RAW\",\n"
+      "       \"SYS_ADMIN\"\n"
+      "     ]\n"
+      "}");
 #endif
 
   add(&Flags::firewall_rules,
@@ -490,24 +592,14 @@ mesos::internal::slave::Flags::Flags()
       "  ]\n"
       "}");
 
-  add(&Flags::containerizer_path,
-      "containerizer_path",
-      "The path to the external containerizer executable used when\n"
-      "external isolation is activated (`--isolation=external`).");
-
   add(&Flags::containerizers,
       "containerizers",
       "Comma-separated list of containerizer implementations\n"
       "to compose in order to provide containerization.\n"
-      "Available options are `mesos`, `external`, and\n"
-      "`docker` (on Linux). The order the containerizers\n"
-      "are specified is the order they are tried.\n",
+      "Available options are `mesos` and `docker` (on Linux).\n"
+      "The order the containerizers are specified is the order\n"
+      "they are tried.\n",
       "mesos");
-
-  add(&Flags::default_container_image,
-      "default_container_image",
-      "The default container image to use if not specified by a task,\n"
-      "when using external containerizer.");
 
   // Docker containerizer flags.
   add(&Flags::docker,
@@ -540,19 +632,21 @@ mesos::internal::slave::Flags::Flags()
 
   add(&Flags::docker_socket,
       "docker_socket",
-      "The UNIX socket path to be mounted into the docker executor container\n"
-      "to provide docker CLI access to the docker daemon. This must be the\n"
-      "path used by the agent's docker image.\n",
-      "/var/run/docker.sock");
+      "Resource used by the agent and the executor to provice CLI access\n"
+      "to the Docker daemon. On Unix, this is typically a path to a\n"
+      "socket, such as '/var/run/docker.sock'. On Windows this must be a\n"
+      "named pipe, such as '//./pipe/docker_engine'. NOTE: This must be\n"
+      "the path used by the Docker image used to run the agent.\n",
+      DEFAULT_DOCKER_HOST_RESOURCE);
 
   add(&Flags::docker_config,
       "docker_config",
-      "The default docker config file for agent. Can be provided either as a\n"
-      "path pointing to the agent local docker config file, or as a\n"
+      "The default docker config file for agent. Can be provided either as an\n"
+      "absolute path pointing to the agent local docker config file, or as a\n"
       "JSON-formatted string. The format of the docker config file should be\n"
       "identical to docker's default one (e.g., either\n"
-      "`~/.docker/config.json` or `~/.dockercfg`).\n"
-      "Example JSON (`~/.docker/config.json`):\n"
+      "`$HOME/.docker/config.json` or `$HOME/.dockercfg`).\n"
+      "Example JSON (`$HOME/.docker/config.json`):\n"
       "{\n"
       "  \"auths\": {\n"
       "    \"https://index.docker.io/v1/\": {\n"
@@ -566,7 +660,12 @@ mesos::internal::slave::Flags::Flags()
       "sandbox_directory",
       "The absolute path for the directory in the container where the\n"
       "sandbox is mapped to.\n",
-      "/mnt/mesos/sandbox");
+#ifndef __WINDOWS__
+      "/mnt/mesos/sandbox"
+#else
+      "C:\\mesos\\sandbox"
+#endif // __WINDOWS__
+      );
 
   add(&Flags::default_container_info,
       "default_container_info",
@@ -664,11 +763,10 @@ mesos::internal::slave::Flags::Flags()
 
   add(&Flags::network_cni_plugins_dir,
       "network_cni_plugins_dir",
-      "Directory path of the CNI plugin binaries. The `network/cni`\n"
-      "isolator will find CNI plugins under this directory so that\n"
+      "A search path for CNI plugin binaries. The `network/cni`\n"
+      "isolator will find CNI plugins under these set of directories so that\n"
       "it can execute the plugins to add/delete container from the CNI\n"
-      "networks. It is the operator's responsibility to install the CNI\n"
-      "plugin binaries in the specified directory.");
+      "networks.");
 
   add(&Flags::network_cni_config_dir,
       "network_cni_config_dir",
@@ -777,11 +875,18 @@ mesos::internal::slave::Flags::Flags()
       "Currently there is no support for multiple HTTP authenticators.",
       DEFAULT_HTTP_AUTHENTICATOR);
 
-  add(&Flags::authenticate_http,
-      "authenticate_http",
-      "If `true`, only authenticated requests for HTTP endpoints supporting\n"
-      "authentication are allowed. If `false`, unauthenticated requests to\n"
-      "HTTP endpoints are also allowed.",
+  add(&Flags::authenticate_http_readwrite,
+      "authenticate_http_readwrite",
+      "If `true`, only authenticated requests for read-write HTTP endpoints\n"
+      "supporting authentication are allowed. If `false`, unauthenticated\n"
+      "requests to such HTTP endpoints are also allowed.",
+      false);
+
+  add(&Flags::authenticate_http_readonly,
+      "authenticate_http_readonly",
+      "If `true`, only authenticated requests for read-only HTTP endpoints\n"
+      "supporting authentication are allowed. If `false`, unauthenticated\n"
+      "requests to such HTTP endpoints are also allowed.",
       false);
 
   add(&Flags::http_credentials,

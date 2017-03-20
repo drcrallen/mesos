@@ -23,12 +23,16 @@
 
 #include <mesos/mesos.hpp>
 
+#include <mesos/slave/containerizer.hpp>
+
 #include <process/future.hpp>
 #include <process/subprocess.hpp>
+#include <process/shared.hpp>
 
 #include <stout/try.hpp>
 #include <stout/nothing.hpp>
 #include <stout/option.hpp>
+#include <stout/unreachable.hpp>
 
 namespace mesos {
 namespace slave {
@@ -50,61 +54,6 @@ namespace slave {
 class ContainerLogger
 {
 public:
-  /**
-   * A collection of `process::subprocess` arguments which the container logger
-   * can influence.  See `ContainerLogger::prepare`.
-   */
-  struct SubprocessInfo
-  {
-    /**
-     * Describes how the container logger redirects I/O for stdout/stderr.
-     * See `process::Subprocess::IO`.
-     *
-     * NOTE: This wrapper prevents the container logger from redirecting I/O
-     * via a `Subprocess::PIPE`.  This is restricted because logging must not
-     * be affected by the status of the agent process:
-     *   * A `Subprocess::PIPE` will require the agent process to regularly
-     *     read and empty the pipe.  The agent does not do this.  If the pipe
-     *     fills up, the write-end of the pipe may become blocked on IO.
-     *   * Logging must continue even if the agent dies.
-     */
-    class IO
-    {
-    public:
-      static IO PATH(const std::string& path)
-      {
-        return IO(process::Subprocess::PATH(path));
-      }
-
-      static IO FD(int fd)
-      {
-        // NOTE: The FD is not duplicated and will be closed (as seen by the
-        // agent process) when the container is spawned.  This shifts the
-        // burden of FD-lifecycle management into the Containerizer.
-        return IO(process::Subprocess::FD(
-            fd, process::Subprocess::IO::OWNED));
-      }
-
-      operator process::Subprocess::IO () const { return io; }
-
-    private:
-      IO(process::Subprocess::IO _io) : io(_io) {}
-
-      process::Subprocess::IO io;
-    };
-
-    /**
-     * How to redirect the stdout of the executable.
-     * See `process::Subprocess::IO`.
-     */
-    IO out = SubprocessInfo::IO::FD(STDOUT_FILENO);
-
-    /**
-     * Similar to `out`, except this describes how to redirect stderr.
-     */
-    IO err = SubprocessInfo::IO::FD(STDERR_FILENO);
-  };
-
   /**
    * Create and initialize a container logger instance of the given type,
    * specified by the `container_logger` agent flag.  If the type is not
@@ -128,39 +77,14 @@ public:
   virtual Try<Nothing> initialize() = 0;
 
   /**
-   * Called during the agent recovery process as executors re-register with
-   * the agent.
-   *
-   * The container logger should use this method to do any executor-specific
-   * setup.  This method should have the same side-effects as `prepare`, except
-   * that the executor is already running.  i.e. If `prepare` associates
-   * some metadata with the `ExecutorID` of each executor, that metadata
-   * should be restored here.
-   *
-   * If the container logger's state cannot be recovered, this method should
-   * return a `Failure`.  This failure is logged by the agent, but has no other
-   * effects.  The executor will not be killed.
-   * TODO(josephw): Consider different behavior when the executor cannot be
-   * recovered.  For example, we could add a flag to kill non-recovered
-   * executors.
-   *
-   * NOTE: The executor may have been spawned with a different container logger.
-   * This can occur if an executor is running and the agent is restarted with
-   * a different container logger module.
-   */
-  virtual process::Future<Nothing> recover(
-      const ExecutorInfo& executorInfo,
-      const std::string& sandboxDirectory) = 0;
-
-  /**
    * Called before Mesos creates a container.
    *
    * The container logger is given some of the arguments which the containerizer
    * will use to launch a container.  The container logger should return a
-   * `SubprocessInfo` which tells the containerizer how to handle the stdout
-   * and stderr of the subprocess.  The container logger can modify the fields
-   * within the `SubprocessInfo` as much as necessary, with some exceptions;
-   * see the struct `SubprocessInfo` above.
+   * `ContainerIO` which tells the containerizer how to handle the stdout
+   * and stderr of the container.  The container logger can modify the fields
+   * within the `ContainerIO` as much as necessary, with some exceptions;
+   * see the struct `ContainerIO` above.
    *
    * NOTE: The container logger should not lose stdout/stderr if the agent
    * fails over.  Additionally, if the container logger is stateful, the logger
@@ -173,9 +97,10 @@ public:
    *     executor's sandbox, such as persistent state between agent failovers.
    *     NOTE: All files in the sandbox are exposed via the `/files` endpoint.
    */
-  virtual process::Future<SubprocessInfo> prepare(
+  virtual process::Future<ContainerIO> prepare(
       const ExecutorInfo& executorInfo,
-      const std::string& sandboxDirectory) = 0;
+      const std::string& sandboxDirectory,
+      const Option<std::string>& user) = 0;
 };
 
 } // namespace slave {

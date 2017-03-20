@@ -47,7 +47,7 @@ Try<MasterContender*> MasterContender::create(
     return new StandaloneMasterContender();
   }
 
-  string zk = zk_.get();
+  const string& zk = zk_.get();
 
   if (strings::startsWith(zk, "zk://")) {
     Try<zookeeper::URL> url = zookeeper::URL::parse(zk);
@@ -94,6 +94,6 @@ Try<MasterContender*> MasterContender::create(
 
 MasterContender::~MasterContender() {}
 
-} // namespace contender  {
+} // namespace contender {
 } // namespace master {
 } // namespace mesos {

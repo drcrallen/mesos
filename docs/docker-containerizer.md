@@ -33,7 +33,7 @@ traffic from docker bridge interface through add below rule:
 
 TaskInfo before 0.20.0 used to only support either setting a
 CommandInfo that launches a task running the bash command, or an
-ExecutorInfo that launches a custom Executor that will launches the
+ExecutorInfo that launches a custom Executor that will launch the
 task.
 
 With 0.20.0 we added a ContainerInfo field to TaskInfo and
@@ -102,10 +102,11 @@ config file for pulling images from private registries. We allow
 operators to specify a shared docker config file using an agent flag.
 This docker config file will be used to pull images from private
 registries for all containers. See [configuration
-documentation](configuration.md) for detail. Operators can either use
-a local docker config file (need to manually configure
-.docker/config.json or .dockercfg on each agent), or specify the flag
-as a JSON-formatted string. For example:
+documentation](configuration.md) for detail. Operators can either
+specify the flag as an absolute path pointing to the docker config
+file (need to manually configure `.docker/config.json` or `.dockercfg`
+on each agent), or specify the flag as a JSON-formatted string.  For
+example:
 
     --docker_config=file:///home/vagrant/.docker/config.json
 

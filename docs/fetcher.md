@@ -34,9 +34,7 @@ The Mesos fetcher mechanism comprises of these two parts:
 
 1. The agent-internal Fetcher Process (in terms of libprocess) that controls and
 coordinates all fetch actions. Every agent instance has exactly one internal
-fetcher instance that is used by every kind of containerizer (except the
-external containerizer variant, which is responsible for its own approach to
-fetching).
+fetcher instance that is used by every kind of containerizer.
 
 2. The external program `mesos-fetcher` that is invoked by the former. It
 performs all network and disk operations except file deletions and file size
@@ -253,7 +251,7 @@ The value of the proxy variable is of the format
 `[protocol://][user:password@]machine[:port]`, where `protocol` can be one of
 socks4, socks5, http, https.
 
-FTP/FTPS requests with a proxy also make use of a HTTP/HTTPS proxy. Even
+FTP/FTPS requests with a proxy also make use of an HTTP/HTTPS proxy. Even
 though in general this constrains the available FTP protocol operations,
 everything the fetcher uses is supported.
 

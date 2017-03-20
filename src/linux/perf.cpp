@@ -24,19 +24,20 @@
 
 #include <list>
 #include <sstream>
+#include <string>
 #include <tuple>
 #include <vector>
 
 #include <process/clock.hpp>
 #include <process/collect.hpp>
 #include <process/defer.hpp>
+#include <process/id.hpp>
 #include <process/io.hpp>
 #include <process/process.hpp>
 #include <process/subprocess.hpp>
 
 #include <stout/os.hpp>
 #include <stout/strings.hpp>
-#include <stout/unreachable.hpp>
 
 #include <stout/os/signals.hpp>
 
@@ -79,7 +80,9 @@ inline string normalize(const string& s)
 class Perf : public Process<Perf>
 {
 public:
-  Perf(const vector<string>& _argv) : argv(_argv)
+  Perf(const vector<string>& _argv)
+    : ProcessBase(process::ID::generate("perf")),
+      argv(_argv)
   {
     // The first argument should be 'perf'. Note that this is
     // a bit hacky because this class is specialized to only
@@ -111,7 +114,7 @@ protected:
   {
     // Kill the perf process (if it's still running) by sending
     // SIGTERM to the signal handler which will then SIGKILL the
-    // perf process group created by the watchdog process.
+    // perf process group created by the supervisor process.
     if (perf.isSome() && perf->status().isPending()) {
       kill(perf->pid(), SIGTERM);
     }
@@ -122,7 +125,7 @@ protected:
 private:
   void execute()
   {
-    // NOTE: The watchdog process places perf in its own process group
+    // NOTE: The supervisor childhook places perf in its own process group
     // and will kill the perf process when the parent dies.
     Try<Subprocess> _perf = subprocess(
         "perf",
@@ -130,13 +133,11 @@ private:
         Subprocess::PIPE(),
         Subprocess::PIPE(),
         Subprocess::PIPE(),
-        NO_SETSID,
+        nullptr,
         None(),
         None(),
-        None(),
-        Subprocess::Hook::None(),
-        None(),
-        MONITOR);
+        {},
+        {Subprocess::ChildHook::SUPERVISOR()});
 
     if (_perf.isError()) {
       promise.fail("Failed to launch perf process: " + _perf.error());
@@ -199,13 +200,30 @@ Future<Version> version()
 
   return output
     .then([](const string& output) -> Future<Version> {
-      string trimmed = strings::trim(output);
-
-      // Trim off the leading 'perf version ' text to convert.
-      return Version::parse(
-          strings::remove(trimmed, "perf version ", strings::PREFIX));
+      return parseVersion(output);
     });
 };
+
+
+// Since there is a lot of variety in perf(1) version strings
+// across distributions, we parse just the first 2 version
+// components, which is enough of a version number to implement
+// perf::supported().
+Try<Version> parseVersion(const string& output)
+{
+  // Trim off the leading 'perf version ' text to convert.
+  string trimmed = strings::remove(
+      strings::trim(output), "perf version ", strings::PREFIX);
+
+  vector<string> components = strings::split(trimmed, ".");
+
+  // perf(1) always has a version with least 2 components.
+  if (components.size() > 2) {
+    components.resize(2);
+  }
+
+  return Version::parse(strings::join(".", components));
+}
 
 
 bool supported(const Version& version)
@@ -316,16 +334,23 @@ Future<hashmap<string, mesos::PerfStatistics>> sample(
 
 bool valid(const set<string>& events)
 {
-  ostringstream command;
+  vector<string> argv = {"stat"};
 
-  // Log everything to stderr which is then redirected to /dev/null.
-  command << "perf stat --log-fd 2";
   foreach (const string& event, events) {
-    command << " --event " << event;
+    argv.push_back("--event");
+    argv.push_back(event);
   }
-  command << " true 2>/dev/null";
 
-  return (os::system(command.str()) == 0);
+  argv.push_back("true");
+
+  internal::Perf* perf = new internal::Perf(argv);
+  Future<string> output = perf->output();
+  spawn(perf, true);
+
+  output.await();
+
+  // We don't care about the output, just whether it exited non-zero.
+  return output.isReady();
 }
 
 

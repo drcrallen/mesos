@@ -32,6 +32,14 @@ regarding reservation mechanisms available in Mesos.
 Persistent volumes can also be created on isolated and auxiliary disks by
 reserving [multiple disk resources](multiple-disk.md).
 
+By default, a persistent volume cannot be shared between tasks running
+being managed by different executors: that is, once a task is launched
+using a persistent volume, that volume will not appear in any resource
+offers until the task has finished running. _Shared_ volumes are a type
+of persistent volumes that can be accessed by multiple tasks at the same
+agent simultaneously; see the documentation on
+[shared volumes](shared-resources.md) for more information.
+
 Persistent volumes can be created by __operators__ and authorized
 __frameworks__. By default, frameworks and operators can create volumes for _any_
 role and destroy _any_ persistent volume. [Authorization](authorization.md)
@@ -376,6 +384,12 @@ Information about the persistent volumes at each agent in the cluster can be
 found by querying the [/slaves](endpoints/master/slaves.md) master endpoint
 (under the `reserved_resources_full` key).
 
+The same information can also be found in the [/state](endpoints/slave/state.md)
+endpoint on the agent (under the `reserved_resources_full` key). The agent
+endpoint is useful to confirm if changes to persistent volumes have been
+propagated to the agent (which can fail in the event of network partition or
+master/agent restarts).
+
 ## Programming with Persistent Volumes
 
 Some suggestions to keep in mind when building applications that use persistent
@@ -479,4 +493,5 @@ endpoints for creating and destroying volumes. Mesos 0.28 introduced support for
 master endpoint to include detailed information about persistent volumes and
 dynamic reservations. Mesos 1.0 changed the semantics of destroying a volume:
 in previous releases, destroying a volume would remove the Mesos-level metadata,
-but would not remove the volume's data from the agent's filesystem.
+but would not remove the volume's data from the agent's filesystem. Mesos 1.1
+introduced support for [shared persistent volumes](shared-resources.md).

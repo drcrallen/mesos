@@ -90,7 +90,9 @@ ostream& operator<<(ostream& stream, const ImageReference& reference)
     stream << reference.repository();
   }
 
-  if (reference.has_tag()) {
+  if (reference.has_digest()) {
+    stream << "@" << reference.digest();
+  } else if (reference.has_tag()) {
     stream << ":" << reference.tag();
   }
 
@@ -125,8 +127,20 @@ Try<string> getRegistryScheme(const string& registry)
   Result<int> port = getRegistryPort(registry);
   if (port.isError()) {
     return Error("Failed to get registry port: " + port.error());
-  } else if (port.isSome() && port.get() == 80) {
-    return "http";
+  } else if (port.isSome()) {
+    if (port.get() == 443) {
+      return "https";
+    }
+
+    if (port.get() == 80) {
+      return "http";
+    }
+
+    // NOTE: For a local registry, it's typically a http server.
+    const string host = getRegistryHost(registry);
+    if (host == "localhost" || host == "127.0.0.1") {
+      return "http";
+    }
   }
 
   return "https";

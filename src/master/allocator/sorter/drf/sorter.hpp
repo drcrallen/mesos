@@ -19,10 +19,14 @@
 
 #include <set>
 #include <string>
+#include <vector>
 
+#include <mesos/mesos.hpp>
 #include <mesos/resources.hpp>
+#include <mesos/values.hpp>
 
 #include <stout/hashmap.hpp>
+#include <stout/option.hpp>
 
 #include "master/allocator/sorter/drf/metrics.hpp"
 
@@ -71,6 +75,9 @@ public:
 
   virtual ~DRFSorter() {}
 
+  virtual void initialize(
+      const Option<std::set<std::string>>& fairnessExcludeResourceNames);
+
   virtual void add(const std::string& name, double weight = 1);
 
   virtual void update(const std::string& name, double weight);
@@ -98,15 +105,17 @@ public:
       const Resources& resources);
 
   virtual const hashmap<SlaveID, Resources>& allocation(
-      const std::string& name);
+      const std::string& name) const;
 
-  virtual const Resources& allocationScalarQuantities(const std::string& name);
+  virtual const Resources& allocationScalarQuantities(
+      const std::string& name) const;
 
-  virtual hashmap<std::string, Resources> allocation(const SlaveID& slaveId);
+  virtual hashmap<std::string, Resources> allocation(
+      const SlaveID& slaveId) const;
 
-  virtual Resources allocation(const std::string& name, const SlaveID& slaveId);
-
-  virtual const hashmap<SlaveID, Resources>& total() const;
+  virtual Resources allocation(
+      const std::string& name,
+      const SlaveID& slaveId) const;
 
   virtual const Resources& totalScalarQuantities() const;
 
@@ -114,21 +123,22 @@ public:
 
   virtual void remove(const SlaveID& slaveId, const Resources& resources);
 
-  virtual void update(const SlaveID& slaveId, const Resources& resources);
+  virtual std::vector<std::string> sort();
 
-  virtual std::list<std::string> sort();
+  virtual bool contains(const std::string& name) const;
 
-  virtual bool contains(const std::string& name);
-
-  virtual int count();
+  virtual int count() const;
 
 private:
   // Recalculates the share for the client and moves
   // it in 'clients' accordingly.
-  void update(const std::string& name);
+  void updateShare(const std::string& name);
 
   // Returns the dominant resource share for the client.
-  double calculateShare(const std::string& name);
+  double calculateShare(const std::string& name) const;
+
+  // Resources (by name) that will be excluded from fair sharing.
+  Option<std::set<std::string>> fairnessExcludeResourceNames;
 
   // Returns an iterator to the specified client, if
   // it exists in this Sorter.
@@ -137,7 +147,7 @@ private:
   // If true, sort() will recalculate all shares.
   bool dirty = false;
 
-  // A set of Clients (names and shares) sorted by share.
+  // The set of active clients (names and shares), sorted by share.
   std::set<Client, DRFComparator> clients;
 
   // Maps client names to the weights that should be applied to their shares.
@@ -145,6 +155,10 @@ private:
 
   // Total resources.
   struct Total {
+    // We need to keep track of the resources (and not just scalar quantities)
+    // to account for multiple copies of the same shared resources. We need to
+    // ensure that we do not update the scalar quantities for shared resources
+    // when the change is only in the number of copies in the sorter.
     hashmap<SlaveID, Resources> resources;
 
     // NOTE: Scalars can be safely aggregated across slaves. We keep
@@ -154,19 +168,48 @@ private:
     // NOTE: We omit information about dynamic reservations and persistent
     // volumes here to enable resources to be aggregated across slaves
     // more effectively. See MESOS-4833 for more information.
+    //
+    // Sharedness info is also stripped out when resource identities are
+    // omitted because sharedness inherently refers to the identities of
+    // resources and not quantities.
     Resources scalarQuantities;
+
+    // We also store a map version of `scalarQuantities`, mapping
+    // the `Resource::name` to aggregated scalar. This improves the
+    // performance of calculating shares. See MESOS-4694.
+    //
+    // TODO(bmahler): Ideally we do not store `scalarQuantities`
+    // redundantly here, investigate performance improvements to
+    // `Resources` to make this unnecessary.
+    hashmap<std::string, Value::Scalar> totals;
   } total_;
 
   // Allocation for a client.
   struct Allocation {
+    // We maintain multiple copies of each shared resource allocated
+    // to a client, where the number of copies represents the number
+    // of times this shared resource has been allocated to (and has
+    // not been recovered from) a specific client.
     hashmap<SlaveID, Resources> resources;
 
     // Similarly, we aggregate scalars across slaves and omit information
-    // about dynamic reservations and persistent volumes. See notes above.
+    // about dynamic reservations, persistent volumes and sharedness of
+    // the corresponding resource. See notes above.
     Resources scalarQuantities;
+
+    // We also store a map version of `scalarQuantities`, mapping
+    // the `Resource::name` to aggregated scalar. This improves the
+    // performance of calculating shares. See MESOS-4694.
+    //
+    // TODO(bmahler): Ideally we do not store `scalarQuantities`
+    // redundantly here, investigate performance improvements to
+    // `Resources` to make this unnecessary.
+    hashmap<std::string, Value::Scalar> totals;
   };
 
-  // Maps client names to the resources they have been allocated.
+  // Maps client names to the resources they have been allocated. Note
+  // that `allocations` might contain entries for deactivated clients
+  // not currently in `clients`.
   hashmap<std::string, Allocation> allocations;
 
   // Metrics are optionally exposed by the sorter.

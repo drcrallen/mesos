@@ -13,6 +13,7 @@
 # Headers.
 nobase_include_HEADERS =		\
   process/address.hpp			\
+  process/after.hpp			\
   process/authenticator.hpp		\
   process/async.hpp			\
   process/check.hpp			\
@@ -34,9 +35,11 @@ nobase_include_HEADERS =		\
   process/http.hpp			\
   process/id.hpp			\
   process/io.hpp			\
+  process/jwt.hpp			\
   process/latch.hpp			\
   process/limiter.hpp			\
   process/logging.hpp			\
+  process/loop.hpp			\
   process/message.hpp			\
   process/mime.hpp			\
   process/mutex.hpp			\
@@ -63,11 +66,11 @@ nobase_include_HEADERS =		\
   process/system.hpp			\
   process/subprocess.hpp		\
   process/subprocess_base.hpp		\
+  process/ssl/flags.hpp			\
   process/ssl/gtest.hpp			\
   process/ssl/utilities.hpp		\
   process/time.hpp			\
   process/timeout.hpp			\
   process/timer.hpp			\
   process/timeseries.hpp		\
-  process/windows/subprocess.hpp	\
-  process/windows/winsock.hpp
+  process/windows/subprocess.hpp

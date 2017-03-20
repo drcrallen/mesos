@@ -30,12 +30,11 @@
 #include <type_traits>
 #include <vector>
 
-#include <boost/type_traits/is_arithmetic.hpp>
-#include <boost/utility/enable_if.hpp>
 #include <boost/variant.hpp>
 
 #include <stout/check.hpp>
 #include <stout/foreach.hpp>
+#include <stout/jsonify.hpp>
 #include <stout/numify.hpp>
 #include <stout/result.hpp>
 #include <stout/strings.hpp>
@@ -151,6 +150,11 @@ private:
 
 struct Object
 {
+  Object() = default;
+
+  Object(std::initializer_list<std::pair<const std::string, Value>> values_)
+    : values(values_) {}
+
   // Returns the JSON value (specified by the type) given a "path"
   // into the structure, for example:
   //
@@ -159,6 +163,11 @@ struct Object
   // Will return 'None' if no field could be found called 'array'
   // within a field called 'nested' of 'object' (where 'nested' must
   // also be a JSON object).
+  //
+  // For 'null' field values, this will return 'Some(Null())' when
+  // looking for a matching type ('Null' or 'Value'). If looking for
+  // any other type (e.g. 'String', 'Object', etc), this will return
+  // 'None' as if the field is not present at all.
   //
   // Returns an error if a JSON value of the wrong type is found, or
   // an intermediate JSON value is not an object that we can do a
@@ -181,6 +190,9 @@ struct Object
 
 struct Array
 {
+  Array() = default;
+  Array(std::initializer_list<Value> values_) : values(values_) {}
+
   std::vector<Value> values;
 };
 
@@ -222,7 +234,7 @@ typedef boost::variant<boost::recursive_wrapper<Null>,
                        boost::recursive_wrapper<Number>,
                        boost::recursive_wrapper<Object>,
                        boost::recursive_wrapper<Array>,
-                       boost::recursive_wrapper<Boolean> > Variant;
+                       boost::recursive_wrapper<Boolean>> Variant;
 
 } // namespace internal {
 
@@ -243,7 +255,7 @@ struct Value : internal::Variant
   template <typename T>
   Value(
       const T& value,
-      typename boost::enable_if<boost::is_arithmetic<T>, int>::type = 0)
+      typename std::enable_if<std::is_arithmetic<T>::value, int>::type = 0)
     : internal::Variant(Number(value)) {}
 
   // Non-arithmetic types are passed to the default constructor of
@@ -251,7 +263,7 @@ struct Value : internal::Variant
   template <typename T>
   Value(
       const T& value,
-      typename boost::disable_if<boost::is_arithmetic<T>, int>::type = 0)
+      typename std::enable_if<!std::is_arithmetic<T>::value, int>::type = 0)
     : internal::Variant(value) {}
 
   template <typename T>
@@ -385,21 +397,33 @@ Result<T> Object::find(const std::string& path) const
 
   Value value = entry->second;
 
-  if (value.is<Array>() && subscript.isSome()) {
-    Array array = value.as<Array>();
-    if (subscript.get() >= array.values.size()) {
+  if (subscript.isSome()) {
+    if (value.is<Array>()) {
+      Array array = value.as<Array>();
+      if (subscript.get() >= array.values.size()) {
+        return None();
+      }
+      value = array.values[subscript.get()];
+    } else if (value.is<Null>()) {
       return None();
+    } else {
+      // TODO(benh): Use a visitor to print out the intermediate type.
+      return Error("Intermediate JSON value not an array");
     }
-    value = array.values[subscript.get()];
   }
 
   if (names.size() == 1) {
-    if (!value.is<T>()) {
+    if (value.is<T>()) {
+      return value.as<T>();
+    } else if (value.is<Null>()) {
+      return None();
+    } else {
       // TODO(benh): Use a visitor to print out the type found.
       return Error("Found JSON value of wrong type");
     }
-    return value.as<T>();
-  } else if (!value.is<Object>()) {
+  }
+
+  if (!value.is<Object>()) {
     // TODO(benh): Use a visitor to print out the intermediate type.
     return Error("Intermediate JSON value not an object");
   }
@@ -642,90 +666,70 @@ inline bool operator!=(const Value& lhs, const Value& rhs)
 }
 
 
-inline std::ostream& operator<<(std::ostream& out, const String& string)
+inline std::ostream& operator<<(std::ostream& stream, const String& string)
 {
-  // TODO(benh): This escaping DOES NOT handle unicode, it encodes as ASCII.
-  // See RFC4627 for the JSON string specificiation.
-  return out << picojson::value(string.value).serialize();
+  return stream << jsonify(string.value);
 }
 
 
-inline std::ostream& operator<<(std::ostream& out, const Number& number)
+inline std::ostream& operator<<(std::ostream& stream, const Number& number)
 {
   switch (number.type) {
-    case Number::FLOATING: {
-      // Prints a floating point value, with the specified precision, see:
-      // http://www.open-std.org/jtc1/sc22/wg21/docs/papers/2006/n2005.pdf
-      // Additionally ensures that a decimal point is in the output.
-      char buffer[50] {}; // More than long enough for the specified precision.
-      snprintf(
-          buffer,
-          sizeof(buffer),
-          "%#.*g",
-          std::numeric_limits<double>::digits10,
-          number.value);
-
-      // Get rid of excess trailing zeroes before outputting.
-      // Otherwise, printing 1.0 would result in "1.00000000000000".
-      // NOTE: valid JSON numbers cannot end with a '.'.
-      std::string trimmed = strings::trim(buffer, strings::SUFFIX, "0");
-      return out << trimmed << (trimmed.back() == '.' ? "0" : "");
-    }
+    case Number::FLOATING:
+      stream << jsonify(number.value);
+      break;
     case Number::SIGNED_INTEGER:
-      return out << number.signed_integer;
+      stream << jsonify(number.signed_integer);
+      break;
     case Number::UNSIGNED_INTEGER:
-      return out << number.unsigned_integer;
-
-    // NOTE: By not setting a default we leverage the compiler
-    // errors when the enumeration is augmented to find all
-    // the cases we need to provide.
+      stream << jsonify(number.unsigned_integer);
+      break;
   }
-
-  UNREACHABLE();
+  return stream;
 }
 
 
-inline std::ostream& operator<<(std::ostream& out, const Object& object)
+// TODO(mpark): Extend `jsonify` to be usable for this implementation.
+inline std::ostream& operator<<(std::ostream& stream, const Object& object)
 {
-  out << "{";
-  std::map<std::string, Value>::const_iterator iterator;
-  iterator = object.values.begin();
+  stream << "{";
+  auto iterator = object.values.begin();
   while (iterator != object.values.end()) {
-    out << String((*iterator).first) << ":" << (*iterator).second;
+    stream << jsonify(iterator->first) << ":" << iterator->second;
     if (++iterator != object.values.end()) {
-      out << ",";
+      stream << ",";
     }
   }
-  out << "}";
-  return out;
+  stream << "}";
+  return stream;
 }
 
 
-inline std::ostream& operator<<(std::ostream& out, const Array& array)
+// TODO(mpark): Extend `jsonify` to be usable for this implementation.
+inline std::ostream& operator<<(std::ostream& stream, const Array& array)
 {
-  out << "[";
-  std::vector<Value>::const_iterator iterator;
-  iterator = array.values.begin();
+  stream << "[";
+  auto iterator = array.values.begin();
   while (iterator != array.values.end()) {
-    out << *iterator;
+    stream << *iterator;
     if (++iterator != array.values.end()) {
-      out << ",";
+      stream << ",";
     }
   }
-  out << "]";
-  return out;
+  stream << "]";
+  return stream;
 }
 
 
-inline std::ostream& operator<<(std::ostream& out, const Boolean& boolean)
+inline std::ostream& operator<<(std::ostream& stream, const Boolean& boolean)
 {
-  return out << (boolean.value ? "true" : "false");
+  return stream << jsonify(boolean.value);
 }
 
 
-inline std::ostream& operator<<(std::ostream& out, const Null&)
+inline std::ostream& operator<<(std::ostream& stream, const Null&)
 {
-  return out << "null";
+  return stream << "null";
 }
 
 namespace internal {

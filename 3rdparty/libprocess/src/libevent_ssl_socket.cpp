@@ -23,12 +23,19 @@
 #include <process/queue.hpp>
 #include <process/socket.hpp>
 
+#include <process/ssl/flags.hpp>
+
 #include <stout/net.hpp>
 #include <stout/synchronized.hpp>
+
+#include <stout/os/close.hpp>
+#include <stout/os/dup.hpp>
+#include <stout/os/fcntl.hpp>
 
 #include "libevent.hpp"
 #include "libevent_ssl_socket.hpp"
 #include "openssl.hpp"
+#include "poll_socket.hpp"
 
 // Locking:
 //
@@ -75,8 +82,9 @@ static Synchronized<bufferevent> synchronize(bufferevent* bev)
 
 namespace process {
 namespace network {
+namespace internal {
 
-Try<std::shared_ptr<Socket::Impl>> LibeventSSLSocketImpl::create(int s)
+Try<std::shared_ptr<SocketImpl>> LibeventSSLSocketImpl::create(int s)
 {
   openssl::initialize();
 
@@ -97,19 +105,18 @@ LibeventSSLSocketImpl::~LibeventSSLSocketImpl()
   // calls and structures. This is a safety against the socket being
   // destroyed before existing event loop calls have completed since
   // they require valid data structures (the weak pointer).
+  //
+  // Release ownership of the file descriptor so that
+  // we can defer closing the socket.
+  int_fd fd = release();
+  CHECK(fd >= 0);
 
-  // Copy the members that we are interested in. This is necessary
-  // because 'this' points to memory that may be re-allocated and
-  // invalidate any reference to 'this->XXX'. We want to manipulate
-  // or use these data structures within the finalization lambda
-  // below.
   evconnlistener* _listener = listener;
   bufferevent* _bev = bev;
   std::weak_ptr<LibeventSSLSocketImpl>* _event_loop_handle = event_loop_handle;
-  int ssl_socket_fd = ssl_connect_fd;
 
   run_in_event_loop(
-      [_listener, _bev, _event_loop_handle, ssl_socket_fd]() {
+      [_listener, _bev, _event_loop_handle, fd]() {
         // Once this lambda is called, it should not be possible for
         // more event loop callbacks to be triggered with 'this->bev'.
         // This is important because we delete event_loop_handle which
@@ -125,30 +132,15 @@ LibeventSSLSocketImpl::~LibeventSSLSocketImpl()
         }
 
         if (_bev != nullptr) {
-          SSL* ssl = bufferevent_openssl_get_ssl(_bev);
-          // Workaround for SSL shutdown, see http://www.wangafu.net/~nickm/libevent-book/Ref6a_advanced_bufferevents.html // NOLINT
-          SSL_set_shutdown(ssl, SSL_RECEIVED_SHUTDOWN);
-          SSL_shutdown(ssl);
-
           // NOTE: Removes all future callbacks using 'this->bev'.
           bufferevent_disable(_bev, EV_READ | EV_WRITE);
 
-          // Clean up the ssl object.
+          SSL* ssl = bufferevent_openssl_get_ssl(_bev);
           SSL_free(ssl);
-
-          // Clean up the buffer event. Since we don't set
-          // 'BEV_OPT_CLOSE_ON_FREE' we rely on the base class
-          // 'Socket::Impl' to clean up the fd.
           bufferevent_free(_bev);
         }
 
-        if (ssl_socket_fd >= 0) {
-          Try<Nothing> close = os::close(ssl_socket_fd);
-          if (close.isError()) {
-            LOG(WARNING) << "Failed to close socket "
-                         << stringify(ssl_socket_fd) << ": " << close.error();
-          }
-        }
+        CHECK_SOME(os::close(fd)) << "Failed to close socket";
 
         delete _event_loop_handle;
       },
@@ -162,7 +154,7 @@ void LibeventSSLSocketImpl::initialize()
 }
 
 
-Try<Nothing> LibeventSSLSocketImpl::shutdown()
+Try<Nothing> LibeventSSLSocketImpl::shutdown(int how)
 {
   // Nothing to do if this socket was never initialized.
   synchronized (lock) {
@@ -173,8 +165,7 @@ Try<Nothing> LibeventSSLSocketImpl::shutdown()
       CHECK(recv_request.get() == nullptr);
       CHECK(send_request.get() == nullptr);
 
-      errno = ENOTCONN;
-      return ErrnoError();
+      return ErrnoError(ENOTCONN);
     }
   }
 
@@ -205,6 +196,11 @@ Try<Nothing> LibeventSSLSocketImpl::shutdown()
             request->promise
               .set(bufferevent_read(self->bev, request->data, request->size));
           }
+
+          // Workaround for SSL shutdown, see http://www.wangafu.net/~nickm/libevent-book/Ref6a_advanced_bufferevents.html // NOLINT
+          SSL* ssl = bufferevent_openssl_get_ssl(self->bev);
+          SSL_set_shutdown(ssl, SSL_RECEIVED_SHUTDOWN);
+          SSL_shutdown(ssl);
         }
       },
       DISALLOW_SHORT_CIRCUIT);
@@ -258,23 +254,22 @@ void LibeventSSLSocketImpl::recv_callback()
   // g. libevent callback is called for the event queued at step b.
   // h. libevent callback finds the length of the buffer as 0 but the request is
   //    a non-nullptr due to step f.
-  if (buffer_length > 0) {
+  if (buffer_length > 0 || received_eof) {
     synchronized (lock) {
       std::swap(request, recv_request);
     }
   }
 
   if (request.get() != nullptr) {
-    // There is an invariant that if we are executing a
-    // 'recv_callback' and we have a request there must be data here
-    // because we should not be getting a spurrious receive callback
-    // invocation. Even if we discarded a request, the manual
-    // invocation of 'recv_callback' guarantees that there is a
-    // non-zero amount of data available in the bufferevent.
-    size_t length = bufferevent_read(bev, request->data, request->size);
-    CHECK(length > 0);
+    if (buffer_length > 0) {
+      size_t length = bufferevent_read(bev, request->data, request->size);
+      CHECK(length > 0);
 
-    request->promise.set(length);
+      request->promise.set(length);
+    } else {
+      CHECK(received_eof);
+      request->promise.set(0);
+    }
   }
 }
 
@@ -349,6 +344,12 @@ void LibeventSSLSocketImpl::event_callback(short events)
   // In all of the following conditions, we're interested in swapping
   // the value of the requests with null (if they are already null,
   // then there's no harm).
+  //
+  // TODO(bmahler): If we receive an EOF because the receiving
+  // side only shutdown writes on its socket, we can technically
+  // still send data on the socket!
+  //   See: http://www.unixguide.net/network/socketfaq/2.6.shtml
+  //   Related JIRA: MESOS-5999
   if (events & BEV_EVENT_EOF ||
       events & BEV_EVENT_CONNECTED ||
       events & BEV_EVENT_ERROR) {
@@ -363,11 +364,33 @@ void LibeventSSLSocketImpl::event_callback(short events)
   // either because it was never created, it has already been
   // completed, or it has been discarded.
 
+  // The case below where `EVUTIL_SOCKET_ERROR() == 0` will catch
+  // unclean shutdowns of the socket.
+  //
+  // TODO(greggomann): We should make use of the `BEV_EVENT_READING`
+  // and `BEV_EVENT_WRITING` flags to handle read and write errors
+  // differently. Related JIRA: MESOS-6770
   if (events & BEV_EVENT_EOF ||
      (events & BEV_EVENT_ERROR && EVUTIL_SOCKET_ERROR() == 0)) {
     // At end of file, close the connection.
     if (current_recv_request.get() != nullptr) {
-      current_recv_request->promise.set(0);
+      received_eof = true;
+      // Drain any remaining data from the bufferevent or complete the
+      // promise with 0 to signify EOF. Because we set `received_eof`,
+      // subsequent calls to `recv` will return 0 if there is no data
+      // remaining on the buffer.
+      if (evbuffer_get_length(bufferevent_get_input(bev)) > 0) {
+        size_t length =
+          bufferevent_read(
+              bev,
+              current_recv_request->data,
+              current_recv_request->size);
+        CHECK(length > 0);
+
+        current_recv_request->promise.set(length);
+      } else {
+        current_recv_request->promise.set(0);
+      }
     }
 
     if (current_send_request.get() != nullptr) {
@@ -396,7 +419,7 @@ void LibeventSSLSocketImpl::event_callback(short events)
     // Do post-validation of connection.
     SSL* ssl = bufferevent_openssl_get_ssl(bev);
 
-    Try<Nothing> verify = openssl::verify(ssl, peer_hostname);
+    Try<Nothing> verify = openssl::verify(ssl, peer_hostname, peer_ip);
     if (verify.isError()) {
       VLOG(1) << "Failed connect, verification error: " << verify.error();
       SSL_free(ssl);
@@ -441,29 +464,27 @@ void LibeventSSLSocketImpl::event_callback(short events)
 
 
 LibeventSSLSocketImpl::LibeventSSLSocketImpl(int _s)
-  : Socket::Impl(_s),
+  : SocketImpl(_s),
     bev(nullptr),
     listener(nullptr),
     recv_request(nullptr),
     send_request(nullptr),
     connect_request(nullptr),
-    event_loop_handle(nullptr),
-    ssl_connect_fd(-1) {}
+    event_loop_handle(nullptr) {}
 
 
 LibeventSSLSocketImpl::LibeventSSLSocketImpl(
     int _s,
     bufferevent* _bev,
     Option<string>&& _peer_hostname)
-  : Socket::Impl(_s),
+  : SocketImpl(_s),
     bev(_bev),
     listener(nullptr),
     recv_request(nullptr),
     send_request(nullptr),
     connect_request(nullptr),
     event_loop_handle(nullptr),
-    peer_hostname(std::move(_peer_hostname)),
-    ssl_connect_fd(-1) {}
+    peer_hostname(std::move(_peer_hostname)) {}
 
 
 Future<Nothing> LibeventSSLSocketImpl::connect(const Address& address)
@@ -481,26 +502,13 @@ Future<Nothing> LibeventSSLSocketImpl::connect(const Address& address)
     return Failure("Failed to connect: SSL_new");
   }
 
-  ssl_connect_fd = ::dup(get());
-  if (ssl_connect_fd < 0) {
-    return Failure("Failed to 'dup' socket for new openssl socket handle");
-  }
-
-  // Reapply FD_CLOEXEC on the duplicate file descriptor.
-  Try<Nothing> closeexec = os::cloexec(ssl_connect_fd);
-  if (closeexec.isError()) {
-    return Failure(
-        "Failed to set FD_CLOEXEC flag for the dup'ed openssl socket handle: " +
-        closeexec.error());
-  }
-
   // Construct the bufferevent in the connecting state.
   // We set 'BEV_OPT_DEFER_CALLBACKS' to avoid calling the
   // 'event_callback' before 'bufferevent_socket_connect' returns.
   CHECK(bev == nullptr);
   bev = bufferevent_openssl_socket_new(
       base,
-      ssl_connect_fd,
+      s,
       ssl,
       BUFFEREVENT_SSL_CONNECTING,
       BEV_OPT_THREADSAFE | BEV_OPT_DEFER_CALLBACKS);
@@ -512,15 +520,23 @@ Future<Nothing> LibeventSSLSocketImpl::connect(const Address& address)
     return Failure("Failed to connect: bufferevent_openssl_socket_new");
   }
 
-  // Try and determine the 'peer_hostname' from the address we're
-  // connecting to in order to properly verify the SSL connection later.
-  const Try<string> hostname = address.hostname();
+  if (address.family() == Address::Family::INET) {
+    // Try and determine the 'peer_hostname' from the address we're
+    // connecting to in order to properly verify the certificate
+    // later.
+    const Try<string> hostname =
+      network::convert<inet::Address>(address)->hostname();
 
-  if (hostname.isError()) {
-    VLOG(2) << "Could not determine hostname of peer: " << hostname.error();
-  } else {
-    VLOG(2) << "Connecting to " << hostname.get();
-    peer_hostname = hostname.get();
+    if (hostname.isError()) {
+      VLOG(2) << "Could not determine hostname of peer: " << hostname.error();
+    } else {
+      VLOG(2) << "Connecting to " << hostname.get();
+      peer_hostname = hostname.get();
+    }
+
+    // Determine the 'peer_ip' from the address we're connecting to in
+    // order to properly verify the certificate later.
+    peer_ip = network::convert<inet::Address>(address)->ip;
   }
 
   // Optimistically construct a 'ConnectRequest' and future.
@@ -547,8 +563,7 @@ Future<Nothing> LibeventSSLSocketImpl::connect(const Address& address)
 
   run_in_event_loop(
       [self, address]() {
-        sockaddr_storage addr =
-          net::createSockaddrStorage(address.ip, address.port);
+        sockaddr_storage addr = address;
 
           // Assign the callbacks for the bufferevent. We do this
           // before the 'bufferevent_socket_connect()' call to avoid
@@ -670,11 +685,12 @@ Future<size_t> LibeventSSLSocketImpl::recv(char* data, size_t size)
             evbuffer* input = bufferevent_get_input(self->bev);
             size_t length = evbuffer_get_length(input);
 
-            // If there is already data in the buffer, fulfill the
-            // 'recv_request' by calling 'recv_callback()'. Otherwise
-            // do nothing and wait for the 'recv_callback' to run when
-            // we receive data over the network.
-            if (length > 0) {
+            // If there is already data in the buffer or an EOF has
+            // been received, fulfill the 'recv_request' by calling
+            // 'recv_callback()'. Otherwise do nothing and wait for
+            // the 'recv_callback' to run when we receive data over
+            // the network.
+            if (length > 0 || self->received_eof) {
               self->recv_callback();
             }
           }
@@ -707,6 +723,11 @@ Future<size_t> LibeventSSLSocketImpl::send(const char* data, size_t size)
     std::swap(request, send_request);
   }
 
+  evbuffer* buffer = CHECK_NOTNULL(evbuffer_new());
+
+  int result = evbuffer_add(buffer, data, size);
+  CHECK_EQ(0, result);
+
   // Extend the life-time of 'this' through the execution of the
   // lambda in the event loop. Note: The 'self' needs to be explicitly
   // captured because we're not using it in the body of the lambda. We
@@ -715,18 +736,27 @@ Future<size_t> LibeventSSLSocketImpl::send(const char* data, size_t size)
   auto self = shared(this);
 
   run_in_event_loop(
-      [self, data, size]() {
+      [self, buffer]() {
         CHECK(__in_event_loop__);
         CHECK(self);
 
-        // We check that send_request is valid, because we do not
-        // allow discards. This means there is no race between the
-        // entry of 'send' and the execution of this lambda.
+        // Check if the socket is closed or the write end has
+        // encountered an error in the interim (i.e. we received
+        // a BEV_EVENT_ERROR with BEV_EVENT_WRITING).
+        bool write = false;
+
         synchronized (self->lock) {
-          CHECK_NOTNULL(self->send_request.get());
+          if (self->send_request.get() != nullptr) {
+            write = true;
+          }
         }
 
-        bufferevent_write(self->bev, data, size);
+        if (write) {
+          int result = bufferevent_write_buffer(self->bev, buffer);
+          CHECK_EQ(0, result);
+        }
+
+        evbuffer_free(buffer);
       },
       DISALLOW_SHORT_CIRCUIT);
 
@@ -735,7 +765,7 @@ Future<size_t> LibeventSSLSocketImpl::send(const char* data, size_t size)
 
 
 Future<size_t> LibeventSSLSocketImpl::sendfile(
-    int fd,
+    int_fd fd,
     off_t offset,
     size_t size)
 {
@@ -751,6 +781,38 @@ Future<size_t> LibeventSSLSocketImpl::sendfile(
     std::swap(request, send_request);
   }
 
+  // Duplicate the file descriptor because Libevent will take ownership
+  // and control the lifecycle separately.
+  //
+  // TODO(josephw): We can avoid duplicating the file descriptor in
+  // future versions of Libevent. In Libevent versions 2.1.2 and later,
+  // we may use `evbuffer_file_segment_new` and `evbuffer_add_file_segment`
+  // instead of `evbuffer_add_file`.
+  Try<int_fd> dup = os::dup(fd);
+  if (dup.isError()) {
+    return Failure(dup.error());
+  }
+
+  int_fd owned_fd = dup.get();
+
+  // Set the close-on-exec flag.
+  Try<Nothing> cloexec = os::cloexec(owned_fd);
+  if (cloexec.isError()) {
+    os::close(owned_fd);
+    return Failure(
+        "Failed to set close-on-exec on duplicated file descriptor: " +
+        cloexec.error());
+  }
+
+  // Make the file descriptor non-blocking.
+  Try<Nothing> nonblock = os::nonblock(owned_fd);
+  if (nonblock.isError()) {
+    os::close(owned_fd);
+    return Failure(
+        "Failed to make duplicated file descriptor non-blocking: " +
+        nonblock.error());
+  }
+
   // Extend the life-time of 'this' through the execution of the
   // lambda in the event loop. Note: The 'self' needs to be explicitly
   // captured because we're not using it in the body of the lambda. We
@@ -759,22 +821,33 @@ Future<size_t> LibeventSSLSocketImpl::sendfile(
   auto self = shared(this);
 
   run_in_event_loop(
-      [self, fd, offset, size]() {
+      [self, owned_fd, offset, size]() {
         CHECK(__in_event_loop__);
         CHECK(self);
 
-        // We check that send_request is valid, because we do not
-        // allow discards. This means there is no race between the
-        // entry of 'sendfile' and the execution of this lambda.
+        // Check if the socket is closed or the write end has
+        // encountered an error in the interim (i.e. we received
+        // a BEV_EVENT_ERROR with BEV_EVENT_WRITING).
+        bool write = false;
+
         synchronized (self->lock) {
-          CHECK_NOTNULL(self->send_request.get());
+          if (self->send_request.get() != nullptr) {
+            write = true;
+          }
         }
 
-        evbuffer_add_file(
-            bufferevent_get_output(self->bev),
-            fd,
-            offset,
-            size);
+        if (write) {
+          // NOTE: `evbuffer_add_file` will take ownership of the file
+          // descriptor and close it after it has finished reading it.
+          int result = evbuffer_add_file(
+              bufferevent_get_output(self->bev),
+              owned_fd,
+              offset,
+              size);
+          CHECK_EQ(0, result);
+        } else {
+          os::close(owned_fd);
+        }
       },
       DISALLOW_SHORT_CIRCUIT);
 
@@ -790,6 +863,9 @@ Try<Nothing> LibeventSSLSocketImpl::listen(int backlog)
 
   CHECK(bev == nullptr);
 
+  // NOTE: Accepted sockets are nonblocking by default in libevent, but
+  // can be set to block via the `LEV_OPT_LEAVE_SOCKETS_BLOCKING`
+  // flag for `evconnlistener_new`.
   listener = evconnlistener_new(
       base,
       [](evconnlistener* listener,
@@ -804,6 +880,24 @@ Try<Nothing> LibeventSSLSocketImpl::listen(int backlog)
               CHECK_NOTNULL(arg));
 
         std::shared_ptr<LibeventSSLSocketImpl> impl(handle->lock());
+
+        // NOTE: Passing the flag `LEV_OPT_CLOSE_ON_EXEC` into
+        // `evconnlistener_new` would atomically set `SOCK_CLOEXEC`
+        // on the accepted socket. However, this flag is not supported
+        // in the minimum recommended version of libevent (2.0.22).
+        Try<Nothing> cloexec = os::cloexec(socket);
+        if (cloexec.isError()) {
+          VLOG(2) << "Failed to accept, cloexec: " << cloexec.error();
+
+          // Propagate the error through the listener's `accept_queue`.
+          if (impl != nullptr) {
+            impl->accept_queue.put(
+                Failure("Failed to accept, cloexec: " + cloexec.error()));
+          }
+
+          os::close(socket);
+          return;
+        }
 
         if (impl != nullptr) {
           Try<net::IP> ip = net::IP::create(*addr);
@@ -838,14 +932,15 @@ Try<Nothing> LibeventSSLSocketImpl::listen(int backlog)
 }
 
 
-Future<Socket> LibeventSSLSocketImpl::accept()
+Future<std::shared_ptr<SocketImpl>> LibeventSSLSocketImpl::accept()
 {
   // We explicitly specify the return type to avoid a type deduction
   // issue in some versions of clang. See MESOS-2943.
   return accept_queue.get()
-    .then([](const Future<Socket>& socket) -> Future<Socket> {
-      CHECK(!socket.isPending());
-      return socket;
+    .then([](const Future<std::shared_ptr<SocketImpl>>& impl)
+      -> Future<std::shared_ptr<SocketImpl>> {
+      CHECK(!impl.isPending());
+      return impl;
     });
 }
 
@@ -904,12 +999,12 @@ void LibeventSSLSocketImpl::peek_callback(
   if (ssl) {
     accept_SSL_callback(request);
   } else {
-    // Downgrade to a non-SSL socket.
-    Try<Socket> create = Socket::create(Socket::POLL, fd);
-    if (create.isError()) {
-      request->promise.fail(create.error());
+    // Downgrade to a non-SSL socket implementation.
+    Try<std::shared_ptr<SocketImpl>> impl = PollSocketImpl::create(fd);
+    if (impl.isError()) {
+      request->promise.fail(impl.error());
     } else {
-      request->promise.set(create.get());
+      request->promise.set(impl.get());
     }
 
     delete request;
@@ -921,14 +1016,14 @@ void LibeventSSLSocketImpl::accept_callback(AcceptRequest* request)
 {
   CHECK(__in_event_loop__);
 
-  Queue<Future<Socket>> accept_queue_ = accept_queue;
+  Queue<Future<std::shared_ptr<SocketImpl>>> accept_queue_ = accept_queue;
 
   // After the socket is accepted, it must complete the SSL
   // handshake (or be downgraded to a regular socket) before
   // we put it in the queue of connected sockets.
   request->promise.future()
-    .onAny([accept_queue_](Future<Socket> socket) mutable {
-      accept_queue_.put(socket);
+    .onAny([accept_queue_](Future<std::shared_ptr<SocketImpl>> impl) mutable {
+      accept_queue_.put(impl);
     });
 
   // If we support downgrading the connection, first wait for this
@@ -1002,8 +1097,10 @@ void LibeventSSLSocketImpl::accept_SSL_callback(AcceptRequest* request)
           // post-verification. First, we need to determine the peer
           // hostname.
           Option<string> peer_hostname = None();
+
           if (request->ip.isSome()) {
             Try<string> hostname = net::getHostname(request->ip.get());
+
             if (hostname.isError()) {
               VLOG(2) << "Could not determine hostname of peer: "
                       << hostname.error();
@@ -1016,7 +1113,9 @@ void LibeventSSLSocketImpl::accept_SSL_callback(AcceptRequest* request)
           SSL* ssl = bufferevent_openssl_get_ssl(bev);
           CHECK_NOTNULL(ssl);
 
-          Try<Nothing> verify = openssl::verify(ssl, peer_hostname);
+          Try<Nothing> verify =
+            openssl::verify(ssl, peer_hostname, request->ip);
+
           if (verify.isError()) {
             VLOG(1) << "Failed accept, verification error: " << verify.error();
             request->promise.fail(verify.error());
@@ -1055,9 +1154,7 @@ void LibeventSSLSocketImpl::accept_SSL_callback(AcceptRequest* request)
               &LibeventSSLSocketImpl::event_callback,
               CHECK_NOTNULL(impl->event_loop_handle));
 
-          Socket socket = Socket::Impl::socket(std::move(impl));
-
-          request->promise.set(socket);
+          request->promise.set(std::dynamic_pointer_cast<SocketImpl>(impl));
         } else if (events & BEV_EVENT_ERROR) {
           std::ostringstream stream;
           if (EVUTIL_SOCKET_ERROR() != 0) {
@@ -1094,5 +1191,6 @@ void LibeventSSLSocketImpl::accept_SSL_callback(AcceptRequest* request)
       request);
 }
 
+} // namespace internal {
 } // namespace network {
 } // namespace process {

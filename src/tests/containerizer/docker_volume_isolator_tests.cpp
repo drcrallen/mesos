@@ -14,6 +14,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <utility>
 #include <vector>
 
 #include <mesos/mesos.hpp>
@@ -28,13 +29,16 @@
 #include "slave/containerizer/mesos/containerizer.hpp"
 #include "slave/containerizer/mesos/linux_launcher.hpp"
 
-#include "slave/containerizer/mesos/isolators/filesystem/linux.hpp"
 #include "slave/containerizer/mesos/isolators/docker/runtime.hpp"
-#include "slave/containerizer/mesos/isolators/docker/volume/isolator.hpp"
+
 #include "slave/containerizer/mesos/isolators/docker/volume/driver.hpp"
+#include "slave/containerizer/mesos/isolators/docker/volume/isolator.hpp"
+
+#include "slave/containerizer/mesos/isolators/filesystem/linux.hpp"
 
 #include "tests/flags.hpp"
 #include "tests/mesos.hpp"
+#include "tests/mock_docker.hpp"
 
 namespace slave = mesos::internal::slave;
 
@@ -59,7 +63,6 @@ using mesos::internal::slave::Slave;
 
 using mesos::master::detector::MasterDetector;
 
-using mesos::slave::ContainerLogger;
 using mesos::slave::Isolator;
 
 using slave::docker::volume::DriverClient;
@@ -148,62 +151,66 @@ protected:
       const slave::Flags& flags,
       const Owned<DriverClient>& mockClient)
   {
-    Try<Isolator*> linuxIsolator =
+    Try<Isolator*> linuxIsolator_ =
       LinuxFilesystemIsolatorProcess::create(flags);
 
-    if (linuxIsolator.isError()) {
+    if (linuxIsolator_.isError()) {
       return Error(
           "Failed to create LinuxFilesystemIsolator: " +
-          linuxIsolator.error());
+          linuxIsolator_.error());
     }
 
-    Try<Isolator*> runtimeIsolator =
+    Owned<Isolator> linuxIsolator(linuxIsolator_.get());
+
+    Try<Isolator*> runtimeIsolator_ =
       DockerRuntimeIsolatorProcess::create(flags);
 
-    if (runtimeIsolator.isError()) {
+    if (runtimeIsolator_.isError()) {
       return Error(
           "Failed to create DockerRuntimeIsolator: " +
-          runtimeIsolator.error());
+          runtimeIsolator_.error());
     }
 
-    Try<Isolator*> volumeIsolator =
+    Owned<Isolator> runtimeIsolator(runtimeIsolator_.get());
+
+    Try<Isolator*> volumeIsolator_ =
       DockerVolumeIsolatorProcess::_create(flags, mockClient);
 
-    if (volumeIsolator.isError()) {
+    if (volumeIsolator_.isError()) {
       return Error(
           "Failed to create DockerVolumeIsolator: " +
-          volumeIsolator.error());
+          volumeIsolator_.error());
     }
 
-    Try<Launcher*> launcher = LinuxLauncher::create(flags);
-    if (launcher.isError()) {
-      return Error("Failed to create LinuxLauncher: " + launcher.error());
+    Owned<Isolator> volumeIsolator(volumeIsolator_.get());
+
+    Try<Launcher*> launcher_ = LinuxLauncher::create(flags);
+    if (launcher_.isError()) {
+      return Error("Failed to create LinuxLauncher: " + launcher_.error());
     }
 
-    // Create and initialize a new container logger.
-    Try<ContainerLogger*> logger =
-      ContainerLogger::create(flags.container_logger);
-
-    if (logger.isError()) {
-      return Error("Failed to create container logger: " + logger.error());
-    }
+    Owned<Launcher> launcher(launcher_.get());
 
     Try<Owned<Provisioner>> provisioner = Provisioner::create(flags);
     if (provisioner.isError()) {
       return Error("Failed to create provisioner: " + provisioner.error());
     }
 
-    return Owned<MesosContainerizer>(
-        new MesosContainerizer(
-            flags,
-            false,
-            &fetcher,
-            Owned<ContainerLogger>(logger.get()),
-            Owned<Launcher>(launcher.get()),
-            provisioner.get(),
-            {Owned<Isolator>(linuxIsolator.get()),
-             Owned<Isolator>(runtimeIsolator.get()),
-             Owned<Isolator>(volumeIsolator.get())}));
+    Try<MesosContainerizer*> containerizer = MesosContainerizer::create(
+        flags,
+        true,
+        &fetcher,
+        std::move(launcher),
+        provisioner->share(),
+        {std::move(linuxIsolator),
+         std::move(runtimeIsolator),
+         std::move(volumeIsolator)});
+
+    if (containerizer.isError()) {
+      return Error("Failed to create containerizer: " + containerizer.error());
+    }
+
+    return Owned<MesosContainerizer>(containerizer.get());
   }
 
 private:
@@ -222,8 +229,7 @@ TEST_F(DockerVolumeIsolatorTest, ROOT_CommandTaskNoRootfsWithVolumes)
 
   slave::Flags flags = CreateSlaveFlags();
 
-  MockDockerVolumeDriverClient* mockClient =
-      new MockDockerVolumeDriverClient;
+  MockDockerVolumeDriverClient* mockClient = new MockDockerVolumeDriverClient;
 
   Try<Owned<MesosContainerizer>> containerizer =
     createContainerizer(flags, Owned<DriverClient>(mockClient));
@@ -234,7 +240,7 @@ TEST_F(DockerVolumeIsolatorTest, ROOT_CommandTaskNoRootfsWithVolumes)
 
   Try<Owned<cluster::Slave>> slave = StartSlave(
       detector.get(),
-      containerizer.get().get(),
+      containerizer->get(),
       flags);
 
   ASSERT_SOME(slave);
@@ -377,8 +383,7 @@ TEST_F(DockerVolumeIsolatorTest, ROOT_CommandTaskNoRootfsFailedWithSameVolumes)
 
   slave::Flags flags = CreateSlaveFlags();
 
-  MockDockerVolumeDriverClient* mockClient =
-      new MockDockerVolumeDriverClient;
+  MockDockerVolumeDriverClient* mockClient = new MockDockerVolumeDriverClient;
 
   Try<Owned<MesosContainerizer>> containerizer =
     createContainerizer(flags, Owned<DriverClient>(mockClient));
@@ -389,7 +394,7 @@ TEST_F(DockerVolumeIsolatorTest, ROOT_CommandTaskNoRootfsFailedWithSameVolumes)
 
   Try<Owned<cluster::Slave>> slave = StartSlave(
       detector.get(),
-      containerizer.get().get(),
+      containerizer->get(),
       flags);
 
   ASSERT_SOME(slave);
@@ -478,8 +483,7 @@ TEST_F(DockerVolumeIsolatorTest, ROOT_CommandTaskNoRootfsSlaveRecovery)
 
   slave::Flags flags = CreateSlaveFlags();
 
-  MockDockerVolumeDriverClient* mockClient =
-      new MockDockerVolumeDriverClient;
+  MockDockerVolumeDriverClient* mockClient = new MockDockerVolumeDriverClient;
 
   Try<Owned<MesosContainerizer>> containerizer =
     createContainerizer(flags, Owned<DriverClient>(mockClient));
@@ -490,7 +494,7 @@ TEST_F(DockerVolumeIsolatorTest, ROOT_CommandTaskNoRootfsSlaveRecovery)
 
   Try<Owned<cluster::Slave>> slave = StartSlave(
       detector.get(),
-      containerizer.get().get(),
+      containerizer->get(),
       flags);
 
   ASSERT_SOME(slave);
@@ -629,7 +633,7 @@ TEST_F(DockerVolumeIsolatorTest, ROOT_CommandTaskNoRootfsSlaveRecovery)
                     Return(Nothing())));
 
   // Use the same flags.
-  slave = StartSlave(detector.get(), containerizer.get().get(), flags);
+  slave = StartSlave(detector.get(), containerizer->get(), flags);
   ASSERT_SOME(slave);
 
   AWAIT_READY(reregistered);
@@ -639,9 +643,9 @@ TEST_F(DockerVolumeIsolatorTest, ROOT_CommandTaskNoRootfsSlaveRecovery)
 
   Future<hashset<ContainerID>> containers = containerizer.get()->containers();
   AWAIT_READY(containers);
-  ASSERT_EQ(1u, containers.get().size());
+  ASSERT_EQ(1u, containers->size());
 
-  ContainerID containerId = *(containers.get().begin());
+  ContainerID containerId = *(containers->begin());
 
   Future<TaskStatus> statusKilled;
   EXPECT_CALL(sched, statusUpdate(&driver, _))
@@ -676,8 +680,7 @@ TEST_F(DockerVolumeIsolatorTest,
 
   slave::Flags flags = CreateSlaveFlags();
 
-  MockDockerVolumeDriverClient* mockClient =
-      new MockDockerVolumeDriverClient;
+  MockDockerVolumeDriverClient* mockClient = new MockDockerVolumeDriverClient;
 
   Try<Owned<MesosContainerizer>> containerizer =
     createContainerizer(flags, Owned<DriverClient>(mockClient));
@@ -688,7 +691,7 @@ TEST_F(DockerVolumeIsolatorTest,
 
   Try<Owned<cluster::Slave>> slave = StartSlave(
       detector.get(),
-      containerizer.get().get(),
+      containerizer->get(),
       flags);
 
   ASSERT_SOME(slave);
@@ -811,8 +814,7 @@ TEST_F(DockerVolumeIsolatorTest,
   flags.isolation = "docker/volume,docker/runtime,filesystem/linux";
   flags.image_providers = "docker";
 
-  MockDockerVolumeDriverClient* mockClient =
-      new MockDockerVolumeDriverClient;
+  MockDockerVolumeDriverClient* mockClient = new MockDockerVolumeDriverClient;
 
   Try<Owned<MesosContainerizer>> containerizer =
     createContainerizer(flags, Owned<DriverClient>(mockClient));
@@ -823,7 +825,7 @@ TEST_F(DockerVolumeIsolatorTest,
 
   Try<Owned<cluster::Slave>> slave = StartSlave(
       detector.get(),
-      containerizer.get().get(),
+      containerizer->get(),
       flags);
 
   ASSERT_SOME(slave);
@@ -947,8 +949,7 @@ TEST_F(DockerVolumeIsolatorTest,
   flags.isolation = "docker/volume,docker/runtime,filesystem/linux";
   flags.image_providers = "docker";
 
-  MockDockerVolumeDriverClient* mockClient =
-      new MockDockerVolumeDriverClient;
+  MockDockerVolumeDriverClient* mockClient = new MockDockerVolumeDriverClient;
 
   Try<Owned<MesosContainerizer>> containerizer =
     createContainerizer(flags, Owned<DriverClient>(mockClient));
@@ -959,7 +960,7 @@ TEST_F(DockerVolumeIsolatorTest,
 
   Try<Owned<cluster::Slave>> slave = StartSlave(
       detector.get(),
-      containerizer.get().get(),
+      containerizer->get(),
       flags);
 
   ASSERT_SOME(slave);

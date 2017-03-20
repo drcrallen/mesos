@@ -33,10 +33,10 @@ __CAVEAT:__ In order to modify a static reservation, the operator must drain and
             restart the slave with the new configuration specified in the
             `--resources` flag.
 
-__NOTE:__ This feature is supported for backwards compatibility.
-          The recommended approach is to specify the total resources available
-          on the slave as unreserved via the `--resources` flag and manage
-          reservations dynamically via the master HTTP endpoints.
+**NOTE:** This feature is supported for backwards compatibility. The recommended
+approach is to specify the total resources available on the slave as unreserved
+via the `--resources` flag and manage reservations dynamically via the master
+HTTP endpoints.
 
 
 ## Dynamic Reservation
@@ -383,3 +383,9 @@ can examine the state of the appropriate Mesos slave (e.g., via the slave's
 Information about the reserved resources at each slave in the cluster can be
 found by querying the [/slaves](endpoints/master/slaves.md) master endpoint
 (under the `reserved_resources_full` key).
+
+The same information can also be found in the [/state](endpoints/slave/state.md)
+endpoint on the agent (under the `reserved_resources_full` key). The agent
+endpoint is useful to confirm if a reservation has been propagated to the
+agent (which can fail in the event of network partition or master/agent
+restarts).

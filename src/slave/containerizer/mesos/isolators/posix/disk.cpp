@@ -30,6 +30,7 @@
 #include <process/collect.hpp>
 #include <process/defer.hpp>
 #include <process/delay.hpp>
+#include <process/id.hpp>
 #include <process/io.hpp>
 #include <process/subprocess.hpp>
 
@@ -40,6 +41,7 @@
 #include <stout/strings.hpp>
 #include <stout/path.hpp>
 
+#include <stout/os/constants.hpp>
 #include <stout/os/exists.hpp>
 #include <stout/os/killtree.hpp>
 #include <stout/os/stat.hpp>
@@ -57,8 +59,6 @@ using std::vector;
 
 using process::Failure;
 using process::Future;
-using process::MONITOR;
-using process::NO_SETSID;
 using process::Owned;
 using process::PID;
 using process::Process;
@@ -99,10 +99,18 @@ PosixDiskIsolatorProcess::Info::PathInfo::~PathInfo()
 
 
 PosixDiskIsolatorProcess::PosixDiskIsolatorProcess(const Flags& _flags)
-  : flags(_flags), collector(flags.container_disk_watch_interval) {}
+  : ProcessBase(process::ID::generate("posix-disk-isolator")),
+    flags(_flags),
+    collector(flags.container_disk_watch_interval) {}
 
 
 PosixDiskIsolatorProcess::~PosixDiskIsolatorProcess() {}
+
+
+bool PosixDiskIsolatorProcess::supportsNesting()
+{
+  return true;
+}
 
 
 Future<Nothing> PosixDiskIsolatorProcess::recover(
@@ -110,6 +118,13 @@ Future<Nothing> PosixDiskIsolatorProcess::recover(
     const hashset<ContainerID>& orphans)
 {
   foreach (const ContainerState& state, states) {
+    // If this is a nested container, we do not need to create an Info
+    // struct for it because we only perform disk space check for the
+    // top level container.
+    if (state.container_id().has_parent()) {
+      continue;
+    }
+
     // Since we checkpoint the executor after we create its working
     // directory, the working directory should definitely exist.
     CHECK(os::exists(state.directory()))
@@ -126,6 +141,13 @@ Future<Option<ContainerLaunchInfo>> PosixDiskIsolatorProcess::prepare(
     const ContainerID& containerId,
     const ContainerConfig& containerConfig)
 {
+  // If this is a nested container, we do not need to create an Info
+  // struct for it because we only perform disk space check for the
+  // top level container.
+  if (containerId.has_parent()) {
+    return None();
+  }
+
   if (infos.contains(containerId)) {
     return Failure("Container has already been prepared");
   }
@@ -140,6 +162,10 @@ Future<Nothing> PosixDiskIsolatorProcess::isolate(
     const ContainerID& containerId,
     pid_t pid)
 {
+  if (containerId.has_parent()) {
+    return Nothing();
+  }
+
   if (!infos.contains(containerId)) {
     return Failure("Unknown container");
   }
@@ -151,6 +177,13 @@ Future<Nothing> PosixDiskIsolatorProcess::isolate(
 Future<ContainerLimitation> PosixDiskIsolatorProcess::watch(
     const ContainerID& containerId)
 {
+  // Since we are not doing disk space check for nested containers
+  // currently, we simply return a pending future here, indicating
+  // that the limit for the nested container will not be reached.
+  if (containerId.has_parent()) {
+    return Future<ContainerLimitation>();
+  }
+
   if (!infos.contains(containerId)) {
     return Failure("Unknown container");
   }
@@ -163,6 +196,10 @@ Future<Nothing> PosixDiskIsolatorProcess::update(
     const ContainerID& containerId,
     const Resources& resources)
 {
+  if (containerId.has_parent()) {
+    return Failure("Not supported for nested containers");
+  }
+
   if (!infos.contains(containerId)) {
     LOG(WARNING) << "Ignoring update for unknown container " << containerId;
     return Nothing();
@@ -336,6 +373,10 @@ void PosixDiskIsolatorProcess::_collect(
 Future<ResourceStatistics> PosixDiskIsolatorProcess::usage(
     const ContainerID& containerId)
 {
+  if (containerId.has_parent()) {
+    return Failure("Not supported for nested containers");
+  }
+
   if (!infos.contains(containerId)) {
     return Failure("Unknown container");
   }
@@ -366,6 +407,12 @@ Future<ResourceStatistics> PosixDiskIsolatorProcess::usage(
 Future<Nothing> PosixDiskIsolatorProcess::cleanup(
     const ContainerID& containerId)
 {
+  // No need to cleanup anything because we don't create Info struct
+  // for nested containers.
+  if (containerId.has_parent()) {
+    return Nothing();
+  }
+
   if (!infos.contains(containerId)) {
     LOG(WARNING) << "Ignoring cleanup for unknown container " << containerId;
     return Nothing();
@@ -380,7 +427,9 @@ Future<Nothing> PosixDiskIsolatorProcess::cleanup(
 class DiskUsageCollectorProcess : public Process<DiskUsageCollectorProcess>
 {
 public:
-  DiskUsageCollectorProcess(const Duration& _interval) : interval(_interval) {}
+  DiskUsageCollectorProcess(const Duration& _interval)
+    : ProcessBase(process::ID::generate("posix-disk-usage-collector")),
+      interval(_interval) {}
   virtual ~DiskUsageCollectorProcess() {}
 
   Future<Bytes> usage(
@@ -489,21 +538,19 @@ private:
     // Add path on which 'du' must be run.
     command.push_back(entry->path);
 
-    // NOTE: The monitor watchdog will watch the parent process and kill
+    // NOTE: The supervisor childhook will watch the parent process and kill
     // the 'du' process in case that the parent die.
     Try<Subprocess> s = subprocess(
         "du",
         command,
-        Subprocess::PATH("/dev/null"),
+        Subprocess::PATH(os::DEV_NULL),
         Subprocess::PIPE(),
         Subprocess::PIPE(),
-        NO_SETSID,
+        nullptr,
         None(),
         None(),
-        None(),
-        Subprocess::Hook::None(),
-        None(),
-        MONITOR);
+        {},
+        {Subprocess::ChildHook::SUPERVISOR()});
 
     if (s.isError()) {
       entry->promise.fail("Failed to exec 'du': " + s.error());

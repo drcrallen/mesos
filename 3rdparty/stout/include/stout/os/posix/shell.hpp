@@ -27,19 +27,20 @@
 #include <stout/format.hpp>
 #include <stout/try.hpp>
 
+#include <stout/os/raw/argv.hpp>
 
 namespace os {
 
 namespace Shell {
 
-  // Canonical constants used as platform-dependent args to `exec` calls.
-  // `name` is the command name, `arg0` is the first argument received
-  // by the callee, usually the command name and `arg1` is the second
-  // command argument received by the callee.
+// Canonical constants used as platform-dependent args to `exec`
+// calls. `name` is the command name, `arg0` is the first argument
+// received by the callee, usually the command name and `arg1` is the
+// second command argument received by the callee.
 
-  constexpr const char* name = "sh";
-  constexpr const char* arg0 = "sh";
-  constexpr const char* arg1 = "-c";
+constexpr const char* name = "sh";
+constexpr const char* arg0 = "sh";
+constexpr const char* arg1 = "-c";
 
 } // namespace Shell {
 
@@ -120,6 +121,12 @@ Try<std::string> shell(const std::string& fmt, const T&... t)
 // return -1 on error (e.g., fork/exec/waitpid failed). This function
 // is async signal safe. We return int instead of returning a Try
 // because Try involves 'new', which is not async signal safe.
+//
+// Note: Be cautious about shell injection
+// (https://en.wikipedia.org/wiki/Code_injection#Shell_injection)
+// when using this method and use proper validation and sanitization
+// on the `command`. For this reason in general `os::spawn` is
+// preferred if a shell is not required.
 inline int system(const std::string& command)
 {
   pid_t pid = ::fork();
@@ -144,11 +151,47 @@ inline int system(const std::string& command)
   }
 }
 
+// Executes a command by calling "<command> <arguments...>", and
+// returns after the command has been completed. Returns 0 if
+// succeeds, and -1 on error (e.g., fork/exec/waitpid failed). This
+// function is async signal safe. We return int instead of returning a
+// Try because Try involves 'new', which is not async signal safe.
+inline int spawn(
+    const std::string& command,
+    const std::vector<std::string>& arguments)
+{
+  pid_t pid = ::fork();
+
+  if (pid == -1) {
+    return -1;
+  } else if (pid == 0) {
+    // In child process.
+    ::execvp(command.c_str(), os::raw::Argv(arguments));
+    ::exit(127);
+  } else {
+    // In parent process.
+    int status;
+    while (::waitpid(pid, &status, 0) == -1) {
+      if (errno != EINTR) {
+        return -1;
+      }
+    }
+
+    return status;
+  }
+}
+
 
 template<typename... T>
 inline int execlp(const char* file, T... t)
 {
   return ::execlp(file, t...);
+}
+
+
+inline int execvp(const char* file, char* const argv[])
+{
+  return ::execvp(file, argv);
 }
 
 } // namespace os {

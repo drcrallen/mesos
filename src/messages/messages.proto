@@ -14,6 +14,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+syntax = "proto2";
+
 import "mesos/mesos.proto";
 
 package mesos.internal;
@@ -32,6 +34,11 @@ package mesos.internal;
  * passing it from the agent to the framework that spawned the task.
  *
  * See protobuf::createStatusUpdate.
+ *
+ * A task status update may be used for guaranteed delivery of some
+ * task-related information, e.g., task's health update. Such information
+ * may be shadowed by subsequent task status updates, that do not preserve
+ * fields of the previously sent message.
  */
 message StatusUpdate {
   required FrameworkID framework_id = 1;
@@ -266,13 +273,18 @@ message RescindInverseOfferMessage {
 
 
 /**
- * Removes all filters previously set by the scheduler.
+ * Removes filters for the specified role. If a role is not provided, then
+ * this is equivalent to passing all of the framework's subscribed roles.
  *
  * Used by the pre-Event/Call Mesos scheduler driver.
  * See scheduler::Call::Revive.
+ *
+ * NOTE: There is no optional `role` field in V0 API as we will eventually
+ * move to V1 API.
  */
 message ReviveOffersMessage {
   required FrameworkID framework_id = 1;
+  optional string role = 2;
 }
 
 
@@ -297,6 +309,21 @@ message RunTaskMessage {
   // forward executor messages through the master. For schedulers
   // still using the driver, this will remain set.
   optional string pid = 3;
+}
+
+
+/**
+ * This message either notifies an existing executor to run a task
+ * group, or starts a new executor and runs the task group. This
+ * message is sent when scheduler::Call::Accept is sent with
+ * Offer::Operation::LaunchGroup.
+ *
+ * See executor::Event::LaunchGroup.
+ */
+message RunTaskGroupMessage {
+  required FrameworkInfo framework = 1;
+  required ExecutorInfo executor = 2;
+  required TaskGroupInfo task_group = 3;
 }
 
 
@@ -356,16 +383,31 @@ message LostSlaveMessage {
 
 
 /**
- * Allows the scheduler to query the status for non-terminal tasks.
- * This causes the master to send back the latest task status for
- * each task in `statuses`, if possible. Tasks that are no longer
- * known will result in a `TASK_LOST` update. If `statuses` is empty,
- * then the master will send the latest status for each task
- * currently known.
+ * This message is used in two situations:
+ *
+ *   (a) schedulers can query masters about the master's view of the
+ *       state of one or more tasks. If the `statuses` field is empty
+ *       ("implicit reconciliation"), the master will respond with
+ *       status updates for all of the non-terminal tasks it knows
+ *       about.
+ *
+ *   (b) the master can query an agent about the agent's view of the
+ *       state of one or more tasks.
+ *
+ * In both cases, the response to this message is returned via zero or
+ * more status update messages with the `reason` field set to
+ * `REASON_RECONCILIATION`.
  */
 message ReconcileTasksMessage {
   required FrameworkID framework_id = 1;
   repeated TaskStatus statuses = 2; // Should be non-terminal only.
+
+  // Should only be set for reconciliation requests sent to agents by
+  // the master (case (b) above). This is necessary because the agent
+  // might not know anything about the framework, and the correct
+  // response to the reconciliation request might depend on the
+  // framework's capabilities (e.g., PARTITION_AWARE).
+  optional FrameworkInfo framework = 3;
 }
 
 
@@ -397,13 +439,21 @@ message RegisterSlaveMessage {
   // version. If unset the agent is < 0.21.0.
   // TODO(bmahler): Do proper versioning: MESOS-986.
   optional string version = 2;
+
+  // This field allows an agent to advertise its set of
+  // capabilities (e.g., ability to launch tasks of 'multi-role'
+  // frameworks).
+  repeated SlaveInfo.Capability agent_capabilities = 4;
 }
 
 
 /**
- * Registers the agent with the master.
- * This is used when the agent has previously registered and
- * the master changes to a newly elected master.
+ * Reregisters the agent with the master.
+ *
+ * This is used when the agent has previously registered and the agent
+ * has reason to suspect that it should re-establish its connection
+ * (e.g., a new master is elected or the agent hasn't seen a ping from
+ * the master for a long period of time).
  *
  * If registration fails, a `ShutdownMessage` is sent to the agent.
  * Failure conditions are documented inline in Master::reregisterSlave.
@@ -418,12 +468,18 @@ message ReregisterSlaveMessage {
 
   repeated ExecutorInfo executor_infos = 4;
   repeated Task tasks = 3;
+  repeated FrameworkInfo frameworks = 8;
   repeated Archive.Framework completed_frameworks = 5;
 
   // NOTE: This is a hack for the master to detect the agent's
   // version. If unset the agent is < 0.21.0.
   // TODO(bmahler): Do proper versioning: MESOS-986.
   optional string version = 6;
+
+  // This field allows an agent to advertise its set of
+  // capabilities (e.g., ability to launch tasks of 'multi-role'
+  // frameworks).
+  repeated SlaveInfo.Capability agent_capabilities = 9;
 }
 
 
@@ -444,9 +500,9 @@ message SlaveRegisteredMessage {
 message SlaveReregisteredMessage {
   required SlaveID slave_id = 1;
 
-  // Contains a list of non-terminal tasks that the master believes to
-  // be running on the agent.  The agent should respond `TASK_LOST` to
-  // any tasks that are unknown, so the master knows to remove those.
+  // Contains a list of non-terminal tasks that the master believes are
+  // running on the agent.  The agent should respond `TASK_DROPPED` to any
+  // tasks that are unknown, so the master knows to remove them.
   repeated ReconcileTasksMessage reconciliations = 2;
 
   optional MasterSlaveConnection connection = 3;
@@ -517,6 +573,9 @@ message UpdateFrameworkMessage {
 
   // See the comment on RunTaskMessage.pid.
   optional string pid = 2;
+
+  // Updated framework info.
+  optional FrameworkInfo framework_info = 3;
 }
 
 
@@ -640,10 +699,13 @@ message Archive {
 
 /**
  * Message describing a task's current health status, which is sent by
- * the health check program to the executor.
- * On each receive, if the number of consecutive failed health checks
- * meets the `consecutive_failure` configuration, then `kill_task`
- * flag will be set to true.
+ * the health check library or program to the executor.
+ *
+ * The `kill_task` flag is set to true when the health check library or
+ * program deems the task to be irrevocably unhealthy, for example, if
+ * the number of consecutive failed health checks meets the configured
+ * `consecutive_failure` value. If this flag is set, executor should
+ * consider killing the associated task.
  */
 message TaskHealthStatus {
   required TaskID task_id = 1;

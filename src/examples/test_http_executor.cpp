@@ -84,12 +84,12 @@ public:
     Call::Subscribe* subscribe = call.mutable_subscribe();
 
     // Send all unacknowledged updates.
-    foreach (const Call::Update& update, updates.values()) {
+    foreachvalue (const Call::Update& update, updates) {
       subscribe->add_unacknowledged_updates()->MergeFrom(update);
     }
 
     // Send all unacknowledged tasks.
-    foreach (const TaskInfo& task, tasks.values()) {
+    foreachvalue (const TaskInfo& task, tasks) {
       subscribe->add_unacknowledged_tasks()->MergeFrom(task);
     }
 
@@ -158,6 +158,12 @@ public:
           break;
         }
 
+        case Event::LAUNCH_GROUP: {
+          cout << "Received a LAUNCH_GROUP event";
+          // TODO(vinod): Implement this.
+          break;
+        }
+
         case Event::KILL: {
           cout << "Received a KILL event" << endl;
           break;
@@ -167,7 +173,7 @@ public:
           cout << "Received an ACKNOWLEDGED event" << endl;
 
           // Remove the corresponding update.
-          updates.erase(UUID::fromBytes(event.acknowledged().uuid()));
+          updates.erase(UUID::fromBytes(event.acknowledged().uuid()).get());
 
           // Remove the corresponding task.
           tasks.erase(event.acknowledged().task_id());

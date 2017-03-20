@@ -22,7 +22,7 @@
 #include <mesos/mesos.hpp>
 #include <mesos/scheduler.hpp>
 
-#include <mesos/master/allocator.hpp>
+#include <mesos/allocator/allocator.hpp>
 
 #include <process/future.hpp>
 #include <process/gmock.hpp>
@@ -122,7 +122,7 @@ TEST_F(MasterSlaveReconciliationTest, SlaveReregisterTerminatedExecutor)
   driver.start();
 
   AWAIT_READY(status);
-  EXPECT_EQ(TASK_RUNNING, status.get().state());
+  EXPECT_EQ(TASK_RUNNING, status->state());
 
   // Make sure the acknowledgement reaches the slave.
   AWAIT_READY(statusUpdateAcknowledgementMessage);
@@ -159,16 +159,16 @@ TEST_F(MasterSlaveReconciliationTest, SlaveReregisterTerminatedExecutor)
   detector.appoint(master.get()->pid);
 
   AWAIT_READY(status2);
-  EXPECT_EQ(TASK_FINISHED, status2.get().state());
+  EXPECT_EQ(TASK_FINISHED, status2->state());
 
   driver.stop();
   driver.join();
 }
 
 
-// This test verifies that the master reconciles tasks that are
-// missing from a re-registering slave. In this case, we drop the
-// RunTaskMessage so the slave should send TASK_LOST.
+// This test verifies that the master reconciles non-partition-aware
+// tasks that are missing from a re-registering slave. In this case,
+// we drop the RunTaskMessage, so the slave should send TASK_LOST.
 TEST_F(MasterSlaveReconciliationTest, ReconcileLostTask)
 {
   Try<Owned<cluster::Master>> master = StartMaster();
@@ -185,7 +185,7 @@ TEST_F(MasterSlaveReconciliationTest, ReconcileLostTask)
 
   EXPECT_CALL(sched, registered(&driver, _, _));
 
-  Future<vector<Offer> > offers;
+  Future<vector<Offer>> offers;
   EXPECT_CALL(sched, resourceOffers(&driver, _))
     .WillOnce(FutureArg<1>(&offers))
     .WillRepeatedly(Return()); // Ignore subsequent offers.
@@ -194,7 +194,7 @@ TEST_F(MasterSlaveReconciliationTest, ReconcileLostTask)
 
   AWAIT_READY(offers);
 
-  EXPECT_NE(0u, offers.get().size());
+  EXPECT_NE(0u, offers->size());
 
   TaskInfo task;
   task.set_name("test task");
@@ -233,8 +233,10 @@ TEST_F(MasterSlaveReconciliationTest, ReconcileLostTask)
 
   AWAIT_READY(status);
 
-  ASSERT_EQ(task.task_id(), status.get().task_id());
-  ASSERT_EQ(TASK_LOST, status.get().state());
+  EXPECT_EQ(task.task_id(), status->task_id());
+  EXPECT_EQ(TASK_LOST, status->state());
+  EXPECT_EQ(TaskStatus::SOURCE_SLAVE, status->source());
+  EXPECT_EQ(TaskStatus::REASON_RECONCILIATION, status->reason());
 
   // Before we obtain the metrics, ensure that the master has finished
   // processing the status update so metrics have been updated.
@@ -244,12 +246,8 @@ TEST_F(MasterSlaveReconciliationTest, ReconcileLostTask)
 
   // Check metrics.
   JSON::Object stats = Metrics();
-  EXPECT_EQ(1u, stats.values.count("master/tasks_lost"));
+  EXPECT_EQ(0u, stats.values["master/tasks_dropped"]);
   EXPECT_EQ(1u, stats.values["master/tasks_lost"]);
-  EXPECT_EQ(
-      1u,
-      stats.values.count(
-          "master/task_lost/source_slave/reason_reconciliation"));
   EXPECT_EQ(
       1u,
       stats.values["master/task_lost/source_slave/reason_reconciliation"]);
@@ -259,10 +257,105 @@ TEST_F(MasterSlaveReconciliationTest, ReconcileLostTask)
 }
 
 
+// This test verifies that the master reconciles partition-aware tasks
+// that are missing from a re-registering slave. In this case, we drop
+// the RunTaskMessage, so the slave should send TASK_DROPPED.
+TEST_F(MasterSlaveReconciliationTest, ReconcileDroppedTask)
+{
+  Try<Owned<cluster::Master>> master = StartMaster();
+  ASSERT_SOME(master);
+
+  StandaloneMasterDetector detector(master.get()->pid);
+
+  Try<Owned<cluster::Slave>> slave = StartSlave(&detector);
+  ASSERT_SOME(slave);
+
+  FrameworkInfo frameworkInfo = DEFAULT_FRAMEWORK_INFO;
+  frameworkInfo.add_capabilities()->set_type(
+      FrameworkInfo::Capability::PARTITION_AWARE);
+
+  MockScheduler sched;
+  MesosSchedulerDriver driver(
+      &sched, frameworkInfo, master.get()->pid, DEFAULT_CREDENTIAL);
+
+  EXPECT_CALL(sched, registered(&driver, _, _));
+
+  Future<vector<Offer>> offers;
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offers))
+    .WillRepeatedly(Return()); // Ignore subsequent offers.
+
+  driver.start();
+
+  AWAIT_READY(offers);
+
+  EXPECT_NE(0u, offers->size());
+
+  TaskInfo task;
+  task.set_name("test task");
+  task.mutable_task_id()->set_value("1");
+  task.mutable_slave_id()->MergeFrom(offers.get()[0].slave_id());
+  task.mutable_resources()->MergeFrom(offers.get()[0].resources());
+  task.mutable_executor()->MergeFrom(DEFAULT_EXECUTOR_INFO);
+
+  // We now launch a task and drop the corresponding RunTaskMessage on
+  // the slave, to ensure that only the master knows about this task.
+  Future<RunTaskMessage> runTaskMessage =
+    DROP_PROTOBUF(RunTaskMessage(), _, _);
+
+  driver.launchTasks(offers.get()[0].id(), {task});
+
+  AWAIT_READY(runTaskMessage);
+
+  Future<SlaveReregisteredMessage> slaveReregisteredMessage =
+    FUTURE_PROTOBUF(SlaveReregisteredMessage(), _, _);
+
+  Future<StatusUpdateMessage> statusUpdateMessage =
+    FUTURE_PROTOBUF(StatusUpdateMessage(), _, master.get()->pid);
+
+  Future<TaskStatus> status;
+  EXPECT_CALL(sched, statusUpdate(&driver, _))
+    .WillOnce(FutureArg<1>(&status));
+
+  // Simulate a spurious master change event (e.g., due to ZooKeeper
+  // expiration) at the slave to force re-registration.
+  detector.appoint(master.get()->pid);
+
+  AWAIT_READY(slaveReregisteredMessage);
+
+  // Make sure the slave generated the TASK_DROPPED.
+  AWAIT_READY(statusUpdateMessage);
+
+  AWAIT_READY(status);
+
+  EXPECT_EQ(task.task_id(), status->task_id());
+  EXPECT_EQ(TASK_DROPPED, status->state());
+  EXPECT_EQ(TaskStatus::SOURCE_SLAVE, status->source());
+  EXPECT_EQ(TaskStatus::REASON_RECONCILIATION, status->reason());
+
+  // Before we obtain the metrics, ensure that the master has finished
+  // processing the status update so metrics have been updated.
+  Clock::pause();
+  Clock::settle();
+  Clock::resume();
+
+  // Check metrics.
+  JSON::Object stats = Metrics();
+  EXPECT_EQ(0u, stats.values["master/tasks_lost"]);
+  EXPECT_EQ(1u, stats.values["master/tasks_dropped"]);
+  EXPECT_EQ(
+      1u,
+      stats.values["master/task_dropped/source_slave/reason_reconciliation"]);
+
+  driver.stop();
+  driver.join();
+}
+
+
 // This test verifies that the master reconciles tasks that are
 // missing from a re-registering slave. In this case, we trigger
 // a race between the slave re-registration message and the launch
-// message. There should be no TASK_LOST.
+// message. There should be no TASK_LOST / TASK_DROPPED.
 // This was motivated by MESOS-1696.
 TEST_F(MasterSlaveReconciliationTest, ReconcileRace)
 {
@@ -288,7 +381,7 @@ TEST_F(MasterSlaveReconciliationTest, ReconcileRace)
 
   EXPECT_CALL(sched, registered(&driver, _, _));
 
-  Future<vector<Offer> > offers;
+  Future<vector<Offer>> offers;
   EXPECT_CALL(sched, resourceOffers(&driver, _))
     .WillOnce(FutureArg<1>(&offers))
     .WillRepeatedly(Return()); // Ignore subsequent offers.
@@ -318,7 +411,7 @@ TEST_F(MasterSlaveReconciliationTest, ReconcileRace)
   AWAIT_READY(reregisterSlaveMessage);
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers.get().size());
+  EXPECT_NE(0u, offers->size());
 
   TaskInfo task;
   task.set_name("test task");
@@ -381,7 +474,7 @@ TEST_F(MasterSlaveReconciliationTest, ReconcileRace)
   executorDriver->sendStatusUpdate(taskStatus);
 
   AWAIT_READY(status);
-  ASSERT_EQ(TASK_FINISHED, status.get().state());
+  ASSERT_EQ(TASK_FINISHED, status->state());
 
   EXPECT_CALL(exec, shutdown(_))
     .Times(AtMost(1));
@@ -410,7 +503,7 @@ TEST_F(MasterSlaveReconciliationTest, SlaveReregisterPendingTask)
 
   EXPECT_CALL(sched, registered(&driver, _, _));
 
-  Future<vector<Offer> > offers;
+  Future<vector<Offer>> offers;
   EXPECT_CALL(sched, resourceOffers(&driver, _))
     .WillOnce(FutureArg<1>(&offers))
     .WillRepeatedly(Return()); // Ignore subsequent offers.
@@ -418,15 +511,15 @@ TEST_F(MasterSlaveReconciliationTest, SlaveReregisterPendingTask)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers.get().size());
+  EXPECT_NE(0u, offers->size());
 
   // No TASK_LOST updates should occur!
   EXPECT_CALL(sched, statusUpdate(&driver, _))
     .Times(0);
 
-  // We drop the _runTask dispatch to ensure the task remains
+  // We drop the _run dispatch to ensure the task remains
   // pending in the slave.
-  Future<Nothing> _runTask = DROP_DISPATCH(slave.get()->pid, &Slave::_runTask);
+  Future<Nothing> _run = DROP_DISPATCH(slave.get()->pid, &Slave::_run);
 
   TaskInfo task1;
   task1.set_name("test task");
@@ -437,7 +530,7 @@ TEST_F(MasterSlaveReconciliationTest, SlaveReregisterPendingTask)
 
   driver.launchTasks(offers.get()[0].id(), {task1});
 
-  AWAIT_READY(_runTask);
+  AWAIT_READY(_run);
 
   Future<SlaveReregisteredMessage> slaveReregisteredMessage =
     FUTURE_PROTOBUF(SlaveReregisteredMessage(), _, _);
@@ -479,7 +572,7 @@ TEST_F(MasterSlaveReconciliationTest, SlaveReregisterTerminalTask)
 
   EXPECT_CALL(sched, registered(&driver, _, _));
 
-  Future<vector<Offer> > offers;
+  Future<vector<Offer>> offers;
   EXPECT_CALL(sched, resourceOffers(&driver, _))
     .WillOnce(FutureArg<1>(&offers))
     .WillRepeatedly(Return()); // Ignore subsequent offers.
@@ -487,7 +580,7 @@ TEST_F(MasterSlaveReconciliationTest, SlaveReregisterTerminalTask)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers.get().size());
+  EXPECT_NE(0u, offers->size());
 
   TaskInfo task;
   task.set_name("test task");
@@ -536,7 +629,83 @@ TEST_F(MasterSlaveReconciliationTest, SlaveReregisterTerminalTask)
   Clock::settle();
 
   AWAIT_READY(status);
-  ASSERT_EQ(TASK_FINISHED, status.get().state());
+  ASSERT_EQ(TASK_FINISHED, status->state());
+
+  EXPECT_CALL(exec, shutdown(_))
+    .Times(AtMost(1));
+
+  driver.stop();
+  driver.join();
+}
+
+
+// This test verifies that when the slave re-registers, we correctly
+// send the information about actively running frameworks.
+TEST_F(MasterSlaveReconciliationTest, SlaveReregisterFrameworks)
+{
+  Try<Owned<cluster::Master>> master = StartMaster();
+  ASSERT_SOME(master);
+
+  MockExecutor exec(DEFAULT_EXECUTOR_ID);
+  TestContainerizer containerizer(&exec);
+
+  StandaloneMasterDetector detector(master.get()->pid);
+
+  Try<Owned<cluster::Slave>> slave = StartSlave(&detector, &containerizer);
+  ASSERT_SOME(slave);
+
+  MockScheduler sched;
+  MesosSchedulerDriver driver(
+      &sched, DEFAULT_FRAMEWORK_INFO, master.get()->pid, DEFAULT_CREDENTIAL);
+
+  EXPECT_CALL(sched, registered(&driver, _, _));
+
+  Future<vector<Offer>> offers;
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offers))
+    .WillRepeatedly(Return()); // Ignore subsequent offers.
+
+  driver.start();
+
+  AWAIT_READY(offers);
+  EXPECT_NE(0u, offers->size());
+
+  TaskInfo task;
+  task.set_name("test task");
+  task.mutable_task_id()->set_value("1");
+  task.mutable_slave_id()->MergeFrom(offers.get()[0].slave_id());
+  task.mutable_resources()->MergeFrom(offers.get()[0].resources());
+  task.mutable_executor()->MergeFrom(DEFAULT_EXECUTOR_INFO);
+
+  EXPECT_CALL(exec, registered(_, _, _, _));
+
+  // Send an update right away.
+  EXPECT_CALL(exec, launchTask(_, _))
+    .WillOnce(SendStatusUpdateFromTask(TASK_RUNNING));
+
+  Future<TaskStatus> status;
+  EXPECT_CALL(sched, statusUpdate(&driver, _))
+    .WillOnce(FutureArg<1>(&status))
+    .WillRepeatedly(Return()); // Ignore retried update due to update framework.
+
+  driver.launchTasks(offers.get()[0].id(), {task});
+
+  // Wait until TASK_RUNNING of the task is received.
+  AWAIT_READY(status);
+  EXPECT_EQ(TASK_RUNNING, status->state());
+
+  Future<ReregisterSlaveMessage> reregisterSlave =
+    FUTURE_PROTOBUF(ReregisterSlaveMessage(), _, _);
+
+  // Simulate a spurious master change event (e.g., due to ZooKeeper
+  // expiration) at the slave to force re-registration.
+  detector.appoint(master.get()->pid);
+
+  // Expect to receive the 'ReregisterSlaveMessage' containing the
+  // active frameworks.
+  AWAIT_READY(reregisterSlave);
+
+  EXPECT_EQ(1u, reregisterSlave->frameworks().size());
 
   EXPECT_CALL(exec, shutdown(_))
     .Times(AtMost(1));

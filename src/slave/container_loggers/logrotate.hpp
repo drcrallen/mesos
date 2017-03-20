@@ -26,6 +26,9 @@
 #include <stout/option.hpp>
 #include <stout/path.hpp>
 
+#include <stout/os/constants.hpp>
+#include <stout/os/pagesize.hpp>
+
 
 namespace mesos {
 namespace internal {
@@ -49,21 +52,21 @@ struct Flags : public virtual flags::FlagsBase
       "are supported.  See '--logrotate_options'.\n"
       "\n");
 
-    add(&max_size,
+    add(&Flags::max_size,
         "max_size",
         "Maximum size, in bytes, of a single log file.\n"
         "Defaults to 10 MB.  Must be at least 1 (memory) page.",
         Megabytes(10),
         [](const Bytes& value) -> Option<Error> {
-          if (value.bytes() < (size_t) sysconf(_SC_PAGE_SIZE)) {
+          if (value.bytes() < os::pagesize()) {
             return Error(
                 "Expected --max_size of at least " +
-                stringify(sysconf(_SC_PAGE_SIZE)) + " bytes");
+                stringify(os::pagesize()) + " bytes");
           }
           return None();
         });
 
-    add(&logrotate_options,
+    add(&Flags::logrotate_options,
         "logrotate_options",
         "Additional config options to pass into 'logrotate'.\n"
         "This string will be inserted into a 'logrotate' configuration file.\n"
@@ -72,9 +75,9 @@ struct Flags : public virtual flags::FlagsBase
         "    <logrotate_options>\n"
         "    size <max_size>\n"
         "  }\n"
-        "NOTE: The 'size' option will be overriden by this command.");
+        "NOTE: The 'size' option will be overridden by this command.");
 
-    add(&log_filename,
+    add(&Flags::log_filename,
         "log_filename",
         "Absolute path to the leading log file.\n"
         "NOTE: This command will also create two files by appending\n"
@@ -92,7 +95,7 @@ struct Flags : public virtual flags::FlagsBase
           return None();
         });
 
-    add(&logrotate_path,
+    add(&Flags::logrotate_path,
         "logrotate_path",
         "If specified, this command will use the specified\n"
         "'logrotate' instead of the system's 'logrotate'.",
@@ -101,7 +104,7 @@ struct Flags : public virtual flags::FlagsBase
           // Check if `logrotate` exists via the help command.
           // TODO(josephw): Consider a more comprehensive check.
           Try<std::string> helpCommand =
-            os::shell(value + " --help > /dev/null");
+            os::shell(value + " --help > " + os::DEV_NULL);
 
           if (helpCommand.isError()) {
             return Error(
@@ -110,12 +113,17 @@ struct Flags : public virtual flags::FlagsBase
 
           return None();
         });
+
+    add(&Flags::user,
+        "user",
+        "The user this command should run as.");
   }
 
   Bytes max_size;
   Option<std::string> logrotate_options;
   Option<std::string> log_filename;
   std::string logrotate_path;
+  Option<std::string> user;
 };
 
 } // namespace rotate {

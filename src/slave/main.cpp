@@ -16,6 +16,7 @@
 
 #include <stdint.h>
 
+#include <set>
 #include <vector>
 #include <utility>
 
@@ -30,16 +31,18 @@
 #include <mesos/slave/resource_estimator.hpp>
 
 #include <process/owned.hpp>
-
-#ifdef __WINDOWS__
-#include <process/windows/winsock.hpp>
-#endif // __WINDOWS__
+#include <process/process.hpp>
 
 #include <stout/check.hpp>
 #include <stout/flags.hpp>
 #include <stout/hashset.hpp>
 #include <stout/nothing.hpp>
 #include <stout/os.hpp>
+
+#ifdef __linux__
+#include <stout/proc.hpp>
+#endif // __linux__
+
 #include <stout/stringify.hpp>
 #include <stout/try.hpp>
 
@@ -49,6 +52,7 @@
 #include "hook/manager.hpp"
 
 #ifdef __linux__
+#include "linux/cgroups.hpp"
 #include "linux/systemd.hpp"
 #endif // __linux__
 
@@ -90,8 +94,183 @@ using std::cerr;
 using std::cout;
 using std::endl;
 using std::move;
+using std::set;
 using std::string;
 using std::vector;
+
+
+class Flags : public virtual slave::Flags
+{
+public:
+  Flags()
+  {
+    add(&Flags::ip,
+        "ip",
+        "IP address to listen on. This cannot be used in conjunction\n"
+        "with `--ip_discovery_command`.");
+
+    add(&Flags::port, "port", "Port to listen on.", SlaveInfo().port());
+
+    add(&Flags::advertise_ip,
+        "advertise_ip",
+        "IP address advertised to reach this Mesos slave.\n"
+        "The slave does not bind to this IP address.\n"
+        "However, this IP address may be used to access this slave.");
+
+    add(&Flags::advertise_port,
+        "advertise_port",
+        "Port advertised to reach this Mesos slave (along with\n"
+        "`advertise_ip`). The slave does not bind to this port.\n"
+        "However, this port (along with `advertise_ip`) may be used to\n"
+        "access this slave.");
+
+    add(&Flags::master,
+        "master",
+        "May be one of:\n"
+        "  `host:port`\n"
+        "  `zk://host1:port1,host2:port2,.../path`\n"
+        "  `zk://username:password@host1:port1,host2:port2,.../path`\n"
+        "  `file:///path/to/file` (where file contains one of the above)");
+
+
+    add(&Flags::ip_discovery_command,
+        "ip_discovery_command",
+        "Optional IP discovery binary: if set, it is expected to emit\n"
+        "the IP address which the slave will try to bind to.\n"
+        "Cannot be used in conjunction with `--ip`.");
+  }
+
+  // The following flags are executable specific (e.g., since we only
+  // have one instance of libprocess per execution, we only want to
+  // advertise the IP and port option once, here).
+
+  Option<string> ip;
+  uint16_t port;
+  Option<string> advertise_ip;
+  Option<string> advertise_port;
+  Option<string> master;
+
+  // Optional IP discover script that will set the slave's IP.
+  // If set, its output is expected to be a valid parseable IP string.
+  Option<string> ip_discovery_command;
+};
+
+
+#ifdef __linux__
+// Move the slave into its own cgroup for each of the specified
+// subsystems.
+//
+// NOTE: Any subsystem configuration is inherited from the mesos
+// root cgroup for that subsystem, e.g., by default the memory
+// cgroup will be unlimited.
+//
+// TODO(jieyu): Make sure the corresponding cgroup isolator is
+// enabled so that the container processes are moved to different
+// cgroups than the agent cgroup.
+static Try<Nothing> assignCgroups(const ::Flags& flags)
+{
+  CHECK_SOME(flags.agent_subsystems);
+
+  foreach (const string& subsystem,
+           strings::tokenize(flags.agent_subsystems.get(), ",")) {
+    LOG(INFO) << "Moving agent process into its own cgroup for"
+              << " subsystem: " << subsystem;
+
+    // Ensure the subsystem is mounted and the Mesos root cgroup is
+    // present.
+    Try<string> hierarchy = cgroups::prepare(
+        flags.cgroups_hierarchy,
+        subsystem,
+        flags.cgroups_root);
+
+    if (hierarchy.isError()) {
+      return Error(
+          "Failed to prepare cgroup " + flags.cgroups_root +
+          " for subsystem " + subsystem +
+          ": " + hierarchy.error());
+    }
+
+    // Create a cgroup for the slave.
+    string cgroup = path::join(flags.cgroups_root, "slave");
+
+    Try<bool> exists = cgroups::exists(hierarchy.get(), cgroup);
+    if (exists.isError()) {
+      return Error(
+          "Failed to find cgroup " + cgroup +
+          " for subsystem " + subsystem +
+          " under hierarchy " + hierarchy.get() +
+          " for agent: " + exists.error());
+    }
+
+    if (!exists.get()) {
+      Try<Nothing> create = cgroups::create(hierarchy.get(), cgroup);
+      if (create.isError()) {
+        return Error(
+            "Failed to create cgroup " + cgroup +
+            " for subsystem " + subsystem +
+            " under hierarchy " + hierarchy.get() +
+            " for agent: " + create.error());
+      }
+    }
+
+    // Exit if there are processes running inside the cgroup - this
+    // indicates a prior slave (or child process) is still running.
+    Try<set<pid_t>> processes = cgroups::processes(hierarchy.get(), cgroup);
+    if (processes.isError()) {
+      return Error(
+          "Failed to check for existing threads in cgroup " + cgroup +
+          " for subsystem " + subsystem +
+          " under hierarchy " + hierarchy.get() +
+          " for agent: " + processes.error());
+    }
+
+    // Log if there are any processes in the slave's cgroup. They
+    // may be transient helper processes like 'perf' or 'du',
+    // ancillary processes like 'docker log' or possibly a stuck
+    // slave.
+    // TODO(idownes): Generally, it's not a problem if there are
+    // processes running in the slave's cgroup, though any resources
+    // consumed by those processes are accounted to the slave. Where
+    // applicable, transient processes should be configured to
+    // terminate if the slave exits; see example usage for perf in
+    // isolators/cgroups/perf.cpp. Consider moving ancillary
+    // processes to a different cgroup, e.g., moving 'docker log' to
+    // the container's cgroup.
+    if (!processes.get().empty()) {
+      // For each process, we print its pid as well as its command
+      // to help triaging.
+      vector<string> infos;
+      foreach (pid_t pid, processes.get()) {
+        Result<os::Process> proc = os::process(pid);
+
+        // Only print the command if available.
+        if (proc.isSome()) {
+          infos.push_back(stringify(pid) + " '" + proc.get().command + "'");
+        } else {
+          infos.push_back(stringify(pid));
+        }
+      }
+
+      LOG(INFO) << "An agent (or child process) is still running, please"
+                << " consider checking the following process(es) listed in "
+                << path::join(hierarchy.get(), cgroup, "cgroups.proc")
+                << ":\n" << strings::join("\n", infos);
+    }
+
+    // Move all of our threads into the cgroup.
+    Try<Nothing> assign = cgroups::assign(hierarchy.get(), cgroup, getpid());
+    if (assign.isError()) {
+      return Error(
+          "Failed to move agent into cgroup " + cgroup +
+          " for subsystem " + subsystem +
+          " under hierarchy " + hierarchy.get() +
+          " for agent: " + assign.error());
+    }
+  }
+
+  return Nothing();
+}
+#endif // __linux__
 
 
 int main(int argc, char** argv)
@@ -122,72 +301,11 @@ int main(int argc, char** argv)
   // TODO(avinash): Add more comments discussing the rationale behind for this
   // particular component ordering.
 
-#ifdef __WINDOWS__
-  // Initialize the Windows socket stack.
-  process::Winsock winsock;
-#endif
-
   GOOGLE_PROTOBUF_VERIFY_VERSION;
 
-  slave::Flags flags;
-
-  // The following flags are executable specific (e.g., since we only
-  // have one instance of libprocess per execution, we only want to
-  // advertise the IP and port option once, here).
-  Option<string> ip;
-  flags.add(&ip,
-            "ip",
-            "IP address to listen on. This cannot be used in conjunction\n"
-            "with `--ip_discovery_command`.");
-
-  uint16_t port;
-  flags.add(&port,
-            "port",
-            "Port to listen on.",
-            SlaveInfo().port());
-
-  Option<string> advertise_ip;
-  flags.add(&advertise_ip,
-            "advertise_ip",
-            "IP address advertised to reach this Mesos agent.\n"
-            "The agent does not bind to this IP address.\n"
-            "However, this IP address may be used to access this agent.");
-
-  Option<string> advertise_port;
-  flags.add(&advertise_port,
-            "advertise_port",
-            "Port advertised to reach this Mesos agent (along with\n"
-            "`advertise_ip`). The agent does not bind to this port.\n"
-            "However, this port (along with `advertise_ip`) may be used to\n"
-            "access this agent.");
-
-  Option<string> master;
-  flags.add(&master,
-            "master",
-            "May be one of:\n"
-            "  `host:port`\n"
-            "  `zk://host1:port1,host2:port2,.../path`\n"
-            "  `zk://username:password@host1:port1,host2:port2,.../path`\n"
-            "  `file:///path/to/file` (where file contains one of the above)");
-
-
-  // Optional IP discover script that will set the slave's IP.
-  // If set, its output is expected to be a valid parseable IP string.
-  Option<string> ip_discovery_command;
-  flags.add(&ip_discovery_command,
-            "ip_discovery_command",
-            "Optional IP discovery binary: if set, it is expected to emit\n"
-            "the IP address which the agent will try to bind to.\n"
-            "Cannot be used in conjunction with `--ip`.");
+  ::Flags flags;
 
   Try<flags::Warnings> load = flags.load("MESOS_", argc, argv);
-
-  // TODO(marco): this pattern too should be abstracted away
-  // in FlagsBase; I have seen it at least 15 times.
-  if (load.isError()) {
-    cerr << flags.usage(load.error()) << endl;
-    return EXIT_FAILURE;
-  }
 
   if (flags.help) {
     cout << flags.usage() << endl;
@@ -199,44 +317,51 @@ int main(int argc, char** argv)
     return EXIT_SUCCESS;
   }
 
-  if (master.isNone() && flags.master_detector.isNone()) {
+  // TODO(marco): this pattern too should be abstracted away
+  // in FlagsBase; I have seen it at least 15 times.
+  if (load.isError()) {
+    cerr << flags.usage(load.error()) << endl;
+    return EXIT_FAILURE;
+  }
+
+  if (flags.master.isNone() && flags.master_detector.isNone()) {
     cerr << flags.usage("Missing required option `--master` or "
                         "`--master_detector`.") << endl;
     return EXIT_FAILURE;
   }
 
-  if (master.isSome() && flags.master_detector.isSome()) {
+  if (flags.master.isSome() && flags.master_detector.isSome()) {
     cerr << flags.usage("Only one of --master or --master_detector options "
                         "should be specified.");
     return EXIT_FAILURE;
   }
 
   // Initialize libprocess.
-  if (ip_discovery_command.isSome() && ip.isSome()) {
+  if (flags.ip_discovery_command.isSome() && flags.ip.isSome()) {
     EXIT(EXIT_FAILURE) << flags.usage(
         "Only one of `--ip` or `--ip_discovery_command` should be specified");
   }
 
-  if (ip_discovery_command.isSome()) {
-    Try<string> ipAddress = os::shell(ip_discovery_command.get());
+  if (flags.ip_discovery_command.isSome()) {
+    Try<string> ipAddress = os::shell(flags.ip_discovery_command.get());
 
     if (ipAddress.isError()) {
       EXIT(EXIT_FAILURE) << ipAddress.error();
     }
 
     os::setenv("LIBPROCESS_IP", strings::trim(ipAddress.get()));
-  } else if (ip.isSome()) {
-    os::setenv("LIBPROCESS_IP", ip.get());
+  } else if (flags.ip.isSome()) {
+    os::setenv("LIBPROCESS_IP", flags.ip.get());
   }
 
-  os::setenv("LIBPROCESS_PORT", stringify(port));
+  os::setenv("LIBPROCESS_PORT", stringify(flags.port));
 
-  if (advertise_ip.isSome()) {
-    os::setenv("LIBPROCESS_ADVERTISE_IP", advertise_ip.get());
+  if (flags.advertise_ip.isSome()) {
+    os::setenv("LIBPROCESS_ADVERTISE_IP", flags.advertise_ip.get());
   }
 
-  if (advertise_port.isSome()) {
-    os::setenv("LIBPROCESS_ADVERTISE_PORT", advertise_port.get());
+  if (flags.advertise_port.isSome()) {
+    os::setenv("LIBPROCESS_ADVERTISE_PORT", flags.advertise_port.get());
   }
 
   // Log build information.
@@ -251,12 +376,26 @@ int main(int argc, char** argv)
     LOG(INFO) << "Git SHA: " << build::GIT_SHA.get();
   }
 
+#ifdef __linux__
+  // Move the agent process into its own cgroup for each of the specified
+  // subsystems if necessary before the process is initialized.
+  if (flags.agent_subsystems.isSome()) {
+    Try<Nothing> assign = assignCgroups(flags);
+    if (assign.isError()) {
+      EXIT(EXIT_FAILURE) << assign.error();
+    }
+  }
+#endif // __linux__
+
   const string id = process::ID::generate("slave"); // Process ID.
 
   // If `process::initialize()` returns `false`, then it was called before this
   // invocation, meaning the authentication realm for libprocess-level HTTP
   // endpoints was set incorrectly. This should be the first invocation.
-  if (!process::initialize(id, DEFAULT_HTTP_AUTHENTICATION_REALM)) {
+  if (!process::initialize(
+          id,
+          READWRITE_HTTP_AUTHENTICATION_REALM,
+          READONLY_HTTP_AUTHENTICATION_REALM)) {
     EXIT(EXIT_FAILURE) << "The call to `process::initialize()` in the agent's "
                        << "`main()` was not the function's first invocation";
   }
@@ -317,7 +456,7 @@ int main(int argc, char** argv)
     }
 
     // We don't bother keeping around the pointer to this anonymous
-    // module, when we exit that will effectively free it's memory.
+    // module, when we exit that will effectively free its memory.
     //
     // TODO(benh): We might want to add explicit finalization (and
     // maybe explicit initialization too) in order to let the module
@@ -335,7 +474,7 @@ int main(int argc, char** argv)
 
 #ifdef __linux__
   // Initialize systemd if it exists.
-  if (systemd::exists() && flags.systemd_enable_support) {
+  if (flags.systemd_enable_support && systemd::exists()) {
     LOG(INFO) << "Inializing systemd state";
 
     systemd::Flags systemdFlags;
@@ -351,10 +490,10 @@ int main(int argc, char** argv)
   }
 #endif // __linux__
 
-  Fetcher fetcher;
+  Fetcher* fetcher = new Fetcher();
 
   Try<Containerizer*> containerizer =
-    Containerizer::create(flags, false, &fetcher);
+    Containerizer::create(flags, false, fetcher);
 
   if (containerizer.isError()) {
     EXIT(EXIT_FAILURE)
@@ -362,7 +501,7 @@ int main(int argc, char** argv)
   }
 
   Try<MasterDetector*> detector_ = MasterDetector::create(
-      master, flags.master_detector);
+      flags.master, flags.master_detector);
 
   if (detector_.isError()) {
     EXIT(EXIT_FAILURE)
@@ -405,9 +544,9 @@ int main(int argc, char** argv)
         createAuthorizationCallbacks(authorizer_.get()));
   }
 
-  Files files(DEFAULT_HTTP_AUTHENTICATION_REALM);
-  GarbageCollector gc;
-  StatusUpdateManager statusUpdateManager(flags);
+  Files* files = new Files(READONLY_HTTP_AUTHENTICATION_REALM, authorizer_);
+  GarbageCollector* gc = new GarbageCollector();
+  StatusUpdateManager* statusUpdateManager = new StatusUpdateManager(flags);
 
   Try<ResourceEstimator*> resourceEstimator =
     ResourceEstimator::create(flags.resource_estimator);
@@ -427,17 +566,14 @@ int main(int argc, char** argv)
     return EXIT_FAILURE;
   }
 
-
-  LOG(INFO) << "Starting Mesos agent";
-
   Slave* slave = new Slave(
       id,
       flags,
       detector,
       containerizer.get(),
-      &files,
-      &gc,
-      &statusUpdateManager,
+      files,
+      gc,
+      statusUpdateManager,
       resourceEstimator.get(),
       qosController.get(),
       authorizer_);
@@ -447,17 +583,29 @@ int main(int argc, char** argv)
 
   delete slave;
 
-  delete resourceEstimator.get();
-
   delete qosController.get();
 
-  delete detector;
+  delete resourceEstimator.get();
 
-  delete containerizer.get();
+  delete statusUpdateManager;
+
+  delete gc;
+
+  delete files;
 
   if (authorizer_.isSome()) {
     delete authorizer_.get();
   }
 
+  delete detector;
+
+  delete containerizer.get();
+
+  delete fetcher;
+
+  // NOTE: We need to finalize libprocess, on Windows especially,
+  // as any binary that uses the networking stack on Windows must
+  // also clean up the networking stack before exiting.
+  process::finalize(true);
   return EXIT_SUCCESS;
 }

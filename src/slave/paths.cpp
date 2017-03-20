@@ -19,8 +19,8 @@
 #include <vector>
 
 #include <mesos/mesos.hpp>
+#include <mesos/roles.hpp>
 #include <mesos/type_utils.hpp>
-
 
 #include <stout/check.hpp>
 #include <stout/fs.hpp>
@@ -29,10 +29,14 @@
 #include <stout/path.hpp>
 #include <stout/strings.hpp>
 #include <stout/try.hpp>
+#include <stout/unreachable.hpp>
+
+#include "common/validation.hpp"
 
 #include "messages/messages.hpp"
 
 #include "slave/paths.hpp"
+#include "slave/validation.hpp"
 
 using std::list;
 using std::string;
@@ -56,6 +60,7 @@ const char FORKED_PID_FILE[] = "forked.pid";
 const char TASK_INFO_FILE[] = "task.info";
 const char TASK_UPDATES_FILE[] = "task.updates";
 const char RESOURCES_INFO_FILE[] = "resources.info";
+const char RESOURCES_TARGET_FILE[] = "resources.target";
 
 
 const char SLAVES_DIR[] = "slaves";
@@ -124,12 +129,6 @@ string getSandboxRootDir(const string& rootDir)
 string getProvisionerDir(const string& rootDir)
 {
   return path::join(rootDir, "provisioner");
-}
-
-
-string getArchiveDir(const string& rootDir)
-{
-  return path::join(rootDir, "archive");
 }
 
 
@@ -437,6 +436,13 @@ string getResourcesInfoPath(
 }
 
 
+string getResourcesTargetPath(
+    const string& rootDir)
+{
+  return path::join(rootDir, "resources", RESOURCES_TARGET_FILE);
+}
+
+
 string getPersistentVolumePath(
     const string& rootDir,
     const string& role,
@@ -453,6 +459,11 @@ string getPersistentVolumePath(
   CHECK(volume.has_role());
   CHECK(volume.has_disk());
   CHECK(volume.disk().has_persistence());
+
+  // Additionally check that the role and the persistent ID are valid
+  // before using them to construct a directory path.
+  CHECK_NONE(roles::validate(volume.role()));
+  CHECK_NONE(common::validation::validateID(volume.disk().persistence().id()));
 
   // If no `source` is provided in `DiskInfo` volumes are mapped into
   // the `rootDir`.
@@ -492,6 +503,14 @@ string createExecutorDirectory(
     const ContainerID& containerId,
     const Option<string>& user)
 {
+  // These IDs should be valid as they are either assigned by the
+  // master/agent or validated by the master but we do a sanity check
+  // here before using them to create a directory.
+  CHECK_NONE(common::validation::validateSlaveID(slaveId));
+  CHECK_NONE(common::validation::validateFrameworkID(frameworkId));
+  CHECK_NONE(common::validation::validateExecutorID(executorId));
+  CHECK_NONE(slave::validation::container::validateContainerId(containerId));
+
   const string directory =
     getExecutorRunPath(rootDir, slaveId, frameworkId, executorId, containerId);
 
@@ -550,6 +569,10 @@ string createSlaveDirectory(
     const string& rootDir,
     const SlaveID& slaveId)
 {
+  // `slaveId` should be valid because it's assigned by the master but
+  // we do a sanity check here before using it to create a directory.
+  CHECK_NONE(common::validation::validateSlaveID(slaveId));
+
   const string directory = getSlavePath(rootDir, slaveId);
 
   Try<Nothing> mkdir = os::mkdir(directory);

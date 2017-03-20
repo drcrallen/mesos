@@ -27,10 +27,6 @@
 
 #include <mesos/mesos.hpp>
 
-#include <mesos/module/module.hpp>
-
-#include <mesos/scheduler/scheduler.hpp>
-
 #include <stout/hashmap.hpp>
 #include <stout/stringify.hpp>
 #include <stout/strings.hpp>
@@ -49,8 +45,10 @@
 
 namespace mesos {
 
+bool operator==(const CheckStatusInfo& left, const CheckStatusInfo& right);
 bool operator==(const CommandInfo& left, const CommandInfo& right);
 bool operator==(const CommandInfo::URI& left, const CommandInfo::URI& right);
+bool operator==(const ContainerID& left, const ContainerID& right);
 bool operator==(const Credential& left, const Credential& right);
 bool operator==(const DiscoveryInfo& left, const DiscoveryInfo& right);
 bool operator==(const Environment& left, const Environment& right);
@@ -65,18 +63,16 @@ bool operator==(
 
 bool operator==(const SlaveInfo& left, const SlaveInfo& right);
 bool operator==(const Task& left, const Task& right);
+bool operator==(const TaskGroupInfo& left, const TaskGroupInfo& right);
+bool operator==(const TaskInfo& left, const TaskInfo& right);
 bool operator==(const TaskStatus& left, const TaskStatus& right);
 bool operator==(const URL& left, const URL& right);
 bool operator==(const Volume& left, const Volume& right);
 
+bool operator!=(const CheckStatusInfo& left, const CheckStatusInfo& right);
+bool operator!=(const ExecutorInfo& left, const ExecutorInfo& right);
 bool operator!=(const Labels& left, const Labels& right);
 bool operator!=(const TaskStatus& left, const TaskStatus& right);
-
-
-inline bool operator==(const ContainerID& left, const ContainerID& right)
-{
-  return left.value() == right.value();
-}
 
 
 inline bool operator==(const ExecutorID& left, const ExecutorID& right)
@@ -180,7 +176,7 @@ inline bool operator==(const MachineID& left, const MachineID& right)
 
 inline bool operator!=(const ContainerID& left, const ContainerID& right)
 {
-  return left.value() != right.value();
+  return !(left == right);
 }
 
 
@@ -250,12 +246,23 @@ inline bool operator<(const TaskID& left, const TaskID& right)
 }
 
 
+std::ostream& operator<<(
+    std::ostream& stream,
+    const CapabilityInfo& capabilityInfo);
+
+
+std::ostream& operator<<(std::ostream& stream, const CommandInfo& commandInfo);
+
+
 std::ostream& operator<<(std::ostream& stream, const ContainerID& containerId);
 
 
 std::ostream& operator<<(
     std::ostream& stream,
     const ContainerInfo& containerInfo);
+
+
+std::ostream& operator<<(std::ostream& stream, const Environment& environment);
 
 
 std::ostream& operator<<(std::ostream& stream, const ExecutorID& executorId);
@@ -299,12 +306,18 @@ std::ostream& operator<<(
     const std::vector<TaskID>& taskIds);
 
 
+std::ostream& operator<<(std::ostream& stream, const CheckInfo::Type& type);
+
+
 std::ostream& operator<<(
     std::ostream& stream,
     const FrameworkInfo::Capability& capability);
 
 
 std::ostream& operator<<(std::ostream& stream, const Image::Type& imageType);
+
+
+std::ostream& operator<<(std::ostream& stream, const RLimitInfo& rlimitInfo);
 
 
 template <typename T>
@@ -368,6 +381,13 @@ struct hash<mesos::ContainerID>
   {
     size_t seed = 0;
     boost::hash_combine(seed, containerId.value());
+
+    if (containerId.has_parent()) {
+      boost::hash_combine(
+          seed,
+          std::hash<mesos::ContainerID>()(containerId.parent()));
+    }
+
     return seed;
   }
 };

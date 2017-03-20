@@ -61,7 +61,9 @@ constexpr size_t DEFAULT_MAX_AGENT_PING_TIMEOUTS = 5;
 
 // The minimum timeout that can be used by a newly elected leader to
 // allow re-registration of slaves. Any slaves that do not re-register
-// within this timeout will be shutdown.
+// within this timeout will be marked unreachable; if/when the agent
+// re-registers, non-partition-aware tasks running on the agent will
+// be terminated.
 constexpr Duration MIN_AGENT_REREGISTER_TIMEOUT = Minutes(10);
 
 // Default limit on the percentage of slaves that will be removed
@@ -85,11 +87,21 @@ constexpr size_t DEFAULT_MAX_COMPLETED_FRAMEWORKS = 50;
 // to store in the cache.
 constexpr size_t DEFAULT_MAX_COMPLETED_TASKS_PER_FRAMEWORK = 1000;
 
+// Default maximum number of unreachable tasks per framework
+// to store in the cache.
+constexpr size_t DEFAULT_MAX_UNREACHABLE_TASKS_PER_FRAMEWORK = 1000;
+
 // Time interval to check for updated watchers list.
 constexpr Duration WHITELIST_WATCH_INTERVAL = Seconds(5);
 
 // Default number of tasks (limit) for /master/tasks endpoint.
 constexpr size_t TASK_LIMIT = 100;
+
+constexpr Duration DEFAULT_REGISTRY_GC_INTERVAL = Minutes(15);
+
+constexpr Duration DEFAULT_REGISTRY_MAX_AGENT_AGE = Weeks(2);
+
+constexpr size_t DEFAULT_REGISTRY_MAX_AGENT_COUNT = 100 * 1024;
 
 /**
  * Label used by the Leader Contender and Detector.
@@ -121,11 +133,13 @@ constexpr Duration DEFAULT_ALLOCATION_INTERVAL = Seconds(1);
 // Name of the default, local authorizer.
 constexpr char DEFAULT_AUTHORIZER[] = "local";
 
-// Name of the default, basic authenticator.
-constexpr char DEFAULT_HTTP_AUTHENTICATOR[] = "basic";
+// Name of the master HTTP authentication realm for read-only endpoints.
+constexpr char READONLY_HTTP_AUTHENTICATION_REALM[] =
+  "mesos-master-readonly";
 
-// Name of the default master HTTP authentication realm.
-constexpr char DEFAULT_HTTP_AUTHENTICATION_REALM[] = "mesos-master";
+// Name of the master HTTP authentication realm for read-write endpoints.
+constexpr char READWRITE_HTTP_AUTHENTICATION_REALM[] =
+  "mesos-master-readwrite";
 
 // Name of the default authentication realm for HTTP frameworks.
 constexpr char DEFAULT_HTTP_FRAMEWORK_AUTHENTICATION_REALM[] =

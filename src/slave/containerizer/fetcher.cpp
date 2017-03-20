@@ -22,8 +22,10 @@
 #include <process/dispatch.hpp>
 #include <process/owned.hpp>
 
+#include <stout/hashset.hpp>
 #include <stout/net.hpp>
 #include <stout/path.hpp>
+#include <stout/strings.hpp>
 #ifdef __WINDOWS__
 #include <stout/windows.hpp>
 #endif // __WINDOWS__
@@ -45,10 +47,16 @@ using std::string;
 using std::transform;
 using std::vector;
 
+using strings::startsWith;
+
 using mesos::fetcher::FetcherInfo;
 
+using process::async;
+
+using process::Failure;
 using process::Future;
 using process::Owned;
+using process::Subprocess;
 
 namespace mesos {
 namespace internal {
@@ -129,11 +137,11 @@ Try<string> Fetcher::basename(const string& uri)
     // ftp://, ftps://, hdfs://, hftp://, s3://, s3n://.
 
     string path = uri.substr(index + 3);
-    if (!strings::contains(path, "/") || path.size() <= path.find("/") + 1) {
+    if (!strings::contains(path, "/") || path.size() <= path.find('/') + 1) {
       return Error("Malformed URI (missing path): " + uri);
     }
 
-    return path.substr(path.find_last_of("/") + 1);
+    return path.substr(path.find_last_of('/') + 1);
   }
   return Path(uri).basename();
 }
@@ -163,7 +171,7 @@ Try<Nothing> Fetcher::validateOutputFile(const string& path)
 
   // TODO(mrbrowning): Check that the filename's directory component is
   // actually a subdirectory of the sandbox, not just relative to it.
-  if (path.at(0) == '/') {
+  if (strings::startsWith(path, '/')) {
     return Error("URI output file must be within the sandbox directory");
   }
 
@@ -196,7 +204,8 @@ Result<string> Fetcher::uriToLocalPath(
     const string& uri,
     const Option<string>& frameworksHome)
 {
-  if (!strings::startsWith(uri, "file://") && strings::contains(uri, "://")) {
+  if (!strings::startsWith(uri, FILE_URI_PREFIX) &&
+      strings::contains(uri, "://")) {
     return None();
   }
 
@@ -253,10 +262,6 @@ Future<Nothing> Fetcher::fetch(
     const SlaveID& slaveId,
     const Flags& flags)
 {
-  if (commandInfo.uris().size() == 0) {
-    return Nothing();
-  }
-
   return dispatch(process.get(),
                   &FetcherProcess::fetch,
                   containerId,
@@ -276,7 +281,7 @@ void Fetcher::kill(const ContainerID& containerId)
 
 FetcherProcess::~FetcherProcess()
 {
-  foreach (const ContainerID& containerId, subprocessPids.keys()) {
+  foreachkey (const ContainerID& containerId, subprocessPids) {
     kill(containerId);
   }
 }
@@ -368,20 +373,6 @@ Future<Nothing> FetcherProcess::fetch(
     // Segregating per-user cache directories.
     cacheDirectory = path::join(cacheDirectory, commandUser.get());
   }
-
-// `os::chown` is not supported on Windows.
-#ifndef __WINDOWS__
-  if (commandUser.isSome()) {
-    // First assure that we are working for a valid user.
-    // TODO(bernd-mesos): This should be asynchronous.
-    Try<Nothing> chown = os::chown(commandUser.get(), sandboxDirectory);
-    if (chown.isError()) {
-      return Failure("Failed to chown directory: " + sandboxDirectory +
-                     " to user: " + commandUser.get() +
-                     " with error: " + chown.error());
-    }
-  }
-#endif // __WINDOWS__
 
   // For each URI we determine if we should use the cache and if so we
   // try and either get the cache entry or create a cache entry. If
@@ -745,8 +736,10 @@ Future<Nothing> FetcherProcess::run(
   // instead of Subprocess::FD(). The reason this can't easily be done
   // today is because we not only need to open the files but also
   // chown them.
-  Try<int> out = os::open(
-      path::join(info.sandbox_directory(), "stdout"),
+  const string stdoutPath = path::join(info.sandbox_directory(), "stdout");
+
+  Try<int_fd> out = os::open(
+      stdoutPath,
       O_WRONLY | O_CREAT | O_TRUNC | O_NONBLOCK | O_CLOEXEC,
       S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
 
@@ -754,9 +747,9 @@ Future<Nothing> FetcherProcess::run(
     return Failure("Failed to create 'stdout' file: " + out.error());
   }
 
-  string _stderr = path::join(info.sandbox_directory(), "stderr");
-  Try<int> err = os::open(
-      _stderr,
+  string stderrPath = path::join(info.sandbox_directory(), "stderr");
+  Try<int_fd> err = os::open(
+      stderrPath,
       O_WRONLY | O_CREAT | O_TRUNC | O_NONBLOCK | O_CLOEXEC,
       S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
 
@@ -769,19 +762,47 @@ Future<Nothing> FetcherProcess::run(
 // here is conditionally compiled out on Windows.
 #ifndef __WINDOWS__
   if (user.isSome()) {
-    // This is a recursive chown that both checks if we have a valid user
-    // and also chowns the files we just opened.
-    Try<Nothing> chown = os::chown(user.get(), sandboxDirectory, true);
-    if (chown.isError()) {
+    // TODO(megha.sharma): Fetcher should not create seperate stdout/stderr
+    // files but rather use FDs prepared by the container logger.
+    // See MESOS-6271 for more details.
+    Try<Nothing> chownOut = os::chown(
+        user.get(),
+        stdoutPath,
+        false);
+
+    if (chownOut.isError()) {
       os::close(out.get());
       os::close(err.get());
+      return Failure(
+          "Failed to chown '" +
+          stdoutPath +
+          "' to user '" + user.get() + "' : " +
+          chownOut.error());
+    }
 
-      return Failure("Failed to chown directory: '" + sandboxDirectory +
-                     "' to user '" + user.get() +
-                     "' with error: " + chown.error());
+    Try<Nothing> chownErr = os::chown(
+        user.get(),
+        stderrPath,
+        false);
+
+    if (chownErr.isError()) {
+      os::close(out.get());
+      os::close(err.get());
+      return Failure(
+          "Failed to chown '" +
+          stderrPath +
+          "' to user '" + user.get() + "' : " +
+          chownErr.error());
     }
   }
 #endif // __WINDOWS__
+
+  // Return early if there are no URIs to fetch.
+  if (info.items_size() == 0) {
+      os::close(out.get());
+      os::close(err.get());
+      return Nothing();
+  }
 
   string fetcherPath = path::join(flags.launcher_dir, "mesos-fetcher");
   Result<string> realpath = os::realpath(fetcherPath);
@@ -805,12 +826,27 @@ Future<Nothing> FetcherProcess::run(
 
   // We pass arguments to the fetcher program by means of an
   // environment variable.
-  map<string, string> environment = os::environment();
+  // For assuring that we pass on variables that may be consumed by
+  // the mesos-fetcher, we whitelist them before masking out any
+  // unwanted agent->fetcher environment spillover.
+  // TODO(tillt): Consider using the `mesos::internal::logging::Flags`
+  // to determine the whitelist.
+  const hashset<string> whitelist = {
+    "MESOS_EXTERNAL_LOG_FILE",
+    "MESOS_INITIALIZE_DRIVER_LOGGING",
+    "MESOS_LOG_DIR",
+    "MESOS_LOGBUFSECS",
+    "MESOS_LOGGING_LEVEL",
+    "MESOS_QUIET"
+  };
 
-  // The libprocess port is explicitly removed because this will conflict
-  // with the already-running agent.
-  environment.erase("LIBPROCESS_PORT");
-  environment.erase("LIBPROCESS_ADVERTISE_PORT");
+  map<string, string> environment;
+  foreachpair (const string& key, const string& value, os::environment()) {
+    if (whitelist.contains(strings::upper(key)) ||
+        (!startsWith(key, "LIBPROCESS_") && !startsWith(key, "MESOS_"))) {
+      environment.emplace(key, value);
+    }
+  }
 
   environment["MESOS_FETCHER_INFO"] = stringify(JSON::protobuf(info));
 
@@ -825,7 +861,6 @@ Future<Nothing> FetcherProcess::run(
       Subprocess::PIPE(),
       Subprocess::FD(out.get(), Subprocess::IO::OWNED),
       Subprocess::FD(err.get(), Subprocess::IO::OWNED),
-      NO_SETSID,
       environment);
 
   if (fetcherSubprocess.isError()) {
@@ -856,7 +891,7 @@ Future<Nothing> FetcherProcess::run(
     .onFailed(defer(self(), [=](const string&) {
       // To aid debugging what went wrong when attempting to fetch, grab the
       // fetcher's local log output from the sandbox and log it here.
-      Try<string> text = os::read(_stderr);
+      Try<string> text = os::read(stderrPath);
       if (text.isSome()) {
         LOG(WARNING) << "Begin fetcher log (stderr in sandbox) for container "
                      << containerId << " from running command: " << command
@@ -1035,11 +1070,11 @@ Try<Nothing> FetcherProcess::Cache::remove(
 
   // We may or may not have started downloading. The download may or may
   // not have been partial. In any case, clean up whatever is there.
-  if (os::exists(entry->path().value)) {
-    Try<Nothing> rm = os::rm(entry->path().value);
+  if (os::exists(entry->path().string())) {
+    Try<Nothing> rm = os::rm(entry->path().string());
     if (rm.isError()) {
       return Error("Could not delete fetcher cache file '" +
-                   entry->path().value + "' with error: " + rm.error() +
+                   entry->path().string() + "' with error: " + rm.error() +
                    " for entry '" + entry->key +
                    "', leaking cache space: " + stringify(entry->size));
     }
@@ -1113,8 +1148,9 @@ Try<Nothing> FetcherProcess::Cache::adjust(
 {
   CHECK(contains(entry));
 
-  Try<Bytes> size =
-    os::stat::size(entry.get()->path().value, os::stat::DO_NOT_FOLLOW_SYMLINK);
+  Try<Bytes> size = os::stat::size(
+      entry.get()->path().string(),
+      os::stat::DO_NOT_FOLLOW_SYMLINK);
 
   if (size.isSome()) {
     off_t d = delta(size.get(), entry);
@@ -1129,7 +1165,7 @@ Try<Nothing> FetcherProcess::Cache::adjust(
   } else {
     // This should never be caused by Mesos itself, but cannot be excluded.
     return Error("Fetcher cache file for '" + entry->key +
-                 "' disappeared from: " + entry->path().value);
+                 "' disappeared from: " + entry->path().string());
   }
 
   return Nothing();

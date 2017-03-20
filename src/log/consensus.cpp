@@ -130,7 +130,7 @@ private:
       .onAny(defer(self(), &Self::broadcasted, lambda::_1));
   }
 
-  void broadcasted(const Future<set<Future<PromiseResponse> > >& future)
+  void broadcasted(const Future<set<Future<PromiseResponse>>>& future)
   {
     if (!future.isReady()) {
       promise.fail(
@@ -149,7 +149,8 @@ private:
 
   void received(const PromiseResponse& response)
   {
-    if (response.has_type() && response.type() == PromiseResponse::IGNORE) {
+    if (response.has_type() && response.type() ==
+        PromiseResponse::IGNORED) {
       ignoresReceived++;
 
       // A quorum of replicas have ignored the request.
@@ -157,10 +158,10 @@ private:
         LOG(INFO) << "Aborting explicit promise request because "
                   << ignoresReceived << " ignores received";
 
-        // If the "type" is PromiseResponse::IGNORE, the rest of the
+        // If the "type" is PromiseResponse::IGNORED, the rest of the
         // fields don't matter.
         PromiseResponse result;
-        result.set_type(PromiseResponse::IGNORE);
+        result.set_type(PromiseResponse::IGNORED);
 
         promise.set(result);
         terminate(self());
@@ -260,7 +261,7 @@ private:
   const uint64_t position;
 
   PromiseRequest request;
-  set<Future<PromiseResponse> > responses;
+  set<Future<PromiseResponse>> responses;
   size_t responsesReceived;
   size_t ignoresReceived;
   Option<uint64_t> highestNackProposal;
@@ -333,7 +334,7 @@ private:
       .onAny(defer(self(), &Self::broadcasted, lambda::_1));
   }
 
-  void broadcasted(const Future<set<Future<PromiseResponse> > >& future)
+  void broadcasted(const Future<set<Future<PromiseResponse>>>& future)
   {
     if (!future.isReady()) {
       promise.fail(
@@ -352,7 +353,8 @@ private:
 
   void received(const PromiseResponse& response)
   {
-    if (response.has_type() && response.type() == PromiseResponse::IGNORE) {
+    if (response.has_type() && response.type() ==
+        PromiseResponse::IGNORED) {
       ignoresReceived++;
 
       // A quorum of replicas have ignored the request.
@@ -360,10 +362,10 @@ private:
         LOG(INFO) << "Aborting implicit promise request because "
                   << ignoresReceived << " ignores received";
 
-        // If the "type" is PromiseResponse::IGNORE, the rest of the
+        // If the "type" is PromiseResponse::IGNORED, the rest of the
         // fields don't matter.
         PromiseResponse result;
-        result.set_type(PromiseResponse::IGNORE);
+        result.set_type(PromiseResponse::IGNORED);
 
         promise.set(result);
         terminate(self());
@@ -422,7 +424,7 @@ private:
   const uint64_t proposal;
 
   PromiseRequest request;
-  set<Future<PromiseResponse> > responses;
+  set<Future<PromiseResponse>> responses;
   size_t responsesReceived;
   size_t ignoresReceived;
   Option<uint64_t> highestNackProposal;
@@ -515,7 +517,7 @@ private:
       .onAny(defer(self(), &Self::broadcasted, lambda::_1));
   }
 
-  void broadcasted(const Future<set<Future<WriteResponse> > >& future)
+  void broadcasted(const Future<set<Future<WriteResponse>>>& future)
   {
     if (!future.isReady()) {
       promise.fail(
@@ -536,17 +538,18 @@ private:
   {
     CHECK_EQ(response.position(), request.position());
 
-    if (response.has_type() && response.type() == WriteResponse::IGNORE) {
+    if (response.has_type() && response.type() ==
+        WriteResponse::IGNORED) {
       ignoresReceived++;
 
       if (ignoresReceived >= quorum) {
         LOG(INFO) << "Aborting write request because "
                   << ignoresReceived << " ignores received";
 
-        // If the "type" is WriteResponse::IGNORE, the rest of the
+        // If the "type" is WriteResponse::IGNORED, the rest of the
         // fields don't matter.
         WriteResponse result;
-        result.set_type(WriteResponse::IGNORE);
+        result.set_type(WriteResponse::IGNORED);
 
         promise.set(result);
         terminate(self());
@@ -593,7 +596,7 @@ private:
   const Action action;
 
   WriteRequest request;
-  set<Future<WriteResponse> > responses;
+  set<Future<WriteResponse>> responses;
   size_t responsesReceived;
   size_t ignoresReceived;
   Option<uint64_t> highestNackProposal;

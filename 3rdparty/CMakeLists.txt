@@ -28,6 +28,7 @@ set(UPSTREAM_URL ${3RDPARTY_DEPENDENCIES})
 set(REBUNDLED_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 if (REBUNDLED)
   set(BOOST_URL       ${REBUNDLED_DIR}/boost-${BOOST_VERSION}.tar.gz)
+  set(ELFIO_URL       ${REBUNDLED_DIR}/elfio-${ELFIO_VERSION}.tar.gz)
   set(GLOG_URL        ${REBUNDLED_DIR}/glog-${GLOG_VERSION}.tar.gz)
   set(PICOJSON_URL    ${REBUNDLED_DIR}/picojson-${PICOJSON_VERSION}.tar.gz)
   set(NVML_URL        ${REBUNDLED_DIR}/nvml-${NVML_VERSION}.tar.gz)
@@ -35,6 +36,7 @@ if (REBUNDLED)
   set(LIBEV_URL       ${REBUNDLED_DIR}/libev-${LIBEV_VERSION}.tar.gz)
 else (REBUNDLED)
   set(BOOST_URL       ${UPSTREAM_URL}/boost-${BOOST_VERSION}.tar.gz)
+  set(ELFIO_URL       ${UPSTREAM_URL}/elfio-${ELFIO_VERSION}.tar.gz)
   set(GLOG_URL        ${UPSTREAM_URL}/glog-${GLOG_VERSION}.tar.gz)
   set(PICOJSON_URL    ${UPSTREAM_URL}/picojson-${PICOJSON_VERSION}.tar.gz)
   set(NVML_URL        ${UPSTREAM_URL}/nvml-${NVML_VERSION}.tar.gz)
@@ -58,7 +60,7 @@ if (WIN32)
   # (as well as all the other third-party dependencies) on MSVC 1900.
   #
   # [1] https://github.com/google/glog/pull/43
-  set(GLOG_URL   ${UPSTREAM_URL}/glog-v0.3.4-g4d391fe.tar.gz)
+  set(GLOG_URL   ${UPSTREAM_URL}/glog-da816ea70.tar.gz)
   set(CURL_URL   ${UPSTREAM_URL}/curl-${CURL_VERSION}.tar.gz)
   set(LIBAPR_URL ${UPSTREAM_URL}/libapr-${LIBAPR_VERSION}.tar.gz)
   set(ZLIB_URL   ${UPSTREAM_URL}/zlib-${ZLIB_VERSION}.tar.gz)
@@ -88,7 +90,7 @@ endif (WIN32)
 # libraries, we might as well move them to a library folder.)
 if (NOT WIN32)
   set(GLOG_CONFIG_CMD  ${GLOG_ROOT}/src/../configure --prefix=${GLOG_LIB_ROOT})
-  set(GLOG_BUILD_CMD   make)
+  set(GLOG_BUILD_CMD   make libglog.la)
   set(GLOG_INSTALL_CMD make install)
   # Patch glog to deal with a problem that appears when compiling on clang
   # under the C++11 standard. cf. MESOS-860, MESOS-966.
@@ -105,6 +107,7 @@ if (NOT WIN32)
   set(LIBEVENT_INSTALL_CMD mkdir -p ${LIBEVENT_LIB_ROOT} && cp -r ${LIBEVENT_ROOT}-build/lib/. ${LIBEVENT_LIB_DIR} && cp -r ${LIBEVENT_ROOT}-build/include/. ${LIBEVENT_INCLUDE_DIR} && cp -r ${LIBEVENT_ROOT}/include/. ${LIBEVENT_INCLUDE_DIR})
 elseif (WIN32)
   set(GLOG_INSTALL_CMD ${CMAKE_NOOP})
+  set(GLOG_PATCH_CMD ${PATCHEXE_LOCATION} -p1 < ${MESOS_3RDPARTY_SRC}/glog-da816ea70.patch)
 
   set(LIBEVENT_INSTALL_CMD ${CMAKE_NOOP})
 
@@ -122,11 +125,11 @@ endif (NOT WIN32)
 set(HTTP_PARSER_UPDATE_CMD ${CMAKE_COMMAND} -E copy ${MESOS_3RDPARTY_SRC}/http-parser/CMakeLists.txt.template ${HTTP_PARSER_ROOT}/CMakeLists.txt)
 
 if (NOT WIN32)
-  set(HTTP_PARSER_PATCH_CMD  ${CMAKE_NOOP})
+  PATCH_CMD(${MESOS_3RDPARTY_SRC}/http-parser-${HTTP_PARSER_VERSION}.patch HTTP_PARSER_PATCH_CMD)
 elseif (WIN32)
   # Set the patch command which will utilize patch.exe under
   # `\Users\<user>\AppData\Local\Temp with no elevation prompt`
-  set(HTTP_PARSER_PATCH_CMD ${PATCHEXE_LOCATION} --binary -p1 < ${MESOS_3RDPARTY_BIN}/http-parser-${HTTP_PARSER_VERSION}.patch)
+  set(HTTP_PARSER_PATCH_CMD ${PATCHEXE_LOCATION} --binary -p1 < ${MESOS_3RDPARTY_SRC}/http-parser-${HTTP_PARSER_VERSION}.patch)
 endif (NOT WIN32)
 
 set(LIBEVENT_CMAKE_ARGS
@@ -135,6 +138,25 @@ set(LIBEVENT_CMAKE_ARGS
   -DEVENT__HAVE_SYS_STAT_H=1
   -DBUILD_SHARED_LIBS=${BUILD_SHARED_LIBS}
   )
+
+if (ENABLE_SSL)
+  set(LIBEVENT_CMAKE_ARGS
+    ${LIBEVENT_CMAKE_ARGS}
+    -DEVENT__DISABLE_OPENSSL=OFF
+    )
+else (ENABLE_SSL)
+  set(LIBEVENT_CMAKE_ARGS
+    ${LIBEVENT_CMAKE_ARGS}
+    -DEVENT__DISABLE_OPENSSL=ON
+    )
+endif (ENABLE_SSL)
+
+if (NOT WIN32)
+  set(LIBEVENT_CMAKE_ARGS
+    ${LIBEVENT_CMAKE_ARGS}
+    -DCMAKE_C_FLAGS=-fPIC
+    )
+endif (NOT WIN32)
 
 # Third-party libraries. Tell the build system how to pull in and build third-
 # party libraries at compile time, using the ExternalProject_Add macro.
@@ -146,6 +168,15 @@ ExternalProject_Add(
   BUILD_COMMAND     ${CMAKE_NOOP}
   INSTALL_COMMAND   ${CMAKE_NOOP}
   URL               ${BOOST_URL}
+  )
+
+ExternalProject_Add(
+  ${ELFIO_TARGET}
+  PREFIX            ${ELFIO_CMAKE_ROOT}
+  CONFIGURE_COMMAND ${CMAKE_NOOP}
+  BUILD_COMMAND     ${CMAKE_NOOP}
+  INSTALL_COMMAND   ${CMAKE_NOOP}
+  URL               ${ELFIO_URL}
   )
 
 # The patch, configure, build, and install commands are stubbed out on Windows
@@ -253,7 +284,12 @@ endif (WIN32)
 # library tests (located in `3rdparty/`).
 ###############################################################################
 
-include(ProcessTestsConfigure)
+list(
+  APPEND CMAKE_MODULE_PATH
+  ${CMAKE_SOURCE_DIR}/3rdparty/stout/cmake
+  )
+include(StoutConfigure)
+include(StoutTestsConfigure)
 
 if (REBUNDLED)
   set(GMOCK_URL    ${REBUNDLED_DIR}/gmock-${GMOCK_VERSION}.tar.gz)
@@ -322,13 +358,6 @@ ExternalProject_Add(
 #
 # Builds, configures, and compiles the Stout tests.
 ###################################################
-
-list(
-  APPEND CMAKE_MODULE_PATH
-  ${CMAKE_SOURCE_DIR}/3rdparty/stout/cmake
-  )
-include(StoutConfigure)
-include(StoutTestsConfigure)
 add_subdirectory(stout/tests)
 
 
@@ -379,6 +408,9 @@ if (NOT WIN32)
     ZOOKEEPER_PATCH_CMD)
 elseif (WIN32)
   # Set the patch command which will utilize patch.exe in temp location for no elevation prompt
+  # NOTE: We do not specify the `--binary` patch option here because the
+  # files being modified are extracted with CRLF (Windows) line endings
+  # already. The `--binary` option will instead fail to apply the patch.
   set(
     ZOOKEEPER_PATCH_CMD
     ${PATCHEXE_LOCATION} -p1 < ${MESOS_3RDPARTY_SRC}/zookeeper-${ZOOKEEPER_VERSION}.patch)
@@ -410,7 +442,7 @@ ExternalProject_Add(
 
 if (NOT WIN32)
   set(LEVELDB_CONFIG_CMD  cd ${LEVELDB_ROOT} && ./configure --prefix=${LEVELDB_ROOT}-lib)
-  set(LEVELDB_BUILD_CMD   cd ${LEVELDB_ROOT} && make)
+  set(LEVELDB_BUILD_CMD   cd ${LEVELDB_ROOT} && make OPT=-O2\ -g\ -fPIC)
   set(LEVELDB_INSTALL_CMD cd ${LEVELDB_ROOT} && make install)
   PATCH_CMD(
     ${MESOS_3RDPARTY_SRC}/leveldb-${LEVELDB_VERSION}.patch

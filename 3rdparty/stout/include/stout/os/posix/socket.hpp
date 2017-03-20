@@ -13,12 +13,20 @@
 #ifndef __STOUT_OS_POSIX_SOCKET_HPP__
 #define __STOUT_OS_POSIX_SOCKET_HPP__
 
+#include <errno.h>
 #include <unistd.h>
 
 #include <sys/socket.h>
 #include <sys/stat.h>
 
 namespace net {
+
+// Import `socket` functions into `net::` namespace.
+using ::accept;
+using ::bind;
+using ::connect;
+using ::recv;
+using ::send;
 
 // The error indicates the last socket operation has been
 // interupted, the operation can be restarted imediately.
@@ -46,7 +54,7 @@ inline bool is_inprogress_error(int error)
 inline bool is_socket(int fd)
 {
   struct stat statbuf;
-  if (fstat(fd, &statbuf) < 0) {
+  if (::fstat(fd, &statbuf) < 0) {
     return false;
   }
 

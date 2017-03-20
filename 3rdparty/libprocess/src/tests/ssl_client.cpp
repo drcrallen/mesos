@@ -22,6 +22,8 @@
 #include <process/gtest.hpp>
 #include <process/socket.hpp>
 
+#include <process/ssl/flags.hpp>
+
 #include <stout/gtest.hpp>
 #include <stout/try.hpp>
 
@@ -30,8 +32,10 @@
 namespace network = process::network;
 namespace openssl = network::openssl;
 
-using network::Address;
-using network::Socket;
+using network::inet::Address;
+using network::inet::Socket;
+
+using network::internal::SocketImpl;
 
 using process::Future;
 
@@ -45,8 +49,9 @@ using std::string;
 /**
  * The flags that control the test SSL client behavior.
  *
- * These flags augment the environment variables prefixed by 'SSL_'
- * that are introduced by @see process::network::openssl::Flags.
+ * These flags augment the environment variables prefixed by
+ * 'LIBPROCESS_SSL_' that are introduced by @see
+ * process::network::openssl::Flags.
  */
 class Flags : public virtual flags::FlagsBase
 {
@@ -56,8 +61,8 @@ public:
     add(&Flags::use_ssl,
       "use_ssl",
       "Whether to try and connect using an SSL based socket. This is "
-      "separate from whether SSL_ENABLED is set. We use this for "
-      "testing failure cases.",
+      "separate from whether LIBPROCESS_SSL_ENABLED is set. We use "
+      "this for testing failure cases.",
       true);
 
     add(&Flags::data,
@@ -128,8 +133,8 @@ TEST_F(SSLClientTest, client)
   // Create the socket based on the 'use_ssl' flag. We use this to
   // test whether a regular socket could connect to an SSL server
   // socket.
-  const Try<Socket> create =
-    Socket::create(flags.use_ssl ? Socket::SSL : Socket::POLL);
+  const Try<Socket> create = Socket::create(
+      flags.use_ssl ? SocketImpl::Kind::SSL : SocketImpl::Kind::POLL);
   ASSERT_SOME(create);
 
   Socket socket = create.get();

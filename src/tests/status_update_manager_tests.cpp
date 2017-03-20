@@ -89,7 +89,7 @@ vector<TaskInfo> createTasks(const Offer& offer)
 class StatusUpdateManagerTest: public MesosTest {};
 
 
-TEST_F(StatusUpdateManagerTest, CheckpointStatusUpdate)
+TEST_F_TEMP_DISABLED_ON_WINDOWS(StatusUpdateManagerTest, CheckpointStatusUpdate)
 {
   Try<Owned<cluster::Master>> master = StartMaster();
   ASSERT_SOME(master);
@@ -117,7 +117,7 @@ TEST_F(StatusUpdateManagerTest, CheckpointStatusUpdate)
   EXPECT_CALL(sched, registered(_, _, _))
     .WillOnce(FutureArg<1>(&frameworkId));
 
-  Future<vector<Offer> > offers;
+  Future<vector<Offer>> offers;
   EXPECT_CALL(sched, resourceOffers(_, _))
     .WillOnce(FutureArg<1>(&offers))
     .WillRepeatedly(Return()); // Ignore subsequent offers.
@@ -126,10 +126,9 @@ TEST_F(StatusUpdateManagerTest, CheckpointStatusUpdate)
 
   AWAIT_READY(frameworkId);
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers.get().size());
+  EXPECT_NE(0u, offers->size());
 
-  EXPECT_CALL(exec, registered(_, _, _, _))
-    .Times(1);
+  EXPECT_CALL(exec, registered(_, _, _, _));
 
   EXPECT_CALL(exec, launchTask(_, _))
     .WillOnce(SendStatusUpdateFromTask(TASK_RUNNING));
@@ -144,7 +143,7 @@ TEST_F(StatusUpdateManagerTest, CheckpointStatusUpdate)
   driver.launchTasks(offers.get()[0].id(), createTasks(offers.get()[0]));
 
   AWAIT_READY(status);
-  EXPECT_EQ(TASK_RUNNING, status.get().state());
+  EXPECT_EQ(TASK_RUNNING, status->state());
 
   AWAIT_READY(_statusUpdateAcknowledgement);
 
@@ -154,11 +153,11 @@ TEST_F(StatusUpdateManagerTest, CheckpointStatusUpdate)
     slave::state::recover(slave::paths::getMetaRootDir(flags.work_dir), true);
 
   ASSERT_SOME(state);
-  ASSERT_SOME(state.get().slave);
-  ASSERT_TRUE(state.get().slave.get().frameworks.contains(frameworkId.get()));
+  ASSERT_SOME(state->slave);
+  ASSERT_TRUE(state->slave->frameworks.contains(frameworkId.get()));
 
   slave::state::FrameworkState frameworkState =
-    state.get().slave.get().frameworks.get(frameworkId.get()).get();
+    state->slave->frameworks.get(frameworkId.get()).get();
 
   ASSERT_EQ(1u, frameworkState.executors.size());
 
@@ -206,10 +205,9 @@ TEST_F(StatusUpdateManagerTest, RetryStatusUpdate)
   MesosSchedulerDriver driver(
       &sched, frameworkInfo, master.get()->pid, DEFAULT_CREDENTIAL);
 
-  EXPECT_CALL(sched, registered(_, _, _))
-    .Times(1);
+  EXPECT_CALL(sched, registered(_, _, _));
 
-  Future<vector<Offer> > offers;
+  Future<vector<Offer>> offers;
   EXPECT_CALL(sched, resourceOffers(_, _))
     .WillOnce(FutureArg<1>(&offers))
     .WillRepeatedly(Return()); // Ignore subsequent offers.
@@ -217,10 +215,9 @@ TEST_F(StatusUpdateManagerTest, RetryStatusUpdate)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers.get().size());
+  EXPECT_NE(0u, offers->size());
 
-  EXPECT_CALL(exec, registered(_, _, _, _))
-    .Times(1);
+  EXPECT_CALL(exec, registered(_, _, _, _));
 
   EXPECT_CALL(exec, launchTask(_, _))
     .WillOnce(SendStatusUpdateFromTask(TASK_RUNNING));
@@ -242,7 +239,7 @@ TEST_F(StatusUpdateManagerTest, RetryStatusUpdate)
 
   AWAIT_READY(status);
 
-  EXPECT_EQ(TASK_RUNNING, status.get().state());
+  EXPECT_EQ(TASK_RUNNING, status->state());
 
   Clock::resume();
 
@@ -281,7 +278,7 @@ TEST_F(StatusUpdateManagerTest, IgnoreDuplicateStatusUpdateAck)
   EXPECT_CALL(sched, registered(_, _, _))
     .WillOnce(SaveArg<1>(&frameworkId));
 
-  Future<vector<Offer> > offers;
+  Future<vector<Offer>> offers;
   EXPECT_CALL(sched, resourceOffers(_, _))
     .WillOnce(FutureArg<1>(&offers))
     .WillRepeatedly(Return()); // Ignore subsequent offers.
@@ -289,7 +286,7 @@ TEST_F(StatusUpdateManagerTest, IgnoreDuplicateStatusUpdateAck)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers.get().size());
+  EXPECT_NE(0u, offers->size());
 
   ExecutorDriver* execDriver;
   EXPECT_CALL(exec, registered(_, _, _, _))
@@ -308,7 +305,7 @@ TEST_F(StatusUpdateManagerTest, IgnoreDuplicateStatusUpdateAck)
   driver.launchTasks(offers.get()[0].id(), createTasks(offers.get()[0]));
 
   AWAIT_READY(statusUpdateMessage);
-  StatusUpdate update = statusUpdateMessage.get().update();
+  StatusUpdate update = statusUpdateMessage->update();
 
   Future<TaskStatus> status;
   EXPECT_CALL(sched, statusUpdate(_, _))
@@ -322,7 +319,7 @@ TEST_F(StatusUpdateManagerTest, IgnoreDuplicateStatusUpdateAck)
 
   AWAIT_READY(status);
 
-  EXPECT_EQ(TASK_RUNNING, status.get().state());
+  EXPECT_EQ(TASK_RUNNING, status->state());
 
   AWAIT_READY(ack);
 
@@ -393,7 +390,7 @@ TEST_F(StatusUpdateManagerTest, IgnoreUnexpectedStatusUpdateAck)
   EXPECT_CALL(sched, registered(_, _, _))
     .WillOnce(SaveArg<1>(&frameworkId));
 
-  Future<vector<Offer> > offers;
+  Future<vector<Offer>> offers;
   EXPECT_CALL(sched, resourceOffers(_, _))
     .WillOnce(FutureArg<1>(&offers))
     .WillRepeatedly(Return()); // Ignore subsequent offers.
@@ -405,7 +402,7 @@ TEST_F(StatusUpdateManagerTest, IgnoreUnexpectedStatusUpdateAck)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers.get().size());
+  EXPECT_NE(0u, offers->size());
 
   ExecutorDriver* execDriver;
   EXPECT_CALL(exec, registered(_, _, _, _))
@@ -427,11 +424,11 @@ TEST_F(StatusUpdateManagerTest, IgnoreUnexpectedStatusUpdateAck)
   driver.launchTasks(offers.get()[0].id(), createTasks(offers.get()[0]));
 
   AWAIT_READY(statusUpdateMessage);
-  StatusUpdate update = statusUpdateMessage.get().update();
+  StatusUpdate update = statusUpdateMessage->update();
 
   AWAIT_READY(status);
 
-  EXPECT_EQ(TASK_RUNNING, status.get().state());
+  EXPECT_EQ(TASK_RUNNING, status->state());
 
   Future<Nothing> unexpectedAck =
       FUTURE_DISPATCH(_, &Slave::_statusUpdateAcknowledgement);
@@ -450,114 +447,6 @@ TEST_F(StatusUpdateManagerTest, IgnoreUnexpectedStatusUpdateAck)
 
   EXPECT_CALL(exec, shutdown(_))
     .Times(AtMost(1));
-
-  driver.stop();
-  driver.join();
-}
-
-
-// This test verifies that the slave and status update manager
-// properly handle duplicate terminal status updates, when the
-// second update is received before the ACK for the first update.
-// The proper behavior here is for the status update manager to
-// drop the duplicate update.
-TEST_F(StatusUpdateManagerTest, DuplicateTerminalUpdateBeforeAck)
-{
-  Try<Owned<cluster::Master>> master = StartMaster();
-  ASSERT_SOME(master);
-
-  MockExecutor exec(DEFAULT_EXECUTOR_ID);
-  TestContainerizer containerizer(&exec);
-
-  Owned<MasterDetector> detector = master.get()->createDetector();
-  Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), &containerizer);
-  ASSERT_SOME(slave);
-
-  FrameworkInfo frameworkInfo = DEFAULT_FRAMEWORK_INFO;
-  frameworkInfo.set_checkpoint(true); // Enable checkpointing.
-
-  MockScheduler sched;
-  MesosSchedulerDriver driver(
-      &sched, frameworkInfo, master.get()->pid, DEFAULT_CREDENTIAL);
-
-  FrameworkID frameworkId;
-  EXPECT_CALL(sched, registered(_, _, _))
-    .WillOnce(SaveArg<1>(&frameworkId));
-
-  Future<vector<Offer> > offers;
-  EXPECT_CALL(sched, resourceOffers(_, _))
-    .WillOnce(FutureArg<1>(&offers))
-    .WillRepeatedly(Return()); // Ignore subsequent offers.
-
-  driver.start();
-
-  AWAIT_READY(offers);
-  EXPECT_NE(0u, offers.get().size());
-
-  ExecutorDriver* execDriver;
-  EXPECT_CALL(exec, registered(_, _, _, _))
-    .WillOnce(SaveArg<0>(&execDriver));
-
-  // Send a terminal update right away.
-  EXPECT_CALL(exec, launchTask(_, _))
-    .WillOnce(SendStatusUpdateFromTask(TASK_FINISHED));
-
-  Future<TaskStatus> status;
-  EXPECT_CALL(sched, statusUpdate(_, _))
-    .WillOnce(FutureArg<1>(&status));
-
-  // Drop the first ACK from the scheduler to the slave.
-  Future<StatusUpdateAcknowledgementMessage> statusUpdateAckMessage =
-    DROP_PROTOBUF(StatusUpdateAcknowledgementMessage(), _, slave.get()->pid);
-
-  Future<Nothing> ___statusUpdate =
-    FUTURE_DISPATCH(slave.get()->pid, &Slave::___statusUpdate);
-
-  Clock::pause();
-
-  driver.launchTasks(offers.get()[0].id(), createTasks(offers.get()[0]));
-
-  AWAIT_READY(status);
-
-  EXPECT_EQ(TASK_FINISHED, status.get().state());
-
-  AWAIT_READY(statusUpdateAckMessage);
-
-  // At this point the status update manager has enqueued
-  // TASK_FINISHED update.
-  AWAIT_READY(___statusUpdate);
-
-  Future<Nothing> ___statusUpdate2 =
-    FUTURE_DISPATCH(slave.get()->pid, &Slave::___statusUpdate);
-
-  // Now send a TASK_KILLED update for the same task.
-  TaskStatus status2 = status.get();
-  status2.set_state(TASK_KILLED);
-  execDriver->sendStatusUpdate(status2);
-
-  // At this point the status update manager has enqueued
-  // TASK_FINISHED and TASK_KILLED updates.
-  AWAIT_READY(___statusUpdate2);
-
-  // After we advance the clock, the scheduler should receive
-  // the retried TASK_FINISHED update and acknowledge it. The
-  // TASK_KILLED update should be dropped by the status update
-  // manager, as the stream is already terminated.
-  Future<TaskStatus> update;
-  EXPECT_CALL(sched, statusUpdate(_, _))
-    .WillOnce(FutureArg<1>(&update));
-
-  Clock::advance(slave::STATUS_UPDATE_RETRY_INTERVAL_MIN);
-  Clock::settle();
-
-  // Ensure the scheduler receives TASK_FINISHED.
-  AWAIT_READY(update);
-  EXPECT_EQ(TASK_FINISHED, update.get().state());
-
-  EXPECT_CALL(exec, shutdown(_))
-    .Times(AtMost(1));
-
-  Clock::resume();
 
   driver.stop();
   driver.join();
@@ -595,7 +484,7 @@ TEST_F(StatusUpdateManagerTest, DuplicateTerminalUpdateAfterAck)
   EXPECT_CALL(sched, registered(_, _, _))
     .WillOnce(SaveArg<1>(&frameworkId));
 
-  Future<vector<Offer> > offers;
+  Future<vector<Offer>> offers;
   EXPECT_CALL(sched, resourceOffers(_, _))
     .WillOnce(FutureArg<1>(&offers))
     .WillRepeatedly(Return()); // Ignore subsequent offers.
@@ -603,7 +492,7 @@ TEST_F(StatusUpdateManagerTest, DuplicateTerminalUpdateAfterAck)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers.get().size());
+  EXPECT_NE(0u, offers->size());
 
   ExecutorDriver* execDriver;
   EXPECT_CALL(exec, registered(_, _, _, _))
@@ -624,7 +513,7 @@ TEST_F(StatusUpdateManagerTest, DuplicateTerminalUpdateAfterAck)
 
   AWAIT_READY(status);
 
-  EXPECT_EQ(TASK_FINISHED, status.get().state());
+  EXPECT_EQ(TASK_FINISHED, status->state());
 
   AWAIT_READY(_statusUpdateAcknowledgement);
 
@@ -644,7 +533,7 @@ TEST_F(StatusUpdateManagerTest, DuplicateTerminalUpdateAfterAck)
 
   // Ensure the scheduler receives TASK_KILLED.
   AWAIT_READY(update);
-  EXPECT_EQ(TASK_KILLED, update.get().state());
+  EXPECT_EQ(TASK_KILLED, update->state());
 
   // Ensure the slave properly handles the ACK.
   // Clock::settle() ensures that the slave successfully
@@ -690,7 +579,7 @@ TEST_F(StatusUpdateManagerTest, DuplicateUpdateBeforeAck)
   EXPECT_CALL(sched, registered(_, _, _))
     .WillOnce(SaveArg<1>(&frameworkId));
 
-  Future<vector<Offer> > offers;
+  Future<vector<Offer>> offers;
   EXPECT_CALL(sched, resourceOffers(_, _))
     .WillOnce(FutureArg<1>(&offers))
     .WillRepeatedly(Return()); // Ignore subsequent offers.
@@ -698,7 +587,7 @@ TEST_F(StatusUpdateManagerTest, DuplicateUpdateBeforeAck)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers.get().size());
+  EXPECT_NE(0u, offers->size());
 
   ExecutorDriver* execDriver;
   EXPECT_CALL(exec, registered(_, _, _, _))
@@ -727,7 +616,7 @@ TEST_F(StatusUpdateManagerTest, DuplicateUpdateBeforeAck)
 
   AWAIT_READY(status);
 
-  EXPECT_EQ(TASK_RUNNING, status.get().state());
+  EXPECT_EQ(TASK_RUNNING, status->state());
 
   AWAIT_READY(statusUpdateAckMessage);
 
@@ -753,7 +642,7 @@ TEST_F(StatusUpdateManagerTest, DuplicateUpdateBeforeAck)
 
   // Ensure the scheduler receives TASK_FINISHED.
   AWAIT_READY(update);
-  EXPECT_EQ(TASK_RUNNING, update.get().state());
+  EXPECT_EQ(TASK_RUNNING, update->state());
 
   EXPECT_CALL(exec, shutdown(_))
     .Times(AtMost(1));
@@ -818,7 +707,7 @@ TEST_F(StatusUpdateManagerTest, LatestTaskState)
 
   // Now send TASK_FINISHED update.
   TaskStatus finishedStatus;
-  finishedStatus = statusUpdateMessage.get().update().status();
+  finishedStatus = statusUpdateMessage->update().status();
   finishedStatus.set_state(TASK_FINISHED);
   execDriver->sendStatusUpdate(finishedStatus);
 
@@ -835,11 +724,11 @@ TEST_F(StatusUpdateManagerTest, LatestTaskState)
   AWAIT_READY(statusUpdateMessage2);
 
   // The update should correspond to TASK_RUNNING.
-  ASSERT_EQ(TASK_RUNNING, statusUpdateMessage2.get().update().status().state());
+  ASSERT_EQ(TASK_RUNNING, statusUpdateMessage2->update().status().state());
 
   // The update should include TASK_FINISHED as the latest state.
   ASSERT_EQ(TASK_FINISHED,
-            statusUpdateMessage2.get().update().latest_state());
+            statusUpdateMessage2->update().latest_state());
 
   EXPECT_CALL(exec, shutdown(_))
     .Times(AtMost(1));
@@ -875,7 +764,7 @@ TEST_F(StatusUpdateManagerTest, DuplicatedTerminalStatusUpdate)
   EXPECT_CALL(sched, registered(_, _, _))
     .WillOnce(SaveArg<1>(&frameworkId));
 
-  Future<vector<Offer> > offers;
+  Future<vector<Offer>> offers;
   EXPECT_CALL(sched, resourceOffers(_, _))
     .WillOnce(FutureArg<1>(&offers))
     .WillRepeatedly(Return()); // Ignore subsequent offers.
@@ -883,7 +772,7 @@ TEST_F(StatusUpdateManagerTest, DuplicatedTerminalStatusUpdate)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers.get().size());
+  EXPECT_NE(0u, offers->size());
 
   ExecutorDriver* execDriver;
   EXPECT_CALL(exec, registered(_, _, _, _))
@@ -904,7 +793,7 @@ TEST_F(StatusUpdateManagerTest, DuplicatedTerminalStatusUpdate)
 
   AWAIT_READY(status);
 
-  EXPECT_EQ(TASK_FINISHED, status.get().state());
+  EXPECT_EQ(TASK_FINISHED, status->state());
 
   AWAIT_READY(_statusUpdateAcknowledgement);
 
@@ -924,7 +813,7 @@ TEST_F(StatusUpdateManagerTest, DuplicatedTerminalStatusUpdate)
 
   // Ensure the scheduler receives TASK_KILLED.
   AWAIT_READY(update);
-  EXPECT_EQ(TASK_KILLED, update.get().state());
+  EXPECT_EQ(TASK_KILLED, update->state());
 
   // Ensure the slave properly handles the ACK.
   // Clock::settle() ensures that the slave successfully
@@ -941,10 +830,10 @@ TEST_F(StatusUpdateManagerTest, DuplicatedTerminalStatusUpdate)
   AWAIT_EXPECT_RESPONSE_STATUS_EQ(process::http::OK().status, tasks);
   AWAIT_EXPECT_RESPONSE_HEADER_EQ(APPLICATION_JSON, "Content-Type", tasks);
 
-  Try<JSON::Object> parse = JSON::parse<JSON::Object>(tasks.get().body);
+  Try<JSON::Object> parse = JSON::parse<JSON::Object>(tasks->body);
   ASSERT_SOME(parse);
 
-  Result<JSON::String> state = parse.get().find<JSON::String>("tasks[0].state");
+  Result<JSON::String> state = parse->find<JSON::String>("tasks[0].state");
 
   ASSERT_SOME_EQ(JSON::String("TASK_FINISHED"), state);
 

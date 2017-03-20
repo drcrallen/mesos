@@ -64,6 +64,8 @@ class MemoryPressureMesosTest : public ContainerizerTest<MesosContainerizer>
 public:
   static void SetUpTestCase()
   {
+    ContainerizerTest<MesosContainerizer>::SetUpTestCase();
+
     // Verify that the dd command and its flags used in a bit are valid
     // on this system.
     ASSERT_EQ(0, os::system("dd count=1 bs=1M if=/dev/zero of=/dev/null"))
@@ -81,7 +83,6 @@ TEST_F(MemoryPressureMesosTest, CGROUPS_ROOT_Statistics)
 
   // We only care about memory cgroup for this test.
   flags.isolation = "cgroups/mem";
-  flags.agent_subsystems = None();
 
   Fetcher fetcher;
 
@@ -112,7 +113,7 @@ TEST_F(MemoryPressureMesosTest, CGROUPS_ROOT_Statistics)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers.get().size());
+  EXPECT_NE(0u, offers->size());
 
   Offer offer = offers.get()[0];
 
@@ -133,14 +134,14 @@ TEST_F(MemoryPressureMesosTest, CGROUPS_ROOT_Statistics)
   driver.launchTasks(offer.id(), {task});
 
   AWAIT_READY(running);
-  EXPECT_EQ(task.task_id(), running.get().task_id());
-  EXPECT_EQ(TASK_RUNNING, running.get().state());
+  EXPECT_EQ(task.task_id(), running->task_id());
+  EXPECT_EQ(TASK_RUNNING, running->state());
 
   Future<hashset<ContainerID>> containers = containerizer->containers();
   AWAIT_READY(containers);
-  ASSERT_EQ(1u, containers.get().size());
+  ASSERT_EQ(1u, containers->size());
 
-  ContainerID containerId = *(containers.get().begin());
+  ContainerID containerId = *(containers->begin());
 
   // Wait a while for some memory pressure events to occur.
   Duration waited = Duration::zero();
@@ -148,7 +149,7 @@ TEST_F(MemoryPressureMesosTest, CGROUPS_ROOT_Statistics)
     Future<ResourceStatistics> usage = containerizer->usage(containerId);
     AWAIT_READY(usage);
 
-    if (usage.get().mem_low_pressure_counter() > 0) {
+    if (usage->mem_low_pressure_counter() > 0) {
       // We will check the correctness of the memory pressure counters
       // later, because the memory-hammering task is still active
       // and potentially incrementing these counters.
@@ -169,7 +170,7 @@ TEST_F(MemoryPressureMesosTest, CGROUPS_ROOT_Statistics)
   // Stop the memory-hammering task.
   driver.killTask(task.task_id());
 
-  AWAIT_READY(killed);
+  AWAIT_READY_FOR(killed, Seconds(120));
   EXPECT_EQ(task.task_id(), killed->task_id());
   EXPECT_EQ(TASK_KILLED, killed->state());
 
@@ -177,10 +178,10 @@ TEST_F(MemoryPressureMesosTest, CGROUPS_ROOT_Statistics)
   Future<ResourceStatistics> usage = containerizer->usage(containerId);
   AWAIT_READY(usage);
 
-  EXPECT_GE(usage.get().mem_low_pressure_counter(),
-            usage.get().mem_medium_pressure_counter());
-  EXPECT_GE(usage.get().mem_medium_pressure_counter(),
-            usage.get().mem_critical_pressure_counter());
+  EXPECT_GE(usage->mem_low_pressure_counter(),
+            usage->mem_medium_pressure_counter());
+  EXPECT_GE(usage->mem_medium_pressure_counter(),
+            usage->mem_critical_pressure_counter());
 
   Clock::resume();
 
@@ -199,7 +200,6 @@ TEST_F(MemoryPressureMesosTest, CGROUPS_ROOT_SlaveRecovery)
 
   // We only care about memory cgroup for this test.
   flags.isolation = "cgroups/mem";
-  flags.agent_subsystems = None();
 
   Fetcher fetcher;
 
@@ -234,7 +234,7 @@ TEST_F(MemoryPressureMesosTest, CGROUPS_ROOT_SlaveRecovery)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers.get().size());
+  EXPECT_NE(0u, offers->size());
 
   Offer offer = offers.get()[0];
 
@@ -256,11 +256,11 @@ TEST_F(MemoryPressureMesosTest, CGROUPS_ROOT_SlaveRecovery)
   driver.launchTasks(offers.get()[0].id(), {task});
 
   AWAIT_READY(running);
-  EXPECT_EQ(task.task_id(), running.get().task_id());
-  EXPECT_EQ(TASK_RUNNING, running.get().state());
+  EXPECT_EQ(task.task_id(), running->task_id());
+  EXPECT_EQ(TASK_RUNNING, running->state());
 
   // Wait for the ACK to be checkpointed.
-  AWAIT_READY(_statusUpdateAcknowledgement);
+  AWAIT_READY_FOR(_statusUpdateAcknowledgement, Seconds(120));
 
   // We restart the slave to let it recover.
   slave.get()->terminate();
@@ -288,9 +288,9 @@ TEST_F(MemoryPressureMesosTest, CGROUPS_ROOT_SlaveRecovery)
 
   Future<hashset<ContainerID>> containers = containerizer->containers();
   AWAIT_READY(containers);
-  ASSERT_EQ(1u, containers.get().size());
+  ASSERT_EQ(1u, containers->size());
 
-  ContainerID containerId = *(containers.get().begin());
+  ContainerID containerId = *(containers->begin());
 
   // Wait a while for some memory pressure events to occur.
   Duration waited = Duration::zero();
@@ -298,7 +298,7 @@ TEST_F(MemoryPressureMesosTest, CGROUPS_ROOT_SlaveRecovery)
     Future<ResourceStatistics> usage = containerizer->usage(containerId);
     AWAIT_READY(usage);
 
-    if (usage.get().mem_low_pressure_counter() > 0) {
+    if (usage->mem_low_pressure_counter() > 0) {
       // We will check the correctness of the memory pressure counters
       // later, because the memory-hammering task is still active
       // and potentially incrementing these counters.
@@ -323,7 +323,7 @@ TEST_F(MemoryPressureMesosTest, CGROUPS_ROOT_SlaveRecovery)
   // Stop the memory-hammering task.
   driver.killTask(task.task_id());
 
-  AWAIT_READY(killed);
+  AWAIT_READY_FOR(killed, Seconds(120));
   EXPECT_EQ(task.task_id(), killed->task_id());
   EXPECT_EQ(TASK_KILLED, killed->state());
 
@@ -331,10 +331,10 @@ TEST_F(MemoryPressureMesosTest, CGROUPS_ROOT_SlaveRecovery)
   Future<ResourceStatistics> usage = containerizer->usage(containerId);
   AWAIT_READY(usage);
 
-  EXPECT_GE(usage.get().mem_low_pressure_counter(),
-            usage.get().mem_medium_pressure_counter());
-  EXPECT_GE(usage.get().mem_medium_pressure_counter(),
-            usage.get().mem_critical_pressure_counter());
+  EXPECT_GE(usage->mem_low_pressure_counter(),
+            usage->mem_medium_pressure_counter());
+  EXPECT_GE(usage->mem_medium_pressure_counter(),
+            usage->mem_critical_pressure_counter());
 
   Clock::resume();
 

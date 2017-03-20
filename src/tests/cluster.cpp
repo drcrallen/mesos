@@ -22,9 +22,11 @@
 
 #include <mesos/authorizer/authorizer.hpp>
 
+#ifndef __WINDOWS__
 #include <mesos/log/log.hpp>
+#endif // __WINDOWS__
 
-#include <mesos/master/allocator.hpp>
+#include <mesos/allocator/allocator.hpp>
 
 #include <mesos/slave/resource_estimator.hpp>
 
@@ -88,6 +90,7 @@
 #include "slave/containerizer/fetcher.hpp"
 
 #include "tests/cluster.hpp"
+#include "tests/mock_registrar.hpp"
 
 using mesos::master::contender::StandaloneMasterContender;
 using mesos::master::contender::ZooKeeperMasterContender;
@@ -95,6 +98,8 @@ using mesos::master::contender::ZooKeeperMasterContender;
 using mesos::master::detector::MasterDetector;
 using mesos::master::detector::StandaloneMasterDetector;
 using mesos::master::detector::ZooKeeperMasterDetector;
+
+using mesos::slave::ContainerTermination;
 
 namespace mesos {
 namespace internal {
@@ -104,7 +109,7 @@ namespace cluster {
 Try<process::Owned<Master>> Master::start(
     const master::Flags& flags,
     const Option<zookeeper::URL>& zookeeperUrl,
-    const Option<mesos::master::allocator::Allocator*>& allocator,
+    const Option<mesos::allocator::Allocator*>& allocator,
     const Option<Authorizer*>& authorizer,
     const Option<std::shared_ptr<process::RateLimiter>>& slaveRemovalLimiter)
 {
@@ -113,7 +118,7 @@ Try<process::Owned<Master>> Master::start(
 
   // If the allocator is not provided, create a default one.
   if (allocator.isNone()) {
-    Try<mesos::master::allocator::Allocator*> _allocator =
+    Try<mesos::allocator::Allocator*> _allocator =
       master::allocator::HierarchicalDRFAllocator::create();
 
     if (_allocator.isError()) {
@@ -189,10 +194,8 @@ Try<process::Owned<Master>> Master::start(
   }
 
   // Check for some invalid flag combinations.
-  if (flags.registry == "in_memory" && flags.registry_strict) {
-    return Error(
-        "Cannot use '--registry_strict' when using in-memory storage based"
-        " registry");
+  if (flags.registry_strict) {
+    return Error("Support for '--registry_strict' has been removed");
   }
 
   if (flags.registry == "replicated_log" && flags.work_dir.isNone()) {
@@ -210,15 +213,16 @@ Try<process::Owned<Master>> Master::start(
 
   // Create the replicated-log-based registry, if specified in the flags.
   if (flags.registry == "replicated_log") {
+#ifndef __WINDOWS__
     if (zookeeperUrl.isSome()) {
       // Use ZooKeeper-based replicated log.
       master->log.reset(new mesos::log::Log(
           flags.quorum.get(),
           path::join(flags.work_dir.get(), "replicated_log"),
-          zookeeperUrl.get().servers,
+          zookeeperUrl->servers,
           flags.zk_session_timeout,
-          path::join(zookeeperUrl.get().path, "log_replicas"),
-          zookeeperUrl.get().authentication,
+          path::join(zookeeperUrl->path, "log_replicas"),
+          zookeeperUrl->authentication,
           flags.log_auto_initialize));
     } else {
       master->log.reset(new mesos::log::Log(
@@ -227,13 +231,21 @@ Try<process::Owned<Master>> Master::start(
           std::set<process::UPID>(),
           flags.log_auto_initialize));
     }
+#else
+    return Error("Windows does not support replicated log");
+#endif // __WINDOWS__
   }
 
   // Create the registry's storage backend.
   if (flags.registry == "in_memory") {
     master->storage.reset(new mesos::state::InMemoryStorage());
   } else if (flags.registry == "replicated_log") {
+#ifndef __WINDOWS__
     master->storage.reset(new mesos::state::LogStorage(master->log.get()));
+#else
+    return Error("Windows does not support replicated log");
+#endif // __WINDOWS__
+
   } else {
     return Error(
         "Unsupported option for registry persistence: " + flags.registry);
@@ -241,8 +253,8 @@ Try<process::Owned<Master>> Master::start(
 
   // Instantiate some other master dependencies.
   master->state.reset(new mesos::state::protobuf::State(master->storage.get()));
-  master->registrar.reset(new master::Registrar(
-      flags, master->state.get(), master::DEFAULT_HTTP_AUTHENTICATION_REALM));
+  master->registrar.reset(new MockRegistrar(
+      flags, master->state.get(), master::READONLY_HTTP_AUTHENTICATION_REALM));
 
   if (slaveRemovalLimiter.isNone() && flags.agent_removal_rate_limit.isSome()) {
     // Parse the flag value.
@@ -341,7 +353,9 @@ Master::~Master()
   // NOTE: Authenticators' lifetimes are tied to libprocess's lifetime.
   // This means that multiple masters in tests are not supported.
   process::http::authentication::unsetAuthenticator(
-      master::DEFAULT_HTTP_AUTHENTICATION_REALM);
+      master::READONLY_HTTP_AUTHENTICATION_REALM);
+  process::http::authentication::unsetAuthenticator(
+      master::READWRITE_HTTP_AUTHENTICATION_REALM);
 
   process::terminate(pid);
   process::wait(pid);
@@ -518,6 +532,11 @@ Slave::~Slave()
     process::http::authorization::unsetCallbacks();
   }
 
+  process::http::authentication::unsetAuthenticator(
+      slave::READONLY_HTTP_AUTHENTICATION_REALM);
+  process::http::authentication::unsetAuthenticator(
+      slave::READWRITE_HTTP_AUTHENTICATION_REALM);
+
   // If either `shutdown()` or `terminate()` were called already,
   // skip the below container cleanup logic.  Additionally, we can skip
   // termination, as the shutdown/terminate will do this too.
@@ -543,7 +562,7 @@ Slave::~Slave()
     AWAIT_READY(containers);
 
     foreach (const ContainerID& containerId, containers.get()) {
-      process::Future<containerizer::Termination> wait =
+      process::Future<Option<ContainerTermination>> wait =
         containerizer->wait(containerId);
 
       containerizer->destroy(containerId);
@@ -554,7 +573,7 @@ Slave::~Slave()
     containers = containerizer->containers();
     AWAIT_READY(containers);
 
-    ASSERT_TRUE(containers.get().empty())
+    ASSERT_TRUE(containers->empty())
       << "Failed to destroy containers: " << stringify(containers.get());
   }();
 
@@ -592,39 +611,6 @@ void Slave::terminate()
 void Slave::wait()
 {
   process::wait(pid);
-
-#ifdef __linux__
-  // Remove all of this processes threads into the root cgroups - this
-  // simulates the slave process terminating and permits a new slave to start
-  // when the --agent_subsystems flag is used.
-  if (flags.agent_subsystems.isSome()) {
-    foreach (const std::string& subsystem,
-             strings::tokenize(flags.agent_subsystems.get(), ",")) {
-      std::string hierarchy = path::join(flags.cgroups_hierarchy, subsystem);
-
-      std::string cgroup = path::join(flags.cgroups_root, "slave");
-
-      Try<bool> exists = cgroups::exists(hierarchy, cgroup);
-      if (exists.isError() || !exists.get()) {
-        EXIT(EXIT_FAILURE)
-          << "Failed to find cgroup " << cgroup
-          << " for subsystem " << subsystem
-          << " under hierarchy " << hierarchy
-          << " for agent: " + exists.error();
-      }
-
-      // Move all of our threads into the root cgroup.
-      Try<Nothing> assign = cgroups::assign(hierarchy, "", getpid());
-      if (assign.isError()) {
-        EXIT(EXIT_FAILURE)
-          << "Failed to move agent threads into cgroup " << cgroup
-          << " for subsystem " << subsystem
-          << " under hierarchy " << hierarchy
-          << " for agent: " + assign.error();
-      }
-    }
-  }
-#endif // __linux__
 }
 
 } // namespace cluster {

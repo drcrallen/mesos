@@ -35,7 +35,7 @@ namespace mesos {
 namespace internal {
 namespace slave {
 
-class Flags : public logging::Flags
+class Flags : public virtual logging::Flags
 {
 public:
   Flags();
@@ -45,10 +45,10 @@ public:
   bool hostname_lookup;
   Option<std::string> resources;
   std::string isolation;
-  Option<std::string> launcher;
+  std::string launcher;
 
   Option<std::string> image_providers;
-  std::string image_provisioner_backend;
+  Option<std::string> image_provisioner_backend;
 
   std::string appc_simple_discovery_uri_prefix;
   std::string appc_store_dir;
@@ -62,13 +62,18 @@ public:
   Bytes fetcher_cache_size;
   std::string fetcher_cache_dir;
   std::string work_dir;
+  std::string runtime_dir;
   std::string launcher_dir;
   std::string hadoop_home; // TODO(benh): Make an Option.
+  size_t max_completed_executors_per_framework;
+
 #ifndef __WINDOWS__
   bool switch_user;
 #endif // __WINDOWS__
+  Duration http_heartbeat_interval;
   std::string frameworks_home;  // TODO(benh): Make an Option.
   Duration registration_backoff_factor;
+  Duration authentication_backoff_factor;
   Option<JSON::Object> executor_environment_variables;
   Duration executor_registration_timeout;
   Duration executor_shutdown_grace_period;
@@ -98,13 +103,12 @@ public:
   bool revocable_cpu_low_priority;
   bool systemd_enable_support;
   std::string systemd_runtime_directory;
+  Option<CapabilityInfo> allowed_capabilities;
 #endif
   Option<Firewall> firewall_rules;
   Option<Path> credential;
   Option<ACLs> acls;
-  Option<std::string> containerizer_path;
   std::string containerizers;
-  Option<std::string> default_container_image;
   std::string docker;
   Option<std::string> docker_mesos_image;
   Duration docker_remove_delay;
@@ -138,7 +142,8 @@ public:
   std::string authenticatee;
   std::string authorizer;
   std::string http_authenticators;
-  bool authenticate_http;
+  bool authenticate_http_readonly;
+  bool authenticate_http_readwrite;
   Option<Path> http_credentials;
   Option<std::string> hooks;
   Option<std::string> resource_estimator;

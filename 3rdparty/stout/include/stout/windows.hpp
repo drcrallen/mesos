@@ -33,6 +33,8 @@
 
 #include <memory>
 
+#include <glog/logging.h>
+
 
 #ifdef _UNICODE
 // Much of the core Windows API is available both in `string` and `wstring`
@@ -55,6 +57,14 @@ class SharedHandle : public std::shared_ptr<void>
                 "Expected `HANDLE` to be of type `void*`.");
 
 public:
+  // We delete the default constructor so that the callsite is forced to make
+  // an explicit decision about what the empty `HANDLE` value should be, as it
+  // is not the same for all `HANDLE` types.  For example, `OpenProcess`
+  // returns a `nullptr` for an invalid handle, but `CreateFile` returns an
+  // `INVALID_HANDLE_VALUE` instead. This inconsistency is inherent in the
+  // Windows API.
+  SharedHandle() = delete;
+
   template <typename Deleter>
   SharedHandle(HANDLE handle, Deleter deleter)
       : std::shared_ptr<void>(handle, deleter) {}
@@ -139,9 +149,7 @@ inline BOOL GetMessage(
 #define O_APPEND _O_APPEND
 #define O_CLOEXEC _O_NOINHERIT
 
-// TODO(hausdorff): (MESOS-3398) Not defined on Windows. This value is
-// temporary.
-#define MAXHOSTNAMELEN 64
+#define MAXHOSTNAMELEN NI_MAXHOST
 
 #define PATH_MAX _MAX_PATH
 
@@ -171,6 +179,8 @@ typedef SSIZE_T ssize_t;
 // the Windows versions of these flags to their POSIX equivalents so we don't
 // have to change any socket code.
 constexpr int SHUT_RD = SD_RECEIVE;
+constexpr int SHUT_WR = SD_SEND;
+constexpr int SHUT_RDWR = SD_BOTH;
 constexpr int MSG_NOSIGNAL = 0; // `SIGPIPE` signal does not exist on Windows.
 
 // The following functions are usually macros on POSIX; we provide them here as
@@ -329,14 +339,6 @@ decltype(strerror_s(buffer, length, errnum))
 // maintain the code. It is an explicit marker that we are using the compiler
 // to guarantee that the return type is identical to whatever is in the Windows
 // implementation of the standard.
-inline auto write(int fd, const void* buffer, size_t count) ->
-decltype(_write(fd, buffer, count))
-{
-  return _write(fd, buffer, count);
-}
-
-
-
 inline auto chdir(const char* path) ->
 decltype(_chdir(path))
 {
@@ -344,10 +346,10 @@ decltype(_chdir(path))
 }
 
 
-inline auto getcwd(char* path, int maxlen) ->
-decltype(_getcwd(path, maxlen))
+inline char* getcwd(char* path, size_t maxlen)
 {
-  return _getcwd(path, maxlen);
+  CHECK_LE(maxlen, INT_MAX);
+  return _getcwd(path, static_cast<int>(maxlen));
 }
 
 
@@ -398,32 +400,39 @@ decltype(_access(fileName, accessMode))
   return _access(fileName, accessMode);
 }
 
+
+// NOTE: Signals do not exist on Windows, so all signals are unknown.
+// If the signal number is unknown, the Posix specification leaves the
+// return value of `strsignal` unspecified.
+inline const char* strsignal(int signum)
+{
+  static const char UNKNOWN_STRSIGNAL[] = "Unknown signal";
+  return UNKNOWN_STRSIGNAL;
+}
+
+
+#define SIGPIPE 100
+
 // `os::system` returns -1 if the processor cannot be started
 // therefore any return value indicates the process has been started
 #ifndef WIFEXITED
 #define WIFEXITED(x) ((x) != -1)
-#endif // WIFWXITED
+#endif // WIFEXITED
 
 // Returns the exit status of the child.
 #ifndef WEXITSTATUS
 #define WEXITSTATUS(x) (x & 0xFF)
 #endif // WEXITSTATUS
 
-#define SIGPIPE 100
-
-// Specifies that `::waitpid` should return immediately rather than blocking
-// and waiting for child to notify of state change.
-#ifndef WNOHANG
-#define WNOHANG 1
-#endif // WNOHANG
-
 #ifndef WIFSIGNALED
 #define WIFSIGNALED(x) ((x) != -1)
 #endif // WIFSIGNALED
 
-#ifndef WUNTRACED
-#define WUNTRACED   2 // Tell about stopped, untraced children.
-#endif // WUNTRACED
+// Returns the number of the signal that caused the child process to
+// terminate, only be used if WIFSIGNALED is true.
+#ifndef WTERMSIG
+#define WTERMSIG(x) 0
+#endif // WTERMSIG
 
 // Whether the child produced a core dump, only be used if WIFSIGNALED is true.
 #ifndef WCOREDUMP
@@ -435,10 +444,19 @@ decltype(_access(fileName, accessMode))
 #define WIFSTOPPED(x) false
 #endif // WIFSTOPPED
 
-// Returns the number of the signals that caused the child process to terminate,
-// only be used if WIFSIGNALED is true.
-#ifndef WTERMSIG
-#define WTERMSIG(x) 0
-#endif // WTERMSIG
+// Whether the child was stopped by delivery of a signal.
+#ifndef WSTOPSIG
+#define WSTOPSIG(x) 0
+#endif // WSTOPSIG
+
+// Specifies that `::waitpid` should return immediately rather than
+// blocking and waiting for child to notify of state change.
+#ifndef WNOHANG
+#define WNOHANG 1
+#endif // WNOHANG
+
+#ifndef WUNTRACED
+#define WUNTRACED   2 // Tell about stopped, untraced children.
+#endif // WUNTRACED
 
 #endif // __STOUT_WINDOWS_HPP__

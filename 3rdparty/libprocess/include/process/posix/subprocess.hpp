@@ -24,8 +24,10 @@
 
 #include <process/subprocess.hpp>
 
+#include <stout/check.hpp>
 #include <stout/error.hpp>
 #include <stout/foreach.hpp>
+#include <stout/hashset.hpp>
 #include <stout/nothing.hpp>
 #include <stout/lambda.hpp>
 #include <stout/none.hpp>
@@ -40,64 +42,7 @@
 #include <stout/os/signals.hpp>
 #include <stout/os/strerror.hpp>
 
-using std::map;
-using std::string;
-using std::vector;
-
-
 namespace process {
-
-using InputFileDescriptors = Subprocess::IO::InputFileDescriptors;
-using OutputFileDescriptors = Subprocess::IO::OutputFileDescriptors;
-
-namespace internal {
-
-// This function will invoke `os::close` on all specified file
-// descriptors that are valid (i.e., not `None` and >= 0).
-inline void close(
-    const InputFileDescriptors& stdinfds,
-    const OutputFileDescriptors& stdoutfds,
-    const OutputFileDescriptors& stderrfds)
-{
-  int fds[6] = {
-    stdinfds.read, stdinfds.write.getOrElse(-1),
-    stdoutfds.read.getOrElse(-1), stdoutfds.write,
-    stderrfds.read.getOrElse(-1), stderrfds.write
-  };
-
-  foreach (int fd, fds) {
-    if (fd >= 0) {
-      os::close(fd);
-    }
-  }
-}
-
-
-// This function will invoke `os::cloexec` on all specified file
-// descriptors that are valid (i.e., not `None` and >= 0).
-inline Try<Nothing> cloexec(
-    const InputFileDescriptors& stdinfds,
-    const OutputFileDescriptors& stdoutfds,
-    const OutputFileDescriptors& stderrfds)
-{
-  int fds[6] = {
-    stdinfds.read, stdinfds.write.getOrElse(-1),
-    stdoutfds.read.getOrElse(-1), stdoutfds.write,
-    stderrfds.read.getOrElse(-1), stderrfds.write
-  };
-
-  foreach (int fd, fds) {
-    if (fd >= 0) {
-      Try<Nothing> cloexec = os::cloexec(fd);
-      if (cloexec.isError()) {
-        return Error(cloexec.error());
-      }
-    }
-  }
-
-  return Nothing();
-}
-
 
 inline pid_t defaultClone(const lambda::function<int()>& func)
 {
@@ -115,6 +60,37 @@ inline pid_t defaultClone(const lambda::function<int()>& func)
 }
 
 
+namespace internal {
+
+// This function will invoke `os::cloexec` on all specified file
+// descriptors that are valid (i.e., not `None` and >= 0).
+inline Try<Nothing> cloexec(
+    const InputFileDescriptors& stdinfds,
+    const OutputFileDescriptors& stdoutfds,
+    const OutputFileDescriptors& stderrfds)
+{
+  hashset<int> fds = {
+    stdinfds.read,
+    stdinfds.write.getOrElse(-1),
+    stdoutfds.read.getOrElse(-1),
+    stdoutfds.write,
+    stderrfds.read.getOrElse(-1),
+    stderrfds.write
+  };
+
+  foreach (int fd, fds) {
+    if (fd >= 0) {
+      Try<Nothing> cloexec = os::cloexec(fd);
+      if (cloexec.isError()) {
+        return Error(cloexec.error());
+      }
+    }
+  }
+
+  return Nothing();
+}
+
+
 inline void signalHandler(int signal)
 {
   // Send SIGKILL to every process in the process group of the
@@ -124,94 +100,19 @@ inline void signalHandler(int signal)
 }
 
 
-// Creates a seperate watchdog process to monitor the child process and
-// kill it in case the parent process dies.
-//
-// NOTE: This function needs to be async signal safe. In fact,
-// all the library functions we used in this function are async
-// signal safe.
-inline int watchdogProcess()
-{
-#ifdef __linux__
-  // Send SIGTERM to the current process if the parent (i.e., the
-  // slave) exits.
-  // NOTE:: This function should always succeed because we are passing
-  // in a valid signal.
-  prctl(PR_SET_PDEATHSIG, SIGTERM);
-
-  // Put the current process into a separate process group so that
-  // we can kill it and all its children easily.
-  if (setpgid(0, 0) != 0) {
-    abort();
-  }
-
-  // Install a SIGTERM handler which will kill the current process
-  // group. Since we already setup the death signal above, the
-  // signal handler will be triggered when the parent (e.g., the
-  // slave) exits.
-  if (os::signals::install(SIGTERM, &signalHandler) != 0) {
-    abort();
-  }
-
-  pid_t pid = fork();
-  if (pid == -1) {
-    abort();
-  } else if (pid == 0) {
-    // Child. This is the process that is going to exec the
-    // process if zero is returned.
-
-    // We setup death signal for the process as well in case
-    // someone, though unlikely, accidentally kill the parent of
-    // this process (the bookkeeping process).
-    prctl(PR_SET_PDEATHSIG, SIGKILL);
-
-    // NOTE: We don't need to clear the signal handler explicitly
-    // because the subsequent 'exec' will clear them.
-    return 0;
-  } else {
-    // Parent. This is the bookkeeping process which will wait for
-    // the child process to finish.
-
-    // Close the files to prevent interference on the communication
-    // between the slave and the child process.
-    ::close(STDIN_FILENO);
-    ::close(STDOUT_FILENO);
-    ::close(STDERR_FILENO);
-
-    // Block until the child process finishes.
-    int status = 0;
-    if (waitpid(pid, &status, 0) == -1) {
-      abort();
-    }
-
-    // Forward the exit status if the child process exits normally.
-    if (WIFEXITED(status)) {
-      _exit(WEXITSTATUS(status));
-    }
-
-    abort();
-    UNREACHABLE();
-  }
-#endif
-  return 0;
-}
-
-
 // The main entry of the child process.
 //
 // NOTE: This function has to be async signal safe.
 inline int childMain(
-    const string& path,
+    const std::string& path,
     char** argv,
     char** envp,
-    const Setsid set_sid,
     const InputFileDescriptors& stdinfds,
     const OutputFileDescriptors& stdoutfds,
     const OutputFileDescriptors& stderrfds,
     bool blocking,
     int pipes[2],
-    const Option<string>& working_directory,
-    const Watchdog watchdog)
+    const std::vector<Subprocess::ChildHook>& child_hooks)
 {
   // Close parent's end of the pipes.
   if (stdinfds.write.isSome()) {
@@ -240,6 +141,10 @@ inline int childMain(
   // parent has closed stdin/stdout/stderr when calling this
   // function (in that case, a dup'ed file descriptor may have the
   // same file descriptor number as stdin/stdout/stderr).
+  //
+  // We also need to ensure that we don't "double close" any file
+  // descriptors in the case where one of stdinfds.read,
+  // stdoutfds.write, or stdoutfds.write are equal.
   if (stdinfds.read != STDIN_FILENO &&
       stdinfds.read != STDOUT_FILENO &&
       stdinfds.read != STDERR_FILENO) {
@@ -247,12 +152,15 @@ inline int childMain(
   }
   if (stdoutfds.write != STDIN_FILENO &&
       stdoutfds.write != STDOUT_FILENO &&
-      stdoutfds.write != STDERR_FILENO) {
+      stdoutfds.write != STDERR_FILENO &&
+      stdoutfds.write != stdinfds.read) {
     ::close(stdoutfds.write);
   }
   if (stderrfds.write != STDIN_FILENO &&
       stderrfds.write != STDOUT_FILENO &&
-      stderrfds.write != STDERR_FILENO) {
+      stderrfds.write != STDERR_FILENO &&
+      stderrfds.write != stdinfds.read &&
+      stderrfds.write != stdoutfds.write) {
     ::close(stderrfds.write);
   }
 
@@ -272,32 +180,14 @@ inline int childMain(
     ::close(pipes[0]);
   }
 
-  // Move to a different session (and new process group) so we're
-  // independent from the caller's session (otherwise children will
-  // receive SIGHUP if the slave exits).
-  if (set_sid == SETSID) {
-    // POSIX guarantees a forked child's pid does not match any existing
-    // process group id so only a single `setsid()` is required and the
-    // session id will be the pid.
-    if (::setsid() == -1) {
-      ABORT("Failed to put child in a new session");
-    }
-  }
+  // Run the child hooks.
+  foreach (const Subprocess::ChildHook& hook, child_hooks) {
+    Try<Nothing> callback = hook();
 
-  if (working_directory.isSome()) {
-    if (::chdir(working_directory->c_str()) == -1) {
-      ABORT("Failed to change directory");
+    // If the callback failed, we should abort execution.
+    if (callback.isError()) {
+      ABORT("Failed to execute Subprocess::ChildHook: " + callback.error());
     }
-  }
-
-  // If the child process should die together with its parent we spawn a
-  // separate watchdog process which kills the child when the parent dies.
-  //
-  // NOTE: The watchdog process sets the process group id in order for it and
-  // its child processes to be killed together. We should not (re)set the sid
-  // after this.
-  if (watchdog == MONITOR) {
-    watchdogProcess();
   }
 
   os::execvpe(path.c_str(), argv, envp);
@@ -307,15 +197,13 @@ inline int childMain(
 
 
 inline Try<pid_t> cloneChild(
-    const string& path,
-    vector<string> argv,
-    const Setsid set_sid,
-    const Option<map<string, string>>& environment,
+    const std::string& path,
+    std::vector<std::string> argv,
+    const Option<std::map<std::string, std::string>>& environment,
     const Option<lambda::function<
         pid_t(const lambda::function<int()>&)>>& _clone,
-    const vector<Subprocess::Hook>& parent_hooks,
-    const Option<string>& working_directory,
-    const Watchdog watchdog,
+    const std::vector<Subprocess::ParentHook>& parent_hooks,
+    const std::vector<Subprocess::ChildHook>& child_hooks,
     const InputFileDescriptors stdinfds,
     const OutputFileDescriptors stdoutfds,
     const OutputFileDescriptors stderrfds)
@@ -339,8 +227,10 @@ inline Try<pid_t> cloneChild(
     envp = new char*[environment.get().size() + 1];
 
     size_t index = 0;
-    foreachpair (const string& key, const string& value, environment.get()) {
-      string entry = key + "=" + value;
+    foreachpair (
+        const std::string& key,
+        const std::string& value, environment.get()) {
+      std::string entry = key + "=" + value;
       envp[index] = new char[entry.size() + 1];
       strncpy(envp[index], entry.c_str(), entry.size() + 1);
       ++index;
@@ -356,13 +246,16 @@ inline Try<pid_t> cloneChild(
 
   // Currently we will block the child's execution of the new process
   // until all the `parent_hooks` (if any) have executed.
-  int pipes[2];
+  std::array<int, 2> pipes;
   const bool blocking = !parent_hooks.empty();
 
   if (blocking) {
     // We assume this should not fail under reasonable conditions so we
     // use CHECK.
-    CHECK_EQ(0, ::pipe(pipes));
+    Try<std::array<int, 2>> pipe = os::pipe();
+    CHECK_SOME(pipe);
+
+    pipes = pipe.get();
   }
 
   // Now, clone the child process.
@@ -371,14 +264,12 @@ inline Try<pid_t> cloneChild(
       path,
       _argv,
       envp,
-      set_sid,
       stdinfds,
       stdoutfds,
       stderrfds,
       blocking,
-      pipes,
-      working_directory,
-      watchdog));
+      pipes.data(),
+      child_hooks));
 
   delete[] _argv;
 
@@ -408,34 +299,32 @@ inline Try<pid_t> cloneChild(
     return error;
   }
 
+  // Close the child-ends of the file descriptors that are created by
+  // this function.
+  internal::close({stdinfds.read, stdoutfds.write, stderrfds.write});
+
   if (blocking) {
     os::close(pipes[0]);
 
     // Run the parent hooks.
-    foreach (const Subprocess::Hook& hook, parent_hooks) {
-      Try<Nothing> callback = hook.parent_callback(pid);
+    foreach (const Subprocess::ParentHook& hook, parent_hooks) {
+      Try<Nothing> parentSetup = hook.parent_setup(pid);
 
       // If the hook callback fails, we shouldn't proceed with the
       // execution and hence the child process should be killed.
-      if (callback.isError()) {
+      if (parentSetup.isError()) {
         LOG(WARNING)
-          << "Failed to execute Subprocess::Hook in parent for child '"
-          << pid << "': " << callback.error();
+          << "Failed to execute Subprocess::ParentHook in parent for child '"
+          << pid << "': " << parentSetup.error();
 
         os::close(pipes[1]);
-
-        // Close the child-ends of the file descriptors that are created
-        // by this function.
-        os::close(stdinfds.read);
-        os::close(stdoutfds.write);
-        os::close(stderrfds.write);
 
         // Ensure the child is killed.
         ::kill(pid, SIGKILL);
 
         return Error(
-            "Failed to execute Subprocess::Hook in parent for child '" +
-            stringify(pid) + "': " + callback.error());
+            "Failed to execute Subprocess::ParentHook in parent for child '" +
+            stringify(pid) + "': " + parentSetup.error());
       }
     }
 
@@ -452,11 +341,6 @@ inline Try<pid_t> cloneChild(
       // Ensure the child is killed.
       ::kill(pid, SIGKILL);
 
-      // Close the child-ends of the file descriptors that are created
-      // by this function.
-      os::close(stdinfds.read);
-      os::close(stdoutfds.write);
-      os::close(stderrfds.write);
       return Error("Failed to synchronize child process");
     }
   }

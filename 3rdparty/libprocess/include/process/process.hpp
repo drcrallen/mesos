@@ -20,6 +20,7 @@
 #include <vector>
 
 #include <process/address.hpp>
+#include <process/authenticator.hpp>
 #include <process/clock.hpp>
 #include <process/event.hpp>
 #include <process/filter.hpp>
@@ -99,7 +100,7 @@ protected:
    * Invoked when a process is terminated.
    *
    * **NOTE**: this does not get invoked automatically if
-   * `process::ProcessBase::visit(const TerminateEvent&)` is overriden.
+   * `process::ProcessBase::visit(const TerminateEvent&)` is overridden.
    */
   virtual void finalize() {}
 
@@ -151,6 +152,33 @@ protected:
       size_t length = 0);
 
   /**
+   * Describes the behavior of the `link` call when the target `pid`
+   * points to a remote process. This enum has no effect if the target
+   * `pid` points to a local process.
+   */
+  enum class RemoteConnection
+  {
+    /**
+     * If a persistent socket to the target `pid` does not exist,
+     * a new link is created. If a persistent socket already exists,
+     * `link` will subscribe this process to the existing link.
+     *
+     * This is the default behavior.
+     */
+    REUSE,
+
+    /**
+     * If a persistent socket to the target `pid` does not exist,
+     * a new link is created. If a persistent socket already exists,
+     * `link` create a new socket connection with the target `pid`
+     * and *atomically* swap the existing link with the new link.
+     *
+     * Existing linkers will remain linked, albeit via the new socket.
+     */
+    RECONNECT,
+  };
+
+  /**
    * Links with the specified `UPID`.
    *
    * Linking with a process from within the same OS process is
@@ -162,7 +190,9 @@ protected:
    * remote linked process cannot be determined; we handle this
    * situation by generating an ExitedEvent.
    */
-  UPID link(const UPID& pid);
+  UPID link(
+      const UPID& pid,
+      const RemoteConnection remote = RemoteConnection::REUSE);
 
   /**
    * Any function which takes a "from" `UPID` and a message body as
@@ -224,6 +254,17 @@ protected:
   typedef lambda::function<Future<http::Response>(const http::Request&)>
   HttpRequestHandler;
 
+  // Options to control the behavior of a route.
+  struct RouteOptions
+  {
+    RouteOptions()
+      : requestStreaming(false) {}
+
+    // Set to true if the endpoint supports request streaming.
+    // Default: false.
+    bool requestStreaming;
+  };
+
   /**
    * Sets up a handler for HTTP requests with the specified name.
    *
@@ -233,7 +274,8 @@ protected:
   void route(
       const std::string& name,
       const Option<std::string>& help,
-      const HttpRequestHandler& handler);
+      const HttpRequestHandler& handler,
+      const RouteOptions& options = RouteOptions());
 
   /**
    * @copydoc process::ProcessBase::route
@@ -242,41 +284,49 @@ protected:
   void route(
       const std::string& name,
       const Option<std::string>& help,
-      Future<http::Response> (T::*method)(const http::Request&))
+      Future<http::Response> (T::*method)(const http::Request&),
+      const RouteOptions& options = RouteOptions())
   {
     // Note that we use dynamic_cast here so a process can use
     // multiple inheritance if it sees so fit (e.g., to implement
     // multiple callback interfaces).
     HttpRequestHandler handler =
       lambda::bind(method, dynamic_cast<T*>(this), lambda::_1);
-    route(name, help, handler);
+    route(name, help, handler, options);
   }
 
   /**
    * Any function which takes a `process::http::Request` and an
-   * `Option<std::string>` principal and returns a
-   * `process::http::Response`.
+   * `Option<Principal>` and returns a `process::http::Response`.
+   * This type is meant to be used for the endpoint handlers of
+   * authenticated HTTP endpoints.
    *
-   * If the authentication principal string is set, the realm
-   * requires authentication and authentication succeeded. If
-   * it is not set, the realm does not require authentication.
+   * If the handler is called and the principal is set,
+   * this implies two things:
+   *   1) The realm that the handler's endpoint is installed into
+   *      requires authentication.
+   *   2) The HTTP request has been successfully authenticated.
+   *
+   * If the principal is not set, then the endpoint's
+   * realm does not require authentication.
    *
    * The default visit implementation for HTTP events invokes
    * installed HTTP handlers.
    *
    * @see process::ProcessBase::route
    */
-  // TODO(arojas): Consider introducing an `authentication::Principal` type.
   typedef lambda::function<Future<http::Response>(
-      const http::Request&, const Option<std::string>&)>
-      AuthenticatedHttpRequestHandler;
+      const http::Request&,
+      const Option<http::authentication::Principal>&)>
+          AuthenticatedHttpRequestHandler;
 
   // TODO(arojas): Consider introducing an `authentication::Realm` type.
   void route(
       const std::string& name,
       const std::string& realm,
       const Option<std::string>& help,
-      const AuthenticatedHttpRequestHandler& handler);
+      const AuthenticatedHttpRequestHandler& handler,
+      const RouteOptions& options = RouteOptions());
 
   /**
    * @copydoc process::ProcessBase::route
@@ -288,14 +338,15 @@ protected:
       const Option<std::string>& help,
       Future<http::Response> (T::*method)(
           const http::Request&,
-          const Option<std::string>&))
+          const Option<http::authentication::Principal>&),
+      const RouteOptions& options = RouteOptions())
   {
     // Note that we use dynamic_cast here so a process can use
     // multiple inheritance if it sees so fit (e.g., to implement
     // multiple callback interfaces).
     AuthenticatedHttpRequestHandler handler =
       lambda::bind(method, dynamic_cast<T*>(this), lambda::_1, lambda::_2);
-    route(name, realm, help, handler);
+    route(name, realm, help, handler, options);
   }
 
   /**
@@ -394,6 +445,7 @@ private:
 
     Option<std::string> realm;
     Option<AuthenticatedHttpRequestHandler> authenticatedHandler;
+    RouteOptions options;
   };
 
   // Handlers for messages and HTTP requests.
@@ -413,6 +465,12 @@ private:
     std::string path;
     std::map<std::string, std::string> types;
   };
+
+  // Continuation for `visit(const HttpEvent&)`.
+  Future<http::Response> _visit(
+      const HttpEndpoint& endpoint,
+      const std::string& name,
+      const Owned<http::Request>& request);
 
   // Static assets(s) to provide.
   std::map<std::string, Asset> assets;
@@ -438,7 +496,7 @@ public:
    *
    * Valid even before calling spawn.
    */
-  PID<T> self() const { return PID<T>(dynamic_cast<const T*>(this)); }
+  PID<T> self() const { return PID<T>(static_cast<const T*>(this)); }
 
 protected:
   // Useful typedefs for dispatch/delay/defer to self()/this.
@@ -454,9 +512,14 @@ protected:
  * for it (e.g., a logging directory) via environment variables.
  *
  * @param delegate Process to receive root HTTP requests.
- * @param authenticationRealm The authentication realm that libprocess-level
- *     HTTP endpoints will be installed under, if any. If this realm is not
- *     specified, endpoints will be installed without authentication.
+ * @param readwriteAuthenticationRealm The authentication realm that read-write
+ *     libprocess-level HTTP endpoints will be installed under, if any.
+ *     If this realm is not specified, read-write endpoints will be installed
+ *     without authentication.
+ * @param readonlyAuthenticationRealm The authentication realm that read-only
+ *     libprocess-level HTTP endpoints will be installed under, if any.
+ *     If this realm is not specified, read-only endpoints will be installed
+ *     without authentication.
  * @return `true` if this was the first invocation of `process::initialize()`,
  *     or `false` if it was not the first invocation.
  *
@@ -464,13 +527,17 @@ protected:
  */
 bool initialize(
     const Option<std::string>& delegate = None(),
-    const Option<std::string>& authenticationRealm = None());
+    const Option<std::string>& readwriteAuthenticationRealm = None(),
+    const Option<std::string>& readonlyAuthenticationRealm = None());
 
 
 /**
  * Clean up the library.
+ *
+ * @param finalize_wsa Whether the Windows socket stack should be cleaned
+ *     up for the entire process. Has no effect outside of Windows.
  */
-void finalize();
+void finalize(bool finalize_wsa = false);
 
 
 /**
@@ -482,7 +549,7 @@ std::string absolutePath(const std::string& path);
 /**
  * Returns the socket address associated with this instance of the library.
  */
-network::Address address();
+network::inet::Address address();
 
 
 /**

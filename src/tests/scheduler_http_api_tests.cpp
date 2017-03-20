@@ -119,7 +119,7 @@ INSTANTIATE_TEST_CASE_P(
 
 
 // TODO(anand): Add tests for:
-// - A subscribed scheduler closes it's reader and then tries to
+// - A subscribed scheduler closes its reader and then tries to
 //  subscribe again before the framework failover timeout and should
 //  succeed.
 //
@@ -228,7 +228,7 @@ TEST_P(SchedulerHttpApiTest, UnsupportedContentMediaType)
   call.set_type(Call::SUBSCRIBE);
 
   Call::Subscribe* subscribe = call.mutable_subscribe();
-  subscribe->mutable_framework_info()->CopyFrom(DEFAULT_V1_FRAMEWORK_INFO);
+  subscribe->mutable_framework_info()->CopyFrom(v1::DEFAULT_FRAMEWORK_INFO);
 
   const string unknownMediaType = "application/unknown-media-type";
 
@@ -255,7 +255,7 @@ TEST_P(SchedulerHttpApiTest, Subscribe)
   call.set_type(Call::SUBSCRIBE);
 
   Call::Subscribe* subscribe = call.mutable_subscribe();
-  subscribe->mutable_framework_info()->CopyFrom(DEFAULT_V1_FRAMEWORK_INFO);
+  subscribe->mutable_framework_info()->CopyFrom(v1::DEFAULT_FRAMEWORK_INFO);
 
   // Retrieve the parameter passed as content type to this test.
   const string contentType = GetParam();
@@ -272,11 +272,11 @@ TEST_P(SchedulerHttpApiTest, Subscribe)
 
   AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
   AWAIT_EXPECT_RESPONSE_HEADER_EQ("chunked", "Transfer-Encoding", response);
-  ASSERT_EQ(Response::PIPE, response.get().type);
-  ASSERT_TRUE(response.get().headers.contains("Mesos-Stream-Id"));
-  EXPECT_NE("", response.get().headers.at("Mesos-Stream-Id"));
+  ASSERT_EQ(Response::PIPE, response->type);
+  ASSERT_TRUE(response->headers.contains("Mesos-Stream-Id"));
+  EXPECT_NE("", response->headers.at("Mesos-Stream-Id"));
 
-  Option<Pipe::Reader> reader = response.get().reader;
+  Option<Pipe::Reader> reader = response->reader;
   ASSERT_SOME(reader);
 
   auto deserializer = lambda::bind(
@@ -289,15 +289,15 @@ TEST_P(SchedulerHttpApiTest, Subscribe)
   ASSERT_SOME(event.get());
 
   // Check event type is subscribed and the framework id is set.
-  ASSERT_EQ(Event::SUBSCRIBED, event.get().get().type());
-  EXPECT_NE("", event.get().get().subscribed().framework_id().value());
+  ASSERT_EQ(Event::SUBSCRIBED, event->get().type());
+  EXPECT_NE("", event->get().subscribed().framework_id().value());
 
   // Make sure it receives a heartbeat.
   event = responseDecoder.read();
   AWAIT_READY(event);
   ASSERT_SOME(event.get());
 
-  ASSERT_EQ(Event::HEARTBEAT, event.get().get().type());
+  ASSERT_EQ(Event::HEARTBEAT, event->get().type());
 
   // Advance the clock to receive another heartbeat.
   Clock::pause();
@@ -307,7 +307,7 @@ TEST_P(SchedulerHttpApiTest, Subscribe)
   AWAIT_READY(event);
   ASSERT_SOME(event.get());
 
-  ASSERT_EQ(Event::HEARTBEAT, event.get().get().type());
+  ASSERT_EQ(Event::HEARTBEAT, event->get().type());
 }
 
 
@@ -322,7 +322,7 @@ TEST_P(SchedulerHttpApiTest, RejectFrameworkWithInvalidRole)
   call.set_type(Call::SUBSCRIBE);
 
   Call::Subscribe* subscribe = call.mutable_subscribe();
-  v1::FrameworkInfo framework = DEFAULT_V1_FRAMEWORK_INFO;
+  v1::FrameworkInfo framework = v1::DEFAULT_FRAMEWORK_INFO;
   // Set invalid role.
   framework.set_role("/test/test1");
   subscribe->mutable_framework_info()->CopyFrom(framework);
@@ -342,9 +342,9 @@ TEST_P(SchedulerHttpApiTest, RejectFrameworkWithInvalidRole)
 
   AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
   AWAIT_EXPECT_RESPONSE_HEADER_EQ("chunked", "Transfer-Encoding", response);
-  ASSERT_EQ(Response::PIPE, response.get().type);
+  ASSERT_EQ(Response::PIPE, response->type);
 
-  Option<Pipe::Reader> reader = response.get().reader;
+  Option<Pipe::Reader> reader = response->reader;
   ASSERT_SOME(reader);
 
   auto deserializer = lambda::bind(
@@ -357,7 +357,7 @@ TEST_P(SchedulerHttpApiTest, RejectFrameworkWithInvalidRole)
   ASSERT_SOME(event.get());
 
   // Check event type is error.
-  ASSERT_EQ(Event::ERROR, event.get().get().type());
+  ASSERT_EQ(Event::ERROR, event->get().type());
 }
 
 
@@ -372,7 +372,7 @@ TEST_P(SchedulerHttpApiTest, SubscribeWithStreamId)
   call.set_type(Call::SUBSCRIBE);
 
   Call::Subscribe* subscribe = call.mutable_subscribe();
-  subscribe->mutable_framework_info()->CopyFrom(DEFAULT_V1_FRAMEWORK_INFO);
+  subscribe->mutable_framework_info()->CopyFrom(v1::DEFAULT_FRAMEWORK_INFO);
 
   // Retrieve the parameter passed as content type to this test.
   const string contentType = GetParam();
@@ -403,7 +403,7 @@ TEST_P(SchedulerHttpApiTest, SubscribedOnRetry)
   call.set_type(Call::SUBSCRIBE);
 
   Call::Subscribe* subscribe = call.mutable_subscribe();
-  subscribe->mutable_framework_info()->CopyFrom(DEFAULT_V1_FRAMEWORK_INFO);
+  subscribe->mutable_framework_info()->CopyFrom(v1::DEFAULT_FRAMEWORK_INFO);
 
   // Retrieve the parameter passed as content type to this test.
   const string contentType = GetParam();
@@ -425,9 +425,9 @@ TEST_P(SchedulerHttpApiTest, SubscribedOnRetry)
         contentType);
 
     AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
-    ASSERT_EQ(Response::PIPE, response.get().type);
+    ASSERT_EQ(Response::PIPE, response->type);
 
-    Option<Pipe::Reader> reader = response.get().reader;
+    Option<Pipe::Reader> reader = response->reader;
     ASSERT_SOME(reader);
 
     Reader<Event> responseDecoder(Decoder<Event>(deserializer), reader.get());
@@ -436,11 +436,11 @@ TEST_P(SchedulerHttpApiTest, SubscribedOnRetry)
     AWAIT_READY(event);
     ASSERT_SOME(event.get());
 
-    frameworkId = event.get().get().subscribed().framework_id();
+    frameworkId = event->get().subscribed().framework_id();
 
     // Check event type is subscribed and the framework id is set.
-    ASSERT_EQ(Event::SUBSCRIBED, event.get().get().type());
-    EXPECT_NE("", event.get().get().subscribed().framework_id().value());
+    ASSERT_EQ(Event::SUBSCRIBED, event->get().type());
+    EXPECT_NE("", event->get().subscribed().framework_id().value());
   }
 
   {
@@ -454,7 +454,7 @@ TEST_P(SchedulerHttpApiTest, SubscribedOnRetry)
         serialize(call, contentType),
         contentType);
 
-    Option<Pipe::Reader> reader = response.get().reader;
+    Option<Pipe::Reader> reader = response->reader;
     ASSERT_SOME(reader);
 
     Reader<Event> responseDecoder(Decoder<Event>(deserializer), reader.get());
@@ -465,15 +465,15 @@ TEST_P(SchedulerHttpApiTest, SubscribedOnRetry)
     ASSERT_SOME(event.get());
 
     // Check event type is subscribed and the same framework id is set.
-    ASSERT_EQ(Event::SUBSCRIBED, event.get().get().type());
-    EXPECT_EQ(frameworkId, event.get().get().subscribed().framework_id());
+    ASSERT_EQ(Event::SUBSCRIBED, event->get().type());
+    EXPECT_EQ(frameworkId, event->get().subscribed().framework_id());
 
     // Make sure it receives a heartbeat.
     event = responseDecoder.read();
     AWAIT_READY(event);
     ASSERT_SOME(event.get());
 
-    ASSERT_EQ(Event::HEARTBEAT, event.get().get().type());
+    ASSERT_EQ(Event::HEARTBEAT, event->get().type());
   }
 }
 
@@ -485,7 +485,7 @@ TEST_P(SchedulerHttpApiTest, UpdatePidToHttpScheduler)
   Try<Owned<cluster::Master>> master = StartMaster();
   ASSERT_SOME(master);
 
-  v1::FrameworkInfo frameworkInfo = DEFAULT_V1_FRAMEWORK_INFO;
+  v1::FrameworkInfo frameworkInfo = v1::DEFAULT_FRAMEWORK_INFO;
   frameworkInfo.set_failover_timeout(Weeks(2).secs());
 
   MockScheduler sched;
@@ -506,7 +506,7 @@ TEST_P(SchedulerHttpApiTest, UpdatePidToHttpScheduler)
   driver.start();
 
   AWAIT_READY(frameworkId);
-  EXPECT_NE("", frameworkId.get().value());
+  EXPECT_NE("", frameworkId->value());
 
   // Now try to subscribe as an HTTP framework.
   Call call;
@@ -534,9 +534,9 @@ TEST_P(SchedulerHttpApiTest, UpdatePidToHttpScheduler)
 
   AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
   AWAIT_EXPECT_RESPONSE_HEADER_EQ("chunked", "Transfer-Encoding", response);
-  ASSERT_EQ(Response::PIPE, response.get().type);
+  ASSERT_EQ(Response::PIPE, response->type);
 
-  Option<Pipe::Reader> reader = response.get().reader;
+  Option<Pipe::Reader> reader = response->reader;
   ASSERT_SOME(reader);
 
   auto deserializer = lambda::bind(
@@ -549,16 +549,16 @@ TEST_P(SchedulerHttpApiTest, UpdatePidToHttpScheduler)
   ASSERT_SOME(event.get());
 
   // Check event type is subscribed and the framework id is set.
-  ASSERT_EQ(Event::SUBSCRIBED, event.get().get().type());
+  ASSERT_EQ(Event::SUBSCRIBED, event->get().type());
   EXPECT_EQ(evolve(frameworkId.get()),
-            event.get().get().subscribed().framework_id());
+            event->get().subscribed().framework_id());
 
   // Make sure it receives a heartbeat.
   event = responseDecoder.read();
   AWAIT_READY(event);
   ASSERT_SOME(event.get());
 
-  ASSERT_EQ(Event::HEARTBEAT, event.get().get().type());
+  ASSERT_EQ(Event::HEARTBEAT, event->get().type());
 
   driver.stop();
   driver.join();
@@ -572,7 +572,7 @@ TEST_P(SchedulerHttpApiTest, UpdateHttpToPidScheduler)
   Try<Owned<cluster::Master>> master = StartMaster();
   ASSERT_SOME(master);
 
-  v1::FrameworkInfo frameworkInfo = DEFAULT_V1_FRAMEWORK_INFO;
+  v1::FrameworkInfo frameworkInfo = v1::DEFAULT_FRAMEWORK_INFO;
 
   Call call;
   call.set_type(Call::SUBSCRIBE);
@@ -595,9 +595,9 @@ TEST_P(SchedulerHttpApiTest, UpdateHttpToPidScheduler)
 
   AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
   AWAIT_EXPECT_RESPONSE_HEADER_EQ("chunked", "Transfer-Encoding", response);
-  ASSERT_EQ(Response::PIPE, response.get().type);
+  ASSERT_EQ(Response::PIPE, response->type);
 
-  Option<Pipe::Reader> reader = response.get().reader;
+  Option<Pipe::Reader> reader = response->reader;
   ASSERT_SOME(reader);
 
   auto deserializer = lambda::bind(
@@ -610,16 +610,16 @@ TEST_P(SchedulerHttpApiTest, UpdateHttpToPidScheduler)
   ASSERT_SOME(event.get());
 
   // Check event type is subscribed and the framework id is set.
-  ASSERT_EQ(Event::SUBSCRIBED, event.get().get().type());
+  ASSERT_EQ(Event::SUBSCRIBED, event->get().type());
   frameworkInfo.mutable_id()->
-    CopyFrom(event.get().get().subscribed().framework_id());
+    CopyFrom(event->get().subscribed().framework_id());
 
   // Make sure it receives a heartbeat.
   event = responseDecoder.read();
   AWAIT_READY(event);
   ASSERT_SOME(event.get());
 
-  ASSERT_EQ(Event::HEARTBEAT, event.get().get().type());
+  ASSERT_EQ(Event::HEARTBEAT, event->get().type());
 
   MockScheduler sched;
   MesosSchedulerDriver driver(
@@ -655,7 +655,7 @@ TEST_P(SchedulerHttpApiTest, NotAcceptable)
   call.set_type(Call::SUBSCRIBE);
 
   Call::Subscribe* subscribe = call.mutable_subscribe();
-  subscribe->mutable_framework_info()->CopyFrom(DEFAULT_V1_FRAMEWORK_INFO);
+  subscribe->mutable_framework_info()->CopyFrom(v1::DEFAULT_FRAMEWORK_INFO);
 
   Future<Response> response = process::http::streaming::post(
       master.get()->pid,
@@ -685,7 +685,7 @@ TEST_P(SchedulerHttpApiTest, NoAcceptHeader)
   call.set_type(Call::SUBSCRIBE);
 
   Call::Subscribe* subscribe = call.mutable_subscribe();
-  subscribe->mutable_framework_info()->CopyFrom(DEFAULT_V1_FRAMEWORK_INFO);
+  subscribe->mutable_framework_info()->CopyFrom(v1::DEFAULT_FRAMEWORK_INFO);
 
   Future<Response> response = process::http::streaming::post(
       master.get()->pid,
@@ -712,7 +712,7 @@ TEST_P(SchedulerHttpApiTest, DefaultAccept)
   call.set_type(Call::SUBSCRIBE);
 
   Call::Subscribe* subscribe = call.mutable_subscribe();
-  subscribe->mutable_framework_info()->CopyFrom(DEFAULT_V1_FRAMEWORK_INFO);
+  subscribe->mutable_framework_info()->CopyFrom(v1::DEFAULT_FRAMEWORK_INFO);
 
   // Retrieve the parameter passed as content type to this test.
   const string contentType = GetParam();
@@ -765,7 +765,7 @@ TEST_P(SchedulerHttpApiTest, TeardownWithoutStreamId)
     call.set_type(Call::SUBSCRIBE);
 
     Call::Subscribe* subscribe = call.mutable_subscribe();
-    subscribe->mutable_framework_info()->CopyFrom(DEFAULT_V1_FRAMEWORK_INFO);
+    subscribe->mutable_framework_info()->CopyFrom(v1::DEFAULT_FRAMEWORK_INFO);
 
     Future<Response> response = process::http::streaming::post(
         master.get()->pid,
@@ -776,10 +776,10 @@ TEST_P(SchedulerHttpApiTest, TeardownWithoutStreamId)
 
     AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
     AWAIT_EXPECT_RESPONSE_HEADER_EQ("chunked", "Transfer-Encoding", response);
-    ASSERT_EQ(Response::PIPE, response.get().type);
-    ASSERT_TRUE(response.get().headers.contains("Mesos-Stream-Id"));
+    ASSERT_EQ(Response::PIPE, response->type);
+    ASSERT_TRUE(response->headers.contains("Mesos-Stream-Id"));
 
-    Option<Pipe::Reader> reader = response.get().reader;
+    Option<Pipe::Reader> reader = response->reader;
     ASSERT_SOME(reader);
 
     auto deserializer = lambda::bind(
@@ -792,10 +792,10 @@ TEST_P(SchedulerHttpApiTest, TeardownWithoutStreamId)
     ASSERT_SOME(event.get());
 
     // Check event type is subscribed and the framework ID is set.
-    ASSERT_EQ(Event::SUBSCRIBED, event.get().get().type());
-    EXPECT_NE("", event.get().get().subscribed().framework_id().value());
+    ASSERT_EQ(Event::SUBSCRIBED, event->get().type());
+    EXPECT_NE("", event->get().subscribed().framework_id().value());
 
-    frameworkId = event.get().get().subscribed().framework_id();
+    frameworkId = event->get().subscribed().framework_id();
   }
 
   {
@@ -838,7 +838,7 @@ TEST_P(SchedulerHttpApiTest, TeardownWrongStreamId)
     call.set_type(Call::SUBSCRIBE);
 
     Call::Subscribe* subscribe = call.mutable_subscribe();
-    subscribe->mutable_framework_info()->CopyFrom(DEFAULT_V1_FRAMEWORK_INFO);
+    subscribe->mutable_framework_info()->CopyFrom(v1::DEFAULT_FRAMEWORK_INFO);
 
     Future<Response> response = process::http::streaming::post(
         master.get()->pid,
@@ -849,12 +849,12 @@ TEST_P(SchedulerHttpApiTest, TeardownWrongStreamId)
 
     AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
     AWAIT_EXPECT_RESPONSE_HEADER_EQ("chunked", "Transfer-Encoding", response);
-    ASSERT_EQ(Response::PIPE, response.get().type);
-    ASSERT_TRUE(response.get().headers.contains("Mesos-Stream-Id"));
+    ASSERT_EQ(Response::PIPE, response->type);
+    ASSERT_TRUE(response->headers.contains("Mesos-Stream-Id"));
 
-    streamId = response.get().headers.at("Mesos-Stream-Id");
+    streamId = response->headers.at("Mesos-Stream-Id");
 
-    Option<Pipe::Reader> reader = response.get().reader;
+    Option<Pipe::Reader> reader = response->reader;
     ASSERT_SOME(reader);
 
     auto deserializer = lambda::bind(
@@ -867,10 +867,10 @@ TEST_P(SchedulerHttpApiTest, TeardownWrongStreamId)
     ASSERT_SOME(event.get());
 
     // Check that the event type is subscribed and the framework ID is set.
-    ASSERT_EQ(Event::SUBSCRIBED, event.get().get().type());
-    EXPECT_NE("", event.get().get().subscribed().framework_id().value());
+    ASSERT_EQ(Event::SUBSCRIBED, event->get().type());
+    EXPECT_NE("", event->get().subscribed().framework_id().value());
 
-    frameworkId = event.get().get().subscribed().framework_id();
+    frameworkId = event->get().subscribed().framework_id();
   }
 
   // Subscribe again to invalidate the first stream ID and acquire another one.
@@ -879,7 +879,7 @@ TEST_P(SchedulerHttpApiTest, TeardownWrongStreamId)
     call.set_type(Call::SUBSCRIBE);
 
     Call::Subscribe* subscribe = call.mutable_subscribe();
-    subscribe->mutable_framework_info()->CopyFrom(DEFAULT_V1_FRAMEWORK_INFO);
+    subscribe->mutable_framework_info()->CopyFrom(v1::DEFAULT_FRAMEWORK_INFO);
 
     // Set the framework ID in the subscribe call.
     call.mutable_framework_id()->CopyFrom(frameworkId);
@@ -894,13 +894,13 @@ TEST_P(SchedulerHttpApiTest, TeardownWrongStreamId)
 
     AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
     AWAIT_EXPECT_RESPONSE_HEADER_EQ("chunked", "Transfer-Encoding", response);
-    ASSERT_EQ(Response::PIPE, response.get().type);
-    ASSERT_TRUE(response.get().headers.contains("Mesos-Stream-Id"));
+    ASSERT_EQ(Response::PIPE, response->type);
+    ASSERT_TRUE(response->headers.contains("Mesos-Stream-Id"));
 
     // Make sure that the new stream ID is different.
-    ASSERT_NE(streamId, response.get().headers.at("Mesos-Stream-Id"));
+    ASSERT_NE(streamId, response->headers.at("Mesos-Stream-Id"));
 
-    Option<Pipe::Reader> reader = response.get().reader;
+    Option<Pipe::Reader> reader = response->reader;
     ASSERT_SOME(reader);
 
     auto deserializer = lambda::bind(
@@ -912,8 +912,8 @@ TEST_P(SchedulerHttpApiTest, TeardownWrongStreamId)
     AWAIT_READY(event);
     ASSERT_SOME(event.get());
 
-    ASSERT_EQ(Event::SUBSCRIBED, event.get().get().type());
-    EXPECT_NE("", event.get().get().subscribed().framework_id().value());
+    ASSERT_EQ(Event::SUBSCRIBED, event->get().type());
+    EXPECT_NE("", event->get().subscribed().framework_id().value());
   }
 
   {
@@ -932,6 +932,93 @@ TEST_P(SchedulerHttpApiTest, TeardownWrongStreamId)
         contentType);
 
     AWAIT_EXPECT_RESPONSE_STATUS_EQ(BadRequest().status, response);
+  }
+}
+
+
+// This test verifies that the scheduler will receive a `BadRequest` response
+// when it tries to acknowledge a status update with a malformed UUID.
+TEST_P(SchedulerHttpApiTest, MalformedUUID)
+{
+  Try<Owned<cluster::Master>> master = StartMaster();
+  ASSERT_SOME(master);
+
+  // Retrieve the parameter passed as content type to this test.
+  const string contentType = GetParam();
+
+  process::http::Headers headers = createBasicAuthHeaders(DEFAULT_CREDENTIAL);
+  headers["Accept"] = contentType;
+  v1::FrameworkID frameworkId;
+  string streamId;
+
+  // Subscribe once to get a valid stream ID.
+  {
+    Call call;
+    call.set_type(Call::SUBSCRIBE);
+
+    Call::Subscribe* subscribe = call.mutable_subscribe();
+    subscribe->mutable_framework_info()->CopyFrom(v1::DEFAULT_FRAMEWORK_INFO);
+
+    Future<Response> response = process::http::streaming::post(
+        master.get()->pid,
+        "api/v1/scheduler",
+        headers,
+        serialize(call, contentType),
+        contentType);
+
+    AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
+    ASSERT_EQ(Response::PIPE, response->type);
+    ASSERT_TRUE(response->headers.contains("Mesos-Stream-Id"));
+
+    streamId = response->headers.at("Mesos-Stream-Id");
+
+    Option<Pipe::Reader> reader = response->reader;
+    ASSERT_SOME(reader);
+
+    auto deserializer = lambda::bind(
+        &SchedulerHttpApiTest::deserialize, this, contentType, lambda::_1);
+
+    Reader<Event> responseDecoder(Decoder<Event>(deserializer), reader.get());
+
+    Future<Result<Event>> event = responseDecoder.read();
+    AWAIT_READY(event);
+    ASSERT_SOME(event.get());
+
+    // Check that the event type is subscribed and the framework ID is set.
+    ASSERT_EQ(Event::SUBSCRIBED, event->get().type());
+
+    frameworkId = event->get().subscribed().framework_id();
+    EXPECT_NE("", frameworkId.value());
+  }
+
+  // Make an acknowledge call with a malformed UUID. This should result in a
+  // `BadResponse`.
+  {
+    headers["Mesos-Stream-Id"] = streamId;
+
+    Call call;
+    call.set_type(Call::ACKNOWLEDGE);
+
+    // Set the framework ID in the subscribe call.
+    call.mutable_framework_id()->CopyFrom(frameworkId);
+
+    Call::Acknowledge* acknowledge = call.mutable_acknowledge();
+    acknowledge->mutable_task_id()->set_value("task-id");
+    acknowledge->mutable_agent_id()->set_value("agent-id");
+
+    // Set a malformed uuid.
+    acknowledge->set_uuid("bad-uuid");
+
+    Future<Response> response = process::http::post(
+        master.get()->pid,
+        "api/v1/scheduler",
+        headers,
+        serialize(call, contentType),
+        contentType);
+
+    AWAIT_EXPECT_RESPONSE_STATUS_EQ(BadRequest().status, response);
+    AWAIT_EXPECT_RESPONSE_BODY_EQ(
+        "Failed to validate scheduler::Call: Not a valid UUID", response);
   }
 }
 

@@ -28,7 +28,7 @@ template <typename T>
 class MultimapTest : public ::testing::Test {};
 
 typedef ::testing::Types<
-  Multimap<string, uint16_t>, multihashmap<string, uint16_t> > MultimapTypes;
+  Multimap<string, uint16_t>, multihashmap<string, uint16_t>> MultimapTypes;
 
 // Causes all TYPED_TEST(MultimapTest, ...) to be run for each of the
 // specified multimap types.
@@ -172,9 +172,9 @@ TYPED_TEST(MultimapTest, Keys)
 
   set<string> keys = map.keys();
 
-  ASSERT_EQ(2, keys.size());
-  ASSERT_EQ(1, keys.count("foo"));
-  ASSERT_EQ(1, keys.count("bar"));
+  ASSERT_EQ(2u, keys.size());
+  ASSERT_EQ(1u, keys.count("foo"));
+  ASSERT_EQ(1u, keys.count("bar"));
 }
 
 

@@ -40,6 +40,7 @@ class AufsBackendProcess;
 //                    |-- scratch
 //                        |-- <rootfs_id> (the scratch space)
 //                            |-- workdir
+//                            |-- links (symlink to temp dir with links to layers) // NOLINT(whitespace/line_length)
 class AufsBackend : public Backend
 {
 public:
@@ -52,7 +53,9 @@ public:
       const std::string& rootfs,
       const std::string& backendDir);
 
-  virtual process::Future<bool> destroy(const std::string& rootfs);
+  virtual process::Future<bool> destroy(
+      const std::string& rootfs,
+      const std::string& backendDir);
 
 private:
   explicit AufsBackend(process::Owned<AufsBackendProcess> process);

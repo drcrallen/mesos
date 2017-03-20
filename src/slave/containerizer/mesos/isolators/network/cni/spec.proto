@@ -14,6 +14,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+syntax = "proto2";
+
 package mesos.internal.slave.cni.spec;
 
 message Route {
@@ -62,4 +64,15 @@ message NetworkInfo {
   optional IPConfig ip4 = 1;
   optional IPConfig ip6 = 2;
   optional DNS dns = 3;
+}
+
+
+/**
+ * Protobuf for reporting errors from a CNI plugin.
+ */
+message Error {
+  required string cniVersion = 1;
+  required uint32 code = 2;
+  required string msg = 3;
+  optional string details = 4;
 }

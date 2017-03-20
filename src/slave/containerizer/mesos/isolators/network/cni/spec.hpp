@@ -18,6 +18,7 @@
 #define __ISOLATOR_CNI_SPEC_HPP__
 
 #include <stout/try.hpp>
+#include <stout/json.hpp>
 
 // ONLY USEFUL AFTER RUNNING PROTOC.
 #include "slave/containerizer/mesos/isolators/network/cni/spec.pb.h"
@@ -28,10 +29,51 @@ namespace slave {
 namespace cni {
 namespace spec {
 
+constexpr char CNI_VERSION[] = "0.3.0";
+
+
+// CNI commands.
+constexpr char CNI_CMD_ADD[] = "ADD";
+constexpr char CNI_CMD_DEL[] = "DEL";
+
+
+// Well-known CNI error codes:
+// https://github.com/containernetworking/cni/blob/master/SPEC.md#well-known-error-codes
+constexpr uint32_t CNI_ERROR_INCOMPATIBLE_VERSION = 1;
+constexpr uint32_t CNI_ERROR_UNSUPPORTED_FIELD = 2;
+
+
 Try<NetworkConfig> parseNetworkConfig(const std::string& s);
-
-
 Try<NetworkInfo> parseNetworkInfo(const std::string& s);
+
+
+// Takes a DNS specification and returns a string containing
+// the equivalent resolv.conf(5) format.
+std::string formatResolverConfig(const DNS& dns);
+
+
+// Creates a `spec::Error` object, with the `msg` and `code`
+// specified. Returns a JSON string representation of the
+// `spec::Error` object. See details in:
+// https://github.com/containernetworking/cni/blob/master/SPEC.md#result
+std::string error(const std::string& msg, uint32_t code);
+
+
+// This class encapsulates a JSON formatted string of type
+// `spec::Error`. It can be used by CNI plugins to return a CNI error
+// in a `Try` object when a failure occurs.
+class PluginError : public ::Error
+{
+public:
+  PluginError(const std::string& msg, uint32_t code)
+    : ::Error(error(msg, code)) {}
+};
+
+
+inline std::ostream& operator<<(std::ostream& stream, const PluginError& _error)
+{
+  return stream << _error.message;
+}
 
 } // namespace spec {
 } // namespace cni {

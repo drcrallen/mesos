@@ -17,16 +17,15 @@
 #ifndef __TEST_ROOTFS_HPP__
 #define __TEST_ROOTFS_HPP__
 
+#ifndef __linux__
+#error "tests/containerizer/rootfs.hpp is only available on Linux systems"
+#endif
+
 #include <string>
-#include <vector>
 
 #include <process/owned.hpp>
 
-#include <stout/error.hpp>
-#include <stout/foreach.hpp>
 #include <stout/nothing.hpp>
-#include <stout/os.hpp>
-#include <stout/strings.hpp>
 #include <stout/try.hpp>
 
 namespace mesos {
@@ -35,122 +34,29 @@ namespace tests {
 
 class Rootfs {
 public:
-  virtual ~Rootfs()
-  {
-    if (os::exists(root)) {
-      os::rmdir(root);
-    }
-  }
+  virtual ~Rootfs();
 
-  // Add a host directory or file to the root filesystem. Note that
-  // the host directory or file needs to be an absolute path.
-  Try<Nothing> add(const std::string& path)
-  {
-    if (!os::exists(path)) {
-      return Error("File or directory not found on the host");
-    }
-
-    if (!strings::startsWith(path, "/")) {
-      return Error("Not an absolute path");
-    }
-
-    std::string dirname = Path(path).dirname();
-    std::string target = path::join(root, dirname);
-
-    if (!os::exists(target)) {
-      Try<Nothing> mkdir = os::mkdir(target);
-      if (mkdir.isError()) {
-        return Error("Failed to create directory in rootfs: " +
-                     mkdir.error());
-      }
-    }
-
-    // TODO(jieyu): Make sure 'path' is not under 'root'.
-
-    if (os::stat::isdir(path)) {
-      if (os::system("cp -r '" + path + "' '" + target + "'") != 0) {
-        return ErrnoError("Failed to copy '" + path + "' to rootfs");
-      }
-    } else {
-      if (os::system("cp '" + path + "' '" + target + "'") != 0) {
-        return ErrnoError("Failed to copy '" + path + "' to rootfs");
-      }
-    }
-
-    return Nothing();
-  }
+  // Add a host path to the root filesystem. If the given
+  // host path is a symlink, both the link target and the
+  // link itself will be copied into the root.
+  Try<Nothing> add(const std::string& path);
 
   const std::string root;
 
 protected:
   Rootfs(const std::string& _root) : root(_root) {}
+
+private:
+  Try<Nothing> copyPath(
+      const std::string& source,
+      const std::string& destination);
 };
 
 
 class LinuxRootfs : public Rootfs
 {
 public:
-  static Try<process::Owned<Rootfs>> create(const std::string& root)
-  {
-    process::Owned<Rootfs> rootfs(new LinuxRootfs(root));
-
-    if (!os::exists(root)) {
-      Try<Nothing> mkdir = os::mkdir(root);
-      if (mkdir.isError()) {
-        return Error("Failed to create root directory: " + mkdir.error());
-      }
-    }
-
-    std::vector<std::string> directories = {
-      "/bin",
-      "/lib",
-      "/lib64",
-      "/etc"
-    };
-
-    foreach (const std::string& directory, directories) {
-      // Some linux distros are moving all binaries and libraries to
-      // /usr, in which case /bin, /lib, and /lib64 will be symlinks
-      // to their equivalent directories in /usr.
-      Result<std::string> realpath = os::realpath(directory);
-      if (!realpath.isSome()) {
-        return Error("Failed to get realpath for '" +
-                     directory + "': " + (realpath.isError() ?
-                     realpath.error() : "No such directory"));
-      }
-
-      Try<Nothing> result = rootfs->add(realpath.get());
-      if (result.isError()) {
-        return Error("Failed to add '" + realpath.get() +
-                     "' to rootfs: " + result.error());
-      }
-
-      if (os::stat::islink(directory)) {
-        result = rootfs->add(directory);
-        if (result.isError()) {
-          return Error("Failed to add '" + directory + "' to rootfs: " +
-                       result.error());
-        }
-      }
-    }
-
-    directories = {
-      "/proc",
-      "/sys",
-      "/dev",
-      "/tmp"
-    };
-
-    foreach (const std::string& directory, directories) {
-      Try<Nothing> mkdir = os::mkdir(path::join(root, directory));
-      if (mkdir.isError()) {
-        return Error("Failed to create '" + directory +
-                     "' in rootfs: " + mkdir.error());
-      }
-    }
-
-    return rootfs;
-  }
+  static Try<process::Owned<Rootfs>> create(const std::string& root);
 
 protected:
   LinuxRootfs(const std::string& root) : Rootfs(root) {}

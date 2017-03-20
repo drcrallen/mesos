@@ -90,7 +90,7 @@ GroupProcess::GroupProcess(
     const Duration& _sessionTimeout,
     const string& _znode,
     const Option<Authentication>& _auth)
-  : ProcessBase(ID::generate("group")),
+  : ProcessBase(ID::generate("zookeeper-group")),
     servers(_servers),
     sessionTimeout(_sessionTimeout),
     znode(strings::remove(_znode, "/", strings::SUFFIX)),
@@ -105,23 +105,14 @@ GroupProcess::GroupProcess(
 {}
 
 
-// TODO(xujyan): Reuse the peer constructor above once we switch to
-// C++ 11.
 GroupProcess::GroupProcess(
     const URL& url,
-    const Duration& _sessionTimeout)
-  : ProcessBase(ID::generate("group")),
-    servers(url.servers),
-    sessionTimeout(_sessionTimeout),
-    znode(strings::remove(url.path, "/", strings::SUFFIX)),
-    auth(url.authentication),
-    acl(url.authentication.isSome()
-        ? EVERYONE_READ_CREATOR_ALL
-        : ZOO_OPEN_ACL_UNSAFE),
-    watcher(nullptr),
-    zk(nullptr),
-    state(DISCONNECTED),
-    retrying(false)
+    const Duration& sessionTimeout)
+  : GroupProcess(
+        url.servers,
+        sessionTimeout,
+        strings::remove(url.path, "/", strings::SUFFIX),
+        url.authentication)
 {}
 
 
@@ -608,12 +599,14 @@ Result<Group::Membership> GroupProcess::doJoin(
 {
   CHECK_EQ(state, READY);
 
+  const string path = znode + "/" + (label.isSome() ? (label.get() + "_") : "");
+
   // Create a new ephemeral node to represent a new member and use the
-  // the specified data as it's contents.
+  // the specified data as its contents.
   string result;
 
-  int code = zk->create(
-      znode + "/" + (label.isSome() ? (label.get() + "_") : ""),
+  const int code = zk->create(
+      path,
       data,
       acl,
       ZOO_SEQUENCE | ZOO_EPHEMERAL,
@@ -624,7 +617,7 @@ Result<Group::Membership> GroupProcess::doJoin(
     return None();
   } else if (code != ZOK) {
     return Error(
-        "Failed to create ephemeral node at '" + znode +
+        "Failed to create ephemeral node at '" + path +
         "' in ZooKeeper: " + zk->message(code));
   }
 
@@ -634,10 +627,10 @@ Result<Group::Membership> GroupProcess::doJoin(
 
   // Save the sequence number but only grab the basename. Example:
   // "/path/to/znode/label_0000000131" => "0000000131".
-  string basename = Path(result).basename();
+  const string basename = Path(result).basename();
 
   // Strip the label before grabbing the sequence number.
-  string node = label.isSome()
+  const string node = label.isSome()
       ? strings::remove(basename, label.get() + "_")
       : basename;
 

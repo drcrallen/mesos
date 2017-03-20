@@ -61,6 +61,10 @@ namespace paths {
 //   |                           |-- latest (symlink)
 //   |                           |-- <container_id> (sandbox)
 //   |-- meta
+//   |   |-- boot_id
+//   |   |-- resources
+//   |   |   |-- resources.info
+//   |   |   |-- resources.target
 //   |   |-- slaves
 //   |       |-- latest (symlink)
 //   |       |-- <slave_id>
@@ -83,9 +87,6 @@ namespace paths {
 //   |                                       |-- <task_id>
 //   |                                           |-- task.info
 //   |                                           |-- task.updates
-//   |-- boot_id
-//   |-- resources
-//   |   |-- resources.info
 //   |-- volumes
 //   |   |-- roles
 //   |       |-- <role>
@@ -118,9 +119,6 @@ std::string getSandboxRootDir(const std::string& rootDir);
 
 
 std::string getProvisionerDir(const std::string& rootDir);
-
-
-std::string getArchiveDir(const std::string& rootDir);
 
 
 std::string getLatestSlavePath(const std::string& rootDir);
@@ -280,6 +278,10 @@ std::string getTaskUpdatesPath(
 
 
 std::string getResourcesInfoPath(
+    const std::string& rootDir);
+
+
+std::string getResourcesTargetPath(
     const std::string& rootDir);
 
 

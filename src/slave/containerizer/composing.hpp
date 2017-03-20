@@ -22,9 +22,8 @@
 #include <mesos/mesos.hpp>
 #include <mesos/resources.hpp>
 
-#include <mesos/containerizer/containerizer.hpp>
-
 #include <process/future.hpp>
+#include <process/http.hpp>
 #include <process/process.hpp>
 
 #include <stout/hashmap.hpp>
@@ -32,13 +31,13 @@
 #include <stout/option.hpp>
 #include <stout/try.hpp>
 
-
 namespace mesos {
 namespace internal {
 namespace slave {
 
 // Forward declaration.
 class ComposingContainerizerProcess;
+
 
 class ComposingContainerizer : public Containerizer
 {
@@ -56,22 +55,24 @@ public:
 
   virtual process::Future<bool> launch(
       const ContainerID& containerId,
+      const Option<TaskInfo>& taskInfo,
       const ExecutorInfo& executorInfo,
       const std::string& directory,
       const Option<std::string>& user,
       const SlaveID& slaveId,
-      const process::PID<Slave>& slavePid,
+      const std::map<std::string, std::string>& environment,
       bool checkpoint);
 
   virtual process::Future<bool> launch(
       const ContainerID& containerId,
-      const TaskInfo& taskInfo,
-      const ExecutorInfo& executorInfo,
-      const std::string& directory,
+      const CommandInfo& commandInfo,
+      const Option<ContainerInfo>& containerInfo,
       const Option<std::string>& user,
       const SlaveID& slaveId,
-      const process::PID<Slave>& slavePid,
-      bool checkpoint);
+      const Option<mesos::slave::ContainerClass>& containerClass = None());
+
+  virtual process::Future<process::http::Connection> attach(
+      const ContainerID& containerId);
 
   virtual process::Future<Nothing> update(
       const ContainerID& containerId,
@@ -83,12 +84,14 @@ public:
   virtual process::Future<ContainerStatus> status(
       const ContainerID& containerId);
 
-  virtual process::Future<containerizer::Termination> wait(
+  virtual process::Future<Option<mesos::slave::ContainerTermination>> wait(
       const ContainerID& containerId);
 
-  virtual void destroy(const ContainerID& containerId);
+  virtual process::Future<bool> destroy(const ContainerID& containerId);
 
   virtual process::Future<hashset<ContainerID>> containers();
+
+  virtual process::Future<Nothing> remove(const ContainerID& containerId);
 
 private:
   ComposingContainerizerProcess* process;

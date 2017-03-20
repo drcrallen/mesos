@@ -29,6 +29,7 @@
 #include <process/defer.hpp>
 #include <process/dispatch.hpp>
 #include <process/future.hpp>
+#include <process/id.hpp>
 #include <process/mutex.hpp>
 #include <process/process.hpp>
 
@@ -222,7 +223,8 @@ private:
 
 
 LogStorageProcess::LogStorageProcess(Log* log, size_t diffsBetweenSnapshots)
-  : reader(log),
+  : ProcessBase(process::ID::generate("log-storage")),
+    reader(log),
     writer(log),
     diffsBetweenSnapshots(diffsBetweenSnapshots) {}
 
@@ -484,7 +486,7 @@ Future<bool> LogStorageProcess::__set(
 
   // Check the version first (if we've already got a snapshot).
   if (snapshot.isSome() &&
-      UUID::fromBytes(snapshot.get().entry.uuid()) != uuid) {
+      UUID::fromBytes(snapshot.get().entry.uuid()).get() != uuid) {
     return false;
   }
 
@@ -604,8 +606,8 @@ Future<bool> LogStorageProcess::__expunge(const Entry& entry)
   }
 
   // Check the version first.
-  if (UUID::fromBytes(snapshot.get().entry.uuid()) !=
-      UUID::fromBytes(entry.uuid())) {
+  if (UUID::fromBytes(snapshot.get().entry.uuid()).get() !=
+      UUID::fromBytes(entry.uuid()).get()) {
     return false;
   }
 

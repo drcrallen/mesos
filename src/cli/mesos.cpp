@@ -42,7 +42,7 @@ void usage(const char* argv0)
 
   if (PATH.isSome()) {
     foreach (const string& path, strings::split(PATH.get(), ":")) {
-      Try<list<string> > matches = fs::list(path::join(path, "mesos-*"));
+      Try<list<string>> matches = fs::list(path::join(path, "mesos-*"));
       if (matches.isSome()) {
         foreach (const string& match, matches.get()) {
           Try<bool> access = os::access(match, X_OK);
@@ -130,7 +130,7 @@ int main(int argc, char** argv)
     execvp(executable.c_str(), argv + 1);
     if (errno == ENOENT) {
       cerr << "'" << command << "' is not a valid command "
-           << "(or can not be found)" << endl;
+           << "(or cannot be found)" << endl;
     } else {
       cerr << "Failed to execute '" << command << "': "
            << os::strerror(errno) << endl;

@@ -231,12 +231,12 @@ private:
 };
 
 
-class Flags : public logging::Flags
+class Flags : public virtual logging::Flags
 {
 public:
   Flags()
   {
-    add(&master,
+    add(&Flags::master,
         "master",
         "The master to connect to. May be one of:\n"
         "  master@addr:port (The PID of the master)\n"
@@ -244,27 +244,27 @@ public:
         "  zk://username:password@host1:port1,host2:port2,.../path\n"
         "  file://path/to/file (where file contains one of the above)");
 
-    add(&checkpoint,
+    add(&Flags::checkpoint,
         "checkpoint",
         "Whether to enable checkpointing (true by default).",
         true);
 
-    add(&principal,
+    add(&Flags::principal,
         "principal",
         "To enable authentication, both --principal and --secret\n"
         "must be supplied.");
 
-    add(&secret,
+    add(&Flags::secret,
         "secret",
         "To enable authentication, both --principal and --secret\n"
         "must be supplied.");
 
-    add(&command,
+    add(&Flags::command,
         "command",
         "The command to run for each task.",
         "echo hello");
 
-    add(&task_resources,
+    add(&Flags::task_resources,
         "task_resources",
         "The resources that the task uses.",
         "cpus:0.1;mem:32;disk:32");
@@ -272,11 +272,11 @@ public:
     // TODO(bmahler): We need to take a separate flag for
     // revocable resources because there is no support yet
     // for specifying revocable resources in a resource string.
-    add(&task_revocable_resources,
+    add(&Flags::task_revocable_resources,
         "task_revocable_resources",
         "The revocable resources that the task uses.");
 
-    add(&num_tasks,
+    add(&Flags::num_tasks,
         "num_tasks",
         "Optionally, the number of tasks to run to completion before exiting.\n"
         "If unset, as many tasks as possible will be launched.");
@@ -325,6 +325,20 @@ int main(int argc, char** argv)
                      " to enable authentication");
   }
 
+  FrameworkInfo framework;
+  framework.set_user(""); // Have Mesos fill in the current user.
+  framework.set_name("No Executor Framework");
+  framework.set_checkpoint(flags.checkpoint);
+
+  if (flags.task_revocable_resources.isSome()) {
+    framework.add_capabilities()->set_type(
+        FrameworkInfo::Capability::REVOCABLE_RESOURCES);
+  }
+
+  if (flags.principal.isSome()) {
+    framework.set_principal(flags.principal.get());
+  }
+
   Try<Resources> resources =
     Resources::parse(flags.task_resources);
 
@@ -352,21 +366,9 @@ int main(int argc, char** argv)
     }
   }
 
+  taskResources.allocate(framework.role());
+
   logging::initialize(argv[0], flags, true); // Catch signals.
-
-  FrameworkInfo framework;
-  framework.set_user(""); // Have Mesos fill in the current user.
-  framework.set_name("No Executor Framework");
-  framework.set_checkpoint(flags.checkpoint);
-
-  if (flags.task_revocable_resources.isSome()) {
-    framework.add_capabilities()->set_type(
-        FrameworkInfo::Capability::REVOCABLE_RESOURCES);
-  }
-
-  if (flags.principal.isSome()) {
-    framework.set_principal(flags.principal.get());
-  }
 
   NoExecutorScheduler scheduler(
       framework,

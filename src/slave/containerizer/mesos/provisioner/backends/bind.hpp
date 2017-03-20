@@ -39,9 +39,13 @@ class BindBackendProcess;
 //    mounting read-write volumes to places like /tmp, /var/tmp,
 //    /home, etc. using the ContainerInfo. These can be relative to
 //    the executor work directory.
-//    N.B. Since the filesystem is read-only, '--sandbox_directory' must
-//    already exist within the filesystem because the filesystem isolator
-//    is unable to create it!
+//    N.B. Since the filesystem is read-only:
+//    i.  The '--sandbox_directory' must already exist within the
+//        filesystem because the filesystem isolator is unable to
+//        create it!
+//    ii. The 'tmpfs' moint point '/tmp' must already exist within
+//        the filesystem, because 'pivot_root' needs a mount point
+//        for the old root.
 // 3) It's fast because the bind mount requires (nearly) zero IO.
 class BindBackend : public Backend
 {
@@ -56,7 +60,9 @@ public:
       const std::string& rootfs,
       const std::string& backendDir);
 
-  virtual process::Future<bool> destroy(const std::string& rootfs);
+  virtual process::Future<bool> destroy(
+      const std::string& rootfs,
+      const std::string& backendDir);
 
 private:
   explicit BindBackend(process::Owned<BindBackendProcess> process);

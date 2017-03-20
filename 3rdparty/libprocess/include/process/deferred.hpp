@@ -58,7 +58,7 @@ private:
 // hold onto the functor type F and let the compiler invoke the
 // necessary cast operator (below) when it actually has determined
 // what type is needed. This is similar in nature to how std::bind
-// works with it's intermediate _Bind type (which the pre-C++11
+// works with its intermediate _Bind type (which the pre-C++11
 // implementation relied on).
 template <typename F>
 struct _Deferred
@@ -84,7 +84,7 @@ struct _Deferred
 
     return std::function<void()>(
         [=]() {
-          dispatch(pid_.get(), std::function<void()>(f_));
+          dispatch(pid_.get(), f_);
         });
   }
 
@@ -99,7 +99,7 @@ struct _Deferred
 
     return std::function<void()>(
         [=]() {
-          dispatch(pid_.get(), std::function<void()>(f_));
+          dispatch(pid_.get(), f_);
         });
   }
 
@@ -115,7 +115,7 @@ struct _Deferred
 
     return std::function<R()>(
         [=]() {
-          return dispatch(pid_.get(), std::function<R()>(f_));
+          return dispatch(pid_.get(), f_);
         });
   }
 
@@ -131,7 +131,7 @@ struct _Deferred
 
     return std::function<R()>(
         [=]() {
-          return dispatch(pid_.get(), std::function<R()>(f_));
+          return dispatch(pid_.get(), f_);
         });
   }
 
@@ -180,7 +180,7 @@ struct _Deferred
         });                                                             \
   }
 
-  REPEAT_FROM_TO(1, 11, TEMPLATE, _) // Args A0 -> A9.
+  REPEAT_FROM_TO(1, 12, TEMPLATE, _) // Args A0 -> A10.
 #undef TEMPLATE
 
 #define TEMPLATE(Z, N, DATA)                                            \
@@ -222,7 +222,7 @@ struct _Deferred
         });                                                             \
   }
 
-  REPEAT_FROM_TO(1, 11, TEMPLATE, _) // Args A0 -> A9.
+  REPEAT_FROM_TO(1, 12, TEMPLATE, _) // Args A0 -> A10.
 #undef TEMPLATE
 
 private:
@@ -240,7 +240,7 @@ private:
              ENUM_BINARY_PARAMS(N, A, a))                               \
     -> _Deferred<decltype(std::bind(&std::function<void(ENUM_PARAMS(N, P))>::operator(), std::function<void(ENUM_PARAMS(N, P))>(), ENUM_PARAMS(N, a)))>; // NOLINT(whitespace/line_length)
 
-  REPEAT_FROM_TO(1, 11, TEMPLATE, _) // Args A0 -> A9.
+  REPEAT_FROM_TO(1, 12, TEMPLATE, _) // Args A0 -> A10.
 #undef TEMPLATE
 
 #define TEMPLATE(Z, N, DATA)                                            \
@@ -253,7 +253,7 @@ private:
              ENUM_BINARY_PARAMS(N, A, a))                               \
     -> _Deferred<decltype(std::bind(&std::function<Future<R>(ENUM_PARAMS(N, P))>::operator(), std::function<Future<R>(ENUM_PARAMS(N, P))>(), ENUM_PARAMS(N, a)))>; // NOLINT(whitespace/line_length)
 
-  REPEAT_FROM_TO(1, 11, TEMPLATE, _) // Args A0 -> A9.
+  REPEAT_FROM_TO(1, 12, TEMPLATE, _) // Args A0 -> A10.
 #undef TEMPLATE
 
 #define TEMPLATE(Z, N, DATA)                                            \
@@ -266,7 +266,7 @@ private:
              ENUM_BINARY_PARAMS(N, A, a))                               \
     -> _Deferred<decltype(std::bind(&std::function<Future<R>(ENUM_PARAMS(N, P))>::operator(), std::function<Future<R>(ENUM_PARAMS(N, P))>(), ENUM_PARAMS(N, a)))>; // NOLINT(whitespace/line_length)
 
-  REPEAT_FROM_TO(1, 11, TEMPLATE, _) // Args A0 -> A9.
+  REPEAT_FROM_TO(1, 12, TEMPLATE, _) // Args A0 -> A10.
 #undef TEMPLATE
 
   _Deferred(const UPID& pid, F f) : pid(pid), f(f) {}

@@ -76,8 +76,7 @@ class ClientProcess : public Process<ClientProcess>
 {
 public:
   ClientProcess()
-    : running(false),
-      requests(0),
+    : requests(0),
       responses(0),
       totalRequests(0),
       concurrency(0) {}
@@ -148,7 +147,7 @@ private:
 
   Future<Duration> _run()
   {
-    duration = Owned<Promise<Duration> >(new Promise<Duration>());
+    duration = Owned<Promise<Duration>>(new Promise<Duration>());
 
     watch.start();
 
@@ -172,8 +171,6 @@ private:
       ++requests;
     }
   }
-
-  bool running;
 
   // The address of the ponger (server).
   UPID server;
@@ -288,8 +285,6 @@ TEST(ProcessTest, Process_BENCHMARK_ClientServer)
 
   terminate(server);
   wait(server);
-
-  return;
 }
 
 

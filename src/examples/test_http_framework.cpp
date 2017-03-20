@@ -116,7 +116,7 @@ public:
           framework.mutable_id()->CopyFrom(event.subscribed().framework_id());
           state = SUBSCRIBED;
 
-          cout << "Subscribed with ID '" << framework.id() << endl;
+          cout << "Subscribed with ID " << framework.id() << endl;
           break;
         }
 
@@ -222,16 +222,17 @@ private:
            << Resources(offer.resources())
            << endl;
 
-      static const Resources TASK_RESOURCES = Resources::parse(
+      Resources taskResources = Resources::parse(
           "cpus:" + stringify(CPUS_PER_TASK) +
           ";mem:" + stringify(MEM_PER_TASK)).get();
+      taskResources.allocate(framework.role());
 
       Resources remaining = offer.resources();
 
       // Launch tasks.
       vector<TaskInfo> tasks;
       while (tasksLaunched < totalTasks &&
-             remaining.flatten().contains(TASK_RESOURCES)) {
+             remaining.flatten().contains(taskResources)) {
         int taskId = tasksLaunched++;
 
         cout << "Launching task " << taskId << " using offer "
@@ -244,8 +245,9 @@ private:
         task.mutable_agent_id()->MergeFrom(offer.agent_id());
         task.mutable_executor()->MergeFrom(executor);
 
-        Option<Resources> resources =
-          remaining.find(TASK_RESOURCES.flatten(framework.role()));
+        Try<Resources> flattened = taskResources.flatten(framework.role());
+        CHECK_SOME(flattened);
+        Option<Resources> resources = remaining.find(flattened.get());
 
         CHECK_SOME(resources);
 
@@ -376,6 +378,20 @@ void usage(const char* argv0, const flags::FlagsBase& flags)
 }
 
 
+class Flags : public virtual mesos::internal::logging::Flags
+{
+public:
+  Flags()
+  {
+    add(&Flags::role, "role", "Role to use when registering", "*");
+    add(&Flags::master, "master", "ip:port of master to connect");
+  }
+
+  string role;
+  Option<string> master;
+};
+
+
 int main(int argc, char** argv)
 {
   // Find this executable's directory to locate executor.
@@ -389,18 +405,7 @@ int main(int argc, char** argv)
         "test-http-executor");
   }
 
-  mesos::internal::logging::Flags flags;
-
-  string role;
-  flags.add(&role,
-            "role",
-            "Role to use when registering",
-            "*");
-
-  Option<string> master;
-  flags.add(&master,
-            "master",
-            "ip:port of master to connect");
+  Flags flags;
 
   Try<flags::Warnings> load = flags.load(None(), argc, argv);
 
@@ -408,7 +413,7 @@ int main(int argc, char** argv)
     cerr << load.error() << endl;
     usage(argv[0], flags);
     EXIT(EXIT_FAILURE);
-  } else if (master.isNone()) {
+  } else if (flags.master.isNone()) {
     cerr << "Missing --master" << endl;
     usage(argv[0], flags);
     EXIT(EXIT_FAILURE);
@@ -424,7 +429,7 @@ int main(int argc, char** argv)
 
   FrameworkInfo framework;
   framework.set_name("Event Call Scheduler using libprocess (C++)");
-  framework.set_role(role);
+  framework.set_role(flags.role);
 
   const Result<string> user = os::user();
 
@@ -452,7 +457,7 @@ int main(int argc, char** argv)
   framework.set_principal(value.get());
 
   process::Owned<HTTPScheduler> scheduler(
-      new HTTPScheduler(framework, executor, master.get()));
+      new HTTPScheduler(framework, executor, flags.master.get()));
 
   process::spawn(scheduler.get());
   process::wait(scheduler.get());

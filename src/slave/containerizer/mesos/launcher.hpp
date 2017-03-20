@@ -67,14 +67,18 @@ public:
       const process::Subprocess::IO& in,
       const process::Subprocess::IO& out,
       const process::Subprocess::IO& err,
-      const Option<flags::FlagsBase>& flags,
+      const flags::FlagsBase* flags,
       const Option<std::map<std::string, std::string>>& environment,
-      const Option<int>& namespaces,
-      std::vector<process::Subprocess::Hook> parentHooks =
-        process::Subprocess::Hook::None()) = 0;
+      const Option<int>& enterNamespaces,
+      const Option<int>& cloneNamespaces) = 0;
 
   // Kill all processes in the containerized context.
   virtual process::Future<Nothing> destroy(const ContainerID& containerId) = 0;
+
+  // Return ContainerStatus information about container.
+  // Currently only returns Executor PID info.
+  virtual process::Future<ContainerStatus> status(
+      const ContainerID& containerId) = 0;
 };
 
 
@@ -99,13 +103,15 @@ public:
       const process::Subprocess::IO& in,
       const process::Subprocess::IO& out,
       const process::Subprocess::IO& err,
-      const Option<flags::FlagsBase>& flags,
+      const flags::FlagsBase* flags,
       const Option<std::map<std::string, std::string>>& environment,
-      const Option<int>& namespaces,
-      std::vector<process::Subprocess::Hook> parentHooks =
-        process::Subprocess::Hook::None());
+      const Option<int>& enterNamespaces,
+      const Option<int>& cloneNamespaces);
 
   virtual process::Future<Nothing> destroy(const ContainerID& containerId);
+
+  virtual process::Future<ContainerStatus> status(
+      const ContainerID& containerId);
 
 protected:
   PosixLauncher() {}

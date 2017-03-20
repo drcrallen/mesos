@@ -15,8 +15,10 @@
 // limitations under the License.
 
 #include <string>
+#include <vector>
 
 #include <process/owned.hpp>
+#include <process/subprocess.hpp>
 
 #include <stout/json.hpp>
 #include <stout/net.hpp>
@@ -26,9 +28,13 @@
 #include <stout/protobuf.hpp>
 #include <stout/strings.hpp>
 
+#include <stout/os/constants.hpp>
+
 #include <mesos/mesos.hpp>
 
 #include <mesos/fetcher/fetcher.hpp>
+
+#include "common/status_utils.hpp"
 
 #include "hdfs/hdfs.hpp"
 
@@ -45,6 +51,7 @@ using namespace mesos;
 using namespace mesos::internal;
 
 using std::string;
+using std::vector;
 
 using mesos::fetcher::FetcherInfo;
 
@@ -59,7 +66,12 @@ static Try<bool> extract(
     const string& sourcePath,
     const string& destinationDirectory)
 {
-  string command;
+  Try<Nothing> result = Nothing();
+
+  Option<Subprocess::IO> in = None();
+  Option<Subprocess::IO> out = None();
+  vector<string> command;
+
   // Extract any .tar, .tgz, tar.gz, tar.bz2 or zip files.
   if (strings::endsWith(sourcePath, ".tar") ||
       strings::endsWith(sourcePath, ".tgz") ||
@@ -68,25 +80,44 @@ static Try<bool> extract(
       strings::endsWith(sourcePath, ".tar.bz2") ||
       strings::endsWith(sourcePath, ".txz") ||
       strings::endsWith(sourcePath, ".tar.xz")) {
-    command = "tar -C '" + destinationDirectory + "' -xf";
+    command = {"tar", "-C", destinationDirectory, "-xf", sourcePath};
   } else if (strings::endsWith(sourcePath, ".gz")) {
     string pathWithoutExtension = sourcePath.substr(0, sourcePath.length() - 3);
     string filename = Path(pathWithoutExtension).basename();
-    command = "gzip -dc > '" + destinationDirectory + "/" + filename + "' <";
+    string destinationPath = path::join(destinationDirectory, filename);
+
+    command = {"gunzip", "-d", "-c"};
+    in = Subprocess::PATH(sourcePath);
+    out = Subprocess::PATH(destinationPath);
   } else if (strings::endsWith(sourcePath, ".zip")) {
-    command = "unzip -o -d '" + destinationDirectory + "'";
+    command = {"unzip", "-o", "-d", destinationDirectory, sourcePath};
   } else {
     return false;
   }
 
-  command += " '" + sourcePath + "'";
+  CHECK_GT(command.size(), 0u);
 
-  LOG(INFO) << "Extracting with command: " << command;
+  Try<Subprocess> extractProcess = subprocess(
+      command[0],
+      command,
+      in.getOrElse(Subprocess::PATH(os::DEV_NULL)),
+      out.getOrElse(Subprocess::FD(STDOUT_FILENO)),
+      Subprocess::FD(STDERR_FILENO));
 
-  int status = os::system(command);
-  if (status != 0) {
-    return Error("Failed to extract: command " + command +
-                 " exited with status: " + stringify(status));
+  if (extractProcess.isError()) {
+    return Error(
+        "Failed to extract '" + sourcePath + "': '" +
+        strings::join(" ", command) + "' failed: " +
+        extractProcess.error());
+  }
+
+  // `status()` never fails or gets discarded.
+  int status = extractProcess->status()->get();
+  if (!WSUCCEEDED(status)) {
+    return Error(
+        "Failed to extract '" + sourcePath + "': '" +
+        strings::join(" ", command) + "' failed: " +
+        WSTRINGIFY(status));
   }
 
   LOG(INFO) << "Extracted '" << sourcePath << "' into '"
@@ -162,15 +193,19 @@ static Try<string> copyFile(
     const string& sourcePath,
     const string& destinationPath)
 {
-  const string command = "cp '" + sourcePath + "' '" + destinationPath + "'";
+  int status = os::spawn("cp", {"cp", sourcePath, destinationPath});
 
-  LOG(INFO) << "Copying resource with command:" << command;
-
-  int status = os::system(command);
-  if (status != 0) {
-    return Error("Failed to copy with command '" + command +
-                 "', exit status: " + stringify(status));
+  if (status == -1) {
+    return ErrnoError("Failed to copy '" + sourcePath + "'");
   }
+
+  if (!WSUCCEEDED(status)) {
+    return Error(
+        "Failed to copy '" + sourcePath + "': " + WSTRINGIFY(status));
+  }
+
+  LOG(INFO) << "Copied resource '" << sourcePath
+            << "' to '" << destinationPath << "'";
 
   return destinationPath;
 }
@@ -192,7 +227,7 @@ static Try<string> download(
   }
 
   // 1. Try to fetch using a local copy.
-  // We regard as local: "file://" or the absense of any URI scheme.
+  // We regard as local: "file://" or the absence of any URI scheme.
   Result<string> sourcePath =
     Fetcher::uriToLocalPath(sourceUri, frameworksHome);
 
@@ -378,14 +413,11 @@ static Try<string> fetchThroughCache(
   CHECK_NE(FetcherInfo::Item::BYPASS_CACHE, item.action())
     << "Unexpected fetcher action selector";
 
+  CHECK(os::exists(cacheDirectory.get()))
+    << "Fetcher cache directory was expected to exist but was not found";
+
   if (item.action() == FetcherInfo::Item::DOWNLOAD_AND_CACHE) {
     LOG(INFO) << "Downloading into cache";
-
-    Try<Nothing> mkdir = os::mkdir(cacheDirectory.get());
-    if (mkdir.isError()) {
-      return Error("Failed to create fetcher cache directory '" +
-                   cacheDirectory.get() + "': " + mkdir.error());
-    }
 
     Try<string> downloaded = download(
         item.uri().value(),
@@ -423,6 +455,45 @@ static Try<string> fetch(
       cacheDirectory,
       sandboxDirectory,
       frameworksHome);
+}
+
+
+// Checks to see if it's necessary to create a fetcher cache directory for this
+// user, and creates it if so.
+static Try<Nothing> createCacheDirectory(const FetcherInfo& fetcherInfo)
+{
+  if (!fetcherInfo.has_cache_directory()) {
+    return Nothing();
+  }
+
+  foreach (const FetcherInfo::Item& item, fetcherInfo.items()) {
+    if (item.action() != FetcherInfo::Item::BYPASS_CACHE) {
+      // If this user has fetched anything into the cache before, their cache
+      // directory will already exist. Set `recursive = true` when calling
+      // `os::mkdir` to ensure no error is returned in this case.
+      Try<Nothing> mkdir = os::mkdir(fetcherInfo.cache_directory(), true);
+      if (mkdir.isError()) {
+        return mkdir;
+      }
+
+      if (fetcherInfo.has_user()) {
+        // Fetching is performed as the task's user,
+        // so chown the cache directory.
+        Try<Nothing> chown = os::chown(
+            fetcherInfo.user(),
+            fetcherInfo.cache_directory(),
+            false);
+
+        if (chown.isError()) {
+          return chown;
+        }
+      }
+
+      break;
+    }
+  }
+
+  return Nothing();
 }
 
 
@@ -473,6 +544,23 @@ int main(int argc, char* argv[])
 
   const string sandboxDirectory = fetcherInfo.get().sandbox_directory();
 
+  Try<Nothing> result = createCacheDirectory(fetcherInfo.get());
+  if (result.isError()) {
+    EXIT(EXIT_FAILURE)
+      << "Could not create the fetcher cache directory: " << result.error();
+  }
+
+  // If the `FetcherInfo` specifies a user, use `os::su()` to fetch files as the
+  // task's user to ensure that filesystem permissions are enforced.
+  if (fetcherInfo.get().has_user()) {
+    result = os::su(fetcherInfo.get().user());
+    if (result.isError()) {
+      EXIT(EXIT_FAILURE)
+        << "Fetcher could not execute `os::su()` for user '"
+        << fetcherInfo.get().user() << "'";
+    }
+  }
+
   const Option<string> cacheDirectory =
     fetcherInfo.get().has_cache_directory() ?
       Option<string>::some(fetcherInfo.get().cache_directory()) :
@@ -483,7 +571,7 @@ int main(int argc, char* argv[])
       Option<string>::some(fetcherInfo.get().frameworks_home()) :
         Option<string>::none();
 
-  // Fetch each URI to a local file, chmod, then chown if a user is provided.
+  // Fetch each URI to a local file and chmod if necessary.
   foreach (const FetcherInfo::Item& item, fetcherInfo.get().items()) {
     Try<string> fetched =
       fetch(item, cacheDirectory, sandboxDirectory, frameworksHome);
@@ -493,17 +581,6 @@ int main(int argc, char* argv[])
     } else {
       LOG(INFO) << "Fetched '" << item.uri().value()
                 << "' to '" << fetched.get() << "'";
-    }
-  }
-
-  // Recursively chown the sandbox directory if a user is provided.
-  if (fetcherInfo.get().has_user()) {
-    Try<Nothing> chowned = os::chown(
-        fetcherInfo.get().user(),
-        sandboxDirectory);
-    if (chowned.isError()) {
-      EXIT(EXIT_FAILURE)
-        << "Failed to chown " << sandboxDirectory << ": " << chowned.error();
     }
   }
 

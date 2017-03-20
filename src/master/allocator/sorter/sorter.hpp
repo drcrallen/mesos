@@ -18,8 +18,8 @@
 #define __MASTER_ALLOCATOR_SORTER_SORTER_HPP__
 
 #include <functional>
-#include <list>
 #include <string>
+#include <vector>
 
 #include <mesos/resources.hpp>
 #include <mesos/type_utils.hpp>
@@ -52,11 +52,16 @@ public:
 
   virtual ~Sorter() = default;
 
+  // Initialize the sorter.
+  virtual void initialize(
+      const Option<std::set<std::string>>& fairnessExcludeResourceNames) = 0;
+
   // Adds a client to allocate resources to. A client
   // may be a user or a framework.
   virtual void add(const std::string& client, double weight = 1) = 0;
 
-  // Update weight of a client.
+  // Updates the weight of a client. The client must have previously
+  // be added to the sorter, but it may currently be inactive.
   virtual void update(const std::string& client, double weight) = 0;
 
   // Removes a client.
@@ -77,7 +82,7 @@ public:
       const Resources& resources) = 0;
 
   // Updates a portion of the allocation for the client, in order to
-  // augment the resources with additional metadata (e.g., volumes)
+  // augment the resources with additional metadata (e.g., volumes).
   // This means that the new allocation must not affect the static
   // roles, or the overall quantities of resources!
   virtual void update(
@@ -94,26 +99,23 @@ public:
 
   // Returns the resources that have been allocated to this client.
   virtual const hashmap<SlaveID, Resources>& allocation(
-      const std::string& client) = 0;
+      const std::string& client) const = 0;
 
   // Returns the total scalar resource quantities that are allocated to
   // this client. This omits metadata about dynamic reservations and
   // persistent volumes; see `Resources::createStrippedScalarQuantity`.
   virtual const Resources& allocationScalarQuantities(
-      const std::string& client) = 0;
+      const std::string& client) const = 0;
 
   // Returns the clients that have allocations on this slave.
   virtual hashmap<std::string, Resources> allocation(
-      const SlaveID& slaveId) = 0;
+      const SlaveID& slaveId) const = 0;
 
   // Returns the given slave's resources that have been allocated to
   // this client.
   virtual Resources allocation(
       const std::string& client,
-      const SlaveID& slaveId) = 0;
-
-  // Returns the total resources that are in this sorter.
-  virtual const hashmap<SlaveID, Resources>& total() const = 0;
+      const SlaveID& slaveId) const = 0;
 
   // Returns the total scalar resource quantities in this sorter. This
   // omits metadata about dynamic reservations and persistent volumes; see
@@ -127,20 +129,17 @@ public:
   // Remove resources from the total pool.
   virtual void remove(const SlaveID& slaveId, const Resources& resources) = 0;
 
-  // Updates the total pool of resources.
-  virtual void update(const SlaveID& slaveId, const Resources& resources) = 0;
-
-  // Returns a list of all clients, in the order that they
-  // should be allocated to, according to this Sorter's policy.
-  virtual std::list<std::string> sort() = 0;
+  // Returns all of the clients in the order that they should
+  // be allocated to, according to this Sorter's policy.
+  virtual std::vector<std::string> sort() = 0;
 
   // Returns true if this Sorter contains the specified client,
-  // either active or deactivated.
-  virtual bool contains(const std::string& client) = 0;
+  // which may be active or inactive.
+  virtual bool contains(const std::string& client) const = 0;
 
   // Returns the number of clients this Sorter contains,
-  // either active or deactivated.
-  virtual int count() = 0;
+  // either active or inactive.
+  virtual int count() const = 0;
 };
 
 } // namespace allocator {

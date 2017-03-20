@@ -108,7 +108,7 @@ There are two ways to disallow unauthorized uses on specific operations:
    actions to all objects except the ones explicitly allowed.
    Consider the [example below](#disallowExample) for details.
 
-2. Set `permissive` to `false` but allow for `ANY` principle to perform the
+2. Set `permissive` to `false` but allow `ANY` principal to perform the
    action on `ANY` object. This needs to be done for all actions which should
    work without being checked against ACLs. A template doing this for all
    actions can be found in [acls_template.json](../examples/acls_template.json).
@@ -117,8 +117,8 @@ More information about the structure of the ACLs can be found in
 [their definition](https://github.com/apache/mesos/blob/master/include/mesos/authorizer/acls.proto)
 inside the Mesos source code.
 
-Note that ACLs are compared in the order that they are specified. In other
-words, if an ACL allows some action and a later ACL forbids it, the action is
+ACLs are compared in the order that they are specified. In other words,
+if an ACL allows some action and a later ACL forbids it, the action is
 allowed; likewise, if the ACL forbidding the action appears earlier than the
 one allowing the action, the action is forbidden. If no ACLs match a request,
 the request is authorized if the ACLs are permissive (which is the default
@@ -127,27 +127,144 @@ are declined.
 
 ### Authorizable Actions
 
-Currently the local authorizer configuration format supports the following
+Currently, the local authorizer configuration format supports the following
 entries, each representing an authorizable action:
 
-|Action Name|Subject|Object|Description|
-|-----------|-------|------|-----------|
-|`register_frameworks`|Framework principal.|Resource [roles](roles.md) of the framework.|(Re-)registering of frameworks.|
-|`run_tasks`|Framework principal.|UNIX user to launch the task as.|Launching tasks/executors by a framework.|
-|`teardown_frameworks`|Operator username.|Principals whose frameworks can be shutdown by the operator.|Tearing down frameworks.|
-|`reserve_resources`|Framework principal or Operator username.|Resource role of the reservation.|[Reserving](reservation.md) resources.|
-|`unreserve_resources`|Framework principal or Operator username.|Principals whose resources can be unreserved by the operator.|[Unreserving](reservation.md) resources.|
-|`create_volumes`|Framework principal or Operator username.|Resource role of the volume.|Creating [volumes](persistent-volume.md).|
-|`destroy_volumes`|Framework principal or Operator username.|Principals whose volumes can be destroyed by the operator.|Destroying [volumes](persistent-volume.md).|
-|`get_quotas`|Operator username.|Resource role whose quota status will be queried.|Querying [quota](quota.md) status for roles.|
-|`update_quotas`|Operator username.|Resource role whose quota will be updated.|Modifying [quotas](quota.md) for roles.|
-|`get_weights`|Operator username.|Resource roles whose [weights](weights.md) can be viewed by the operator.|Get weights for roles.|
-|`update_weights`|Operator username.|Resource roles whose [weights](weights.md) can be updated by the operator.|Updating weights.|
-|`view_frameworks`|HTTP user.|UNIX user of whom executors can be viewed.|Filtering http endpoints.|
-|`view_executors`|HTTP user.|UNIX user of whom executors can be viewed.|Filtering http endpoints.|
-|`view_tasks`|HTTP user.|UNIX user of whom executors can be viewed.|Filtering http endpoints.|
-|`access_sandboxes`|Operator username.|Operating system user whose executor/task sandboxes can be accessed.|Access task sandboxes.|
-|`access_mesos_logs`|Operator username.|Implicitly given. A user should only use types ANY and NONE to allow/deny access to the log.|Access Mesos logs.|
+<table class="table table-striped">
+<thead>
+<tr>
+  <th>Action Name</th>
+  <th>Subject</th>
+  <th>Object</th>
+  <th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td><code>register_frameworks</code></td>
+  <td>Framework principal.</td>
+  <td>Resource <a href="roles.md">roles</a> of
+      the framework.
+  </td>
+  <td>(Re-)registering of frameworks.</td>
+</tr>
+<tr>
+  <td><code>run_tasks</code></td>
+  <td>Framework principal.</td>
+  <td>UNIX user to launch the task as.</td>
+  <td>Launching tasks/executors by a framework.</td>
+</tr>
+<tr>
+  <td><code>teardown_frameworks</code></td>
+  <td>Operator username.</td>
+  <td>Principals whose frameworks can be shutdown by the operator.</td>
+  <td>Tearing down frameworks.</td>
+</tr>
+<tr>
+  <td><code>reserve_resources</code></td>
+  <td>Framework principal or Operator username.</td>
+  <td>Resource role of the reservation.</td>
+  <td><a href="reservation.md">Reserving</a> resources.</td>
+</tr>
+<tr>
+  <td><code>unreserve_resources</code></td>
+  <td>Framework principal or Operator username.</td>
+  <td>Principals whose resources can be unreserved by the operator.</td>
+  <td><a href="reservation.md">Unreserving</a> resources.</td>
+</tr>
+<tr>
+  <td><code>create_volumes</code></td>
+  <td>Framework principal or Operator username.</td>
+  <td>Resource role of the volume.</td>
+  <td>Creating
+      <a href="persistent-volume.md">volumes</a>.
+  </td>
+</tr>
+<tr>
+  <td><code>destroy_volumes</code></td>
+  <td>Framework principal or Operator username.</td>
+  <td>Principals whose volumes can be destroyed by the operator.</td>
+  <td>Destroying
+      <a href="persistent-volume.md">volumes</a>.
+  </td>
+</tr>
+<tr>
+  <td><code>get_quotas</code></td>
+  <td>Operator username.</td>
+  <td>Resource role whose quota status will be queried.</td>
+  <td>Querying <a href="quota.md">quota</a> status.</td>
+</tr>
+<tr>
+  <td><code>update_quotas</code></td>
+  <td>Operator username.</td>
+  <td>Resource role whose quota will be updated.</td>
+  <td>Modifying <a href="quota.md">quotas</a>.</td>
+</tr>
+<tr>
+  <td><code>view_roles</code></td>
+  <td>Operator username.</td>
+  <td>Resource roles whose information can be viewed by the operator.</td>
+  <td>Querying <a href="roles.md">roles</a>
+      and <a href="weights.md">weights</a>.
+  </td>
+</tr>
+<tr>
+  <td><code>get_endpoints</code></td>
+  <td>HTTP username.</td>
+  <td>HTTP endpoints the user should be able to access using the HTTP "GET"
+      method.</td>
+  <td>Performing an HTTP "GET" on an endpoint.</td>
+</tr>
+<tr>
+  <td><code>update_weights</code></td>
+  <td>Operator username.</td>
+  <td>Resource roles whose weights can be updated by the operator.</td>
+  <td>Updating <a href="weights.md">weights</a>.</td>
+</tr>
+<tr>
+  <td><code>view_frameworks</code></td>
+  <td>HTTP user.</td>
+  <td>UNIX user of whom executors can be viewed.</td>
+  <td>Filtering http endpoints.</td>
+</tr>
+<tr>
+  <td><code>view_executors</code></td>
+  <td>HTTP user.</td>
+  <td>UNIX user of whom executors can be viewed.</td>
+  <td>Filtering http endpoints.</td>
+</tr>
+<tr>
+  <td><code>view_tasks</code></td>
+  <td>HTTP user.</td>
+  <td>UNIX user of whom executors can be viewed.</td>
+  <td>Filtering http endpoints.</td>
+</tr>
+<tr>
+  <td><code>access_sandboxes</code></td>
+  <td>Operator username.</td>
+  <td>Operating system user whose executor/task sandboxes can be accessed.</td>
+  <td>Access task sandboxes.</td>
+</tr>
+<tr>
+  <td><code>access_mesos_logs</code></td>
+  <td>Operator username.</td>
+  <td>Implicitly given. A user should only use types ANY and NONE to allow/deny
+      access to the log.
+  </td>
+  <td>Access Mesos logs.</td>
+</tr>
+</tbody>
+</table>
+
+### Authorizable HTTP endpoints
+
+The `get_endpoints` action covers:
+
+* `/files/debug`
+* `/logging/toggle`
+* `/metrics/snapshot`
+* `/slave(id)/containers`
+* `/slave(id)/monitor/statistics`
 
 ### Examples
 
@@ -598,6 +715,36 @@ principal can update quota.
 }
 ```
 
+
+The principal `ops` can reach all HTTP endpoints using the _GET_
+method. The principal `foo`, however, can only use the HTTP _GET_ on
+the `/logging/toggle` and `/monitor/statistics` endpoints.  No other
+principals can use _GET_ on any endpoints.
+
+```json
+{
+  "permissive": false,
+  "get_endpoints": [
+                     {
+                       "principals": {
+                         "values": ["ops"]
+                       },
+                       "paths": {
+                         "type": "ANY"
+                       }
+                     },
+                     {
+                       "principals": {
+                         "values": ["foo"]
+                       },
+                       "paths": {
+                         "values": ["/logging/toggle", "/monitor/statistics"]
+                       }
+                     }
+                   ]
+}
+```
+
 ## Implementing an Authorizer
 
 In case you plan to implement your own authorizer [module](modules.md), the
@@ -648,16 +795,22 @@ execute action **X** on all objects?_.
 
 `Object` has several optional fields of which, depending on the action,
 one or more fields must be set
-(e.g., the `view_executors` action expects the `executor_info` and `framework_info` to be set).
+(e.g., the `view_executors` action expects the `executor_info` and
+`framework_info` to be set).
 
 The `action` field of the `Request` message is an enum. It is kept optional —
 even though a valid action is necessary for every request — to allow for
 backwards compatibility when adding new fields (see
 [MESOS-4997](https://issues.apache.org/jira/browse/MESOS-4997) for details).
 
-Third, the `ObjectApprover` interface. In order to support efficient authorization of large objects and multiple objects a user can request an `ObjectApprover` via `Future<Owned<ObjectApprover>> getObjectApprover(const authorization::Subject& subject, const authorization::Action& action)`.
-The resulting `ObjectApprover` provides `Try<bool> approved(const ObjectApprover::Object& object)` to synchronously check whether objects are
-authorized. The `ObjectApprover::Object` follows the structure of the `Request::Object` above.
+Third, the `ObjectApprover` interface. In order to support efficient
+authorization of large objects and multiple objects a user can request an
+`ObjectApprover` via
+`Future<Owned<ObjectApprover>> getObjectApprover(const authorization::Subject& subject, const authorization::Action& action)`.
+The resulting `ObjectApprover` provides
+`Try<bool> approved(const ObjectApprover::Object& object)` to synchronously
+check whether objects are authorized. The `ObjectApprover::Object` follows the
+structure of the `Request::Object` above.
 
 ```cpp
 struct Object
@@ -670,7 +823,8 @@ struct Object
 };
 ```
 
-As the fields take pointer to each entity the `ObjectApprover::Object` does not require the entity to be copied.
+As the fields take pointer to each entity the `ObjectApprover::Object` does not
+require the entity to be copied.
 
 NOTE: As the `ObjectApprover` is run synchronously in a different actor process
 `ObjectApprover.approved()` call must not block!

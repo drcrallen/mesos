@@ -11,8 +11,8 @@ There are different ways you can get Mesos:
 
 1\. Download the latest stable release from [Apache](http://mesos.apache.org/downloads/) (***Recommended***)
 
-    $ wget http://www.apache.org/dist/mesos/0.28.2/mesos-0.28.2.tar.gz
-    $ tar -zxf mesos-0.28.2.tar.gz
+    $ wget http://www.apache.org/dist/mesos/1.2.0/mesos-1.2.0.tar.gz
+    $ tar -zxf mesos-1.2.0.tar.gz
 
 2\. Clone the Mesos git [repository](https://git-wip-us.apache.org/repos/asf/mesos.git) (***Advanced Users Only***)
 
@@ -25,6 +25,8 @@ There are different ways you can get Mesos:
 Mesos runs on Linux (64 Bit) and Mac OS X (64 Bit). To build Mesos from source, GCC 4.8.1+ or Clang 3.5+ is required.
 
 For full support of process isolation under Linux a recent kernel >=3.10 is required.
+
+The Mesos agent also runs on Windows. To build Mesos from source, follow the instructions in the [Windows](windows.md) section.
 
 Make sure your hostname is resolvable via DNS or via `/etc/hosts` to allow full support of Docker's host-networking capabilities, needed for some of the Mesos tests. When in doubt, please validate that `/etc/hosts` contains your hostname.
 
@@ -45,9 +47,28 @@ Following are the instructions for stock Ubuntu 14.04. If you are using a differ
     $ sudo apt-get install -y autoconf libtool
 
     # Install other Mesos dependencies.
-    $ sudo apt-get -y install build-essential python-dev libcurl4-nss-dev libsasl2-dev libsasl2-modules maven libapr1-dev libsvn-dev libelf-dev
+    $ sudo apt-get -y install build-essential python-dev libcurl4-nss-dev libsasl2-dev libsasl2-modules maven libapr1-dev libsvn-dev
 
-### Mac OS X Yosemite & El Capitan
+### Ubuntu 16.04
+
+Following are the instructions for stock Ubuntu 16.04. If you are using a different OS, please install the packages accordingly.
+
+    # Update the packages.
+    $ sudo apt-get update
+
+    # Install a few utility tools.
+    $ sudo apt-get install -y tar wget git
+
+    # Install the latest OpenJDK.
+    $ sudo apt-get install -y openjdk-8-jdk
+
+    # Install autotools (Only necessary if building from git repository).
+    $ sudo apt-get install -y autoconf libtool
+
+    # Install other Mesos dependencies.
+    $ sudo apt-get -y install build-essential python-dev libcurl4-nss-dev libsasl2-dev libsasl2-modules maven libapr1-dev libsvn-dev zlib1g-dev
+
+### Mac OS X 10.10 (Yosemite), Mac OS X 10.11 (El Capitan), macOS 10.12 (Sierra)
 
 Following are the instructions for stock Mac OS X Yosemite and El Capitan. If you are using a different OS, please install the packages accordingly.
 
@@ -62,6 +83,26 @@ Following are the instructions for stock Mac OS X Yosemite and El Capitan. If yo
 
     # Install libraries.
     $ brew install wget git autoconf automake libtool subversion maven
+
+When compiling on macOS 10.12, the following is needed:
+
+    # There is an incompatiblity with the system installed svn and apr headers.
+    # We need the svn and apr headers from a brew installation of subversion.
+    # You may need to unlink the existing version of subversion installed via
+    # brew in order to configure correctly.
+    $ brew unlink subversion # (If already installed)
+    $ brew install subversion
+
+    # When configuring, the svn and apr headers from brew will be automatically
+    # detected, so no need to explicitly point to them. Also,
+    # `-Wno-deprecated-declarations` is needed to suppress warnings.
+    $ ../configure CXXFLAGS=-Wno-deprecated-declarations
+
+    # Lastly, you may encounter the following error when the libprocess tests run:
+    $ ./libprocess-tests
+    Failed to obtain the IP address for '<hostname>'; the DNS service may not be able to resolve it: nodename nor servname provided, or not known
+
+    # If so, turn on 'Remote Login' within System Preferences > Sharing to resolve the issue.
 
 *NOTE: When upgrading from Yosemite to El Capitan, make sure to rerun `xcode-select --install` after the upgrade.*
 
@@ -96,14 +137,14 @@ Following are the instructions for stock CentOS 6.6. If you are using a differen
     # 'Mesos > 0.21.0' requires 'subversion > 1.8' devel package, which is
     # not available in the default repositories.
     # Create a WANdisco SVN repo file to install the correct version:
-    $ sudo cat > /etc/yum.repos.d/wandisco-svn.repo <<EOF
+    $ sudo bash -c 'cat > /etc/yum.repos.d/wandisco-svn.repo <<EOF
     [WANdiscoSVN]
     name=WANdisco SVN Repo 1.8
     enabled=1
     baseurl=http://opensource.wandisco.com/centos/6/svn-1.8/RPMS/$basearch/
     gpgcheck=1
     gpgkey=http://opensource.wandisco.com/RPM-GPG-KEY-WANdisco
-    EOF
+    EOF'
 
     # Install essential development tools.
     $ sudo yum groupinstall -y "Development Tools"
@@ -112,7 +153,7 @@ Following are the instructions for stock CentOS 6.6. If you are using a differen
     $ sudo yum install -y devtoolset-2-toolchain
 
     # Install other Mesos dependencies.
-    $ sudo yum install -y apache-maven python-devel java-1.7.0-openjdk-devel zlib-devel libcurl-devel openssl-devel cyrus-sasl-devel cyrus-sasl-md5 apr-devel subversion-devel apr-util-devel elfutils-libelf-devel.x86_64
+    $ sudo yum install -y apache-maven python-devel java-1.7.0-openjdk-devel zlib-devel libcurl-devel openssl-devel cyrus-sasl-devel cyrus-sasl-md5 apr-devel subversion-devel apr-util-devel
 
     # Enter a shell with 'devtoolset-2' enabled.
     $ scl enable devtoolset-2 bash
@@ -142,14 +183,14 @@ Following are the instructions for stock CentOS 7.1. If you are using a differen
     # 'Mesos > 0.21.0' requires 'subversion > 1.8' devel package,
     # which is not available in the default repositories.
     # Create a WANdisco SVN repo file to install the correct version:
-    $ sudo cat > /etc/yum.repos.d/wandisco-svn.repo <<EOF
+    $ sudo bash -c 'cat > /etc/yum.repos.d/wandisco-svn.repo <<EOF
     [WANdiscoSVN]
     name=WANdisco SVN Repo 1.9
     enabled=1
-    baseurl=http://opensource.wandisco.com/centos/7/svn-1.9/RPMS/$basearch/
+    baseurl=http://opensource.wandisco.com/centos/7/svn-1.9/RPMS/\$basearch/
     gpgcheck=1
     gpgkey=http://opensource.wandisco.com/RPM-GPG-KEY-WANdisco
-    EOF
+    EOF'
 
     # Parts of Mesos require systemd in order to operate. However, Mesos
     # only supports versions of systemd that contain the 'Delegate' flag.
@@ -163,9 +204,13 @@ Following are the instructions for stock CentOS 7.1. If you are using a differen
     $ sudo yum groupinstall -y "Development Tools"
 
     # Install other Mesos dependencies.
-    $ sudo yum install -y apache-maven python-devel java-1.8.0-openjdk-devel zlib-devel libcurl-devel openssl-devel cyrus-sasl-devel cyrus-sasl-md5 apr-devel subversion-devel apr-util-devel elfutils-libelf-devel.x86_64
+    $ sudo yum install -y apache-maven python-devel java-1.8.0-openjdk-devel zlib-devel libcurl-devel openssl-devel cyrus-sasl-devel cyrus-sasl-md5 apr-devel subversion-devel apr-util-devel
 
-## Building Mesos
+### Windows
+
+Follow the instructions in the [Windows](windows.md) section.
+
+## Building Mesos (Posix)
 
     # Change working directory.
     $ cd mesos
@@ -199,8 +244,8 @@ described in the ***Building Mesos*** section above.
     # Start mesos master (Ensure work directory exists and has proper permissions).
     $ ./bin/mesos-master.sh --ip=127.0.0.1 --work_dir=/var/lib/mesos
 
-    # Start mesos agent.
-    $ ./bin/mesos-agent.sh --master=127.0.0.1:5050
+    # Start mesos agent (Ensure work directory exists and has proper permissions).
+    $ ./bin/mesos-agent.sh --master=127.0.0.1:5050 --work_dir=/var/lib/mesos
 
     # Visit the mesos web page.
     $ http://127.0.0.1:5050

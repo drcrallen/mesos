@@ -19,7 +19,7 @@
 
 #include <gmock/gmock.h>
 
-#include <mesos/master/allocator.hpp>
+#include <mesos/allocator/allocator.hpp>
 
 #include <process/future.hpp>
 #include <process/gmock.hpp>
@@ -39,7 +39,7 @@ namespace tests {
 
 // The following actions make up for the fact that DoDefault
 // cannot be used inside a DoAll, for example:
-// EXPECT_CALL(allocator, addFramework(_, _, _))
+// EXPECT_CALL(allocator, addFramework(_, _, _, _))
 //   .WillOnce(DoAll(InvokeAddFramework(&allocator),
 //                   FutureSatisfy(&addFramework)));
 
@@ -57,7 +57,7 @@ ACTION_P(InvokeRecover, allocator)
 
 ACTION_P(InvokeAddFramework, allocator)
 {
-  allocator->real->addFramework(arg0, arg1, arg2);
+  allocator->real->addFramework(arg0, arg1, arg2, arg3);
 }
 
 
@@ -87,7 +87,7 @@ ACTION_P(InvokeUpdateFramework, allocator)
 
 ACTION_P(InvokeAddSlave, allocator)
 {
-  allocator->real->addSlave(arg0, arg1, arg2, arg3, arg4);
+  allocator->real->addSlave(arg0, arg1, arg2, arg3, arg4, arg5);
 }
 
 
@@ -99,7 +99,7 @@ ACTION_P(InvokeRemoveSlave, allocator)
 
 ACTION_P(InvokeUpdateSlave, allocator)
 {
-  allocator->real->updateSlave(arg0, arg1);
+  allocator->real->updateSlave(arg0, arg1, arg2);
 }
 
 
@@ -129,11 +129,11 @@ ACTION_P(InvokeRequestResources, allocator)
 
 ACTION_P(InvokeUpdateAllocation, allocator)
 {
-  allocator->real->updateAllocation(arg0, arg1, arg2);
+  allocator->real->updateAllocation(arg0, arg1, arg2, arg3);
 }
 
 
-ACTION_P(InvokeUpdateResources, allocator)
+ACTION_P(InvokeUpdateAvailable, allocator)
 {
   return allocator->real->updateAvailable(arg0, arg1);
 }
@@ -174,13 +174,13 @@ ACTION_P2(InvokeRecoverResourcesWithFilters, allocator, timeout)
 
 ACTION_P(InvokeSuppressOffers, allocator)
 {
-  allocator->real->suppressOffers(arg0);
+  allocator->real->suppressOffers(arg0, arg1);
 }
 
 
 ACTION_P(InvokeReviveOffers, allocator)
 {
-  allocator->real->reviveOffers(arg0);
+  allocator->real->reviveOffers(arg0, arg1);
 }
 
 
@@ -203,17 +203,17 @@ ACTION_P(InvokeUpdateWeights, allocator)
 
 
 template <typename T = master::allocator::HierarchicalDRFAllocator>
-mesos::master::allocator::Allocator* createAllocator()
+mesos::allocator::Allocator* createAllocator()
 {
   // T represents the allocator type. It can be a default built-in
   // allocator, or one provided by an allocator module.
-  Try<mesos::master::allocator::Allocator*> instance = T::create();
+  Try<mesos::allocator::Allocator*> instance = T::create();
   CHECK_SOME(instance);
   return CHECK_NOTNULL(instance.get());
 }
 
 template <typename T = master::allocator::HierarchicalDRFAllocator>
-class TestAllocator : public mesos::master::allocator::Allocator
+class TestAllocator : public mesos::allocator::Allocator
 {
 public:
   // Actual allocation is done by an instance of real allocator,
@@ -239,9 +239,9 @@ public:
     EXPECT_CALL(*this, recover(_, _))
       .WillRepeatedly(DoDefault());
 
-    ON_CALL(*this, addFramework(_, _, _))
+    ON_CALL(*this, addFramework(_, _, _, _))
       .WillByDefault(InvokeAddFramework(this));
-    EXPECT_CALL(*this, addFramework(_, _, _))
+    EXPECT_CALL(*this, addFramework(_, _, _, _))
       .WillRepeatedly(DoDefault());
 
     ON_CALL(*this, removeFramework(_))
@@ -264,9 +264,9 @@ public:
     EXPECT_CALL(*this, updateFramework(_, _))
       .WillRepeatedly(DoDefault());
 
-    ON_CALL(*this, addSlave(_, _, _, _, _))
+    ON_CALL(*this, addSlave(_, _, _, _, _, _))
       .WillByDefault(InvokeAddSlave(this));
-    EXPECT_CALL(*this, addSlave(_, _, _, _, _))
+    EXPECT_CALL(*this, addSlave(_, _, _, _, _, _))
       .WillRepeatedly(DoDefault());
 
     ON_CALL(*this, removeSlave(_))
@@ -274,9 +274,9 @@ public:
     EXPECT_CALL(*this, removeSlave(_))
       .WillRepeatedly(DoDefault());
 
-    ON_CALL(*this, updateSlave(_, _))
+    ON_CALL(*this, updateSlave(_, _, _))
       .WillByDefault(InvokeUpdateSlave(this));
-    EXPECT_CALL(*this, updateSlave(_, _))
+    EXPECT_CALL(*this, updateSlave(_, _, _))
       .WillRepeatedly(DoDefault());
 
     ON_CALL(*this, activateSlave(_))
@@ -299,13 +299,13 @@ public:
     EXPECT_CALL(*this, requestResources(_, _))
       .WillRepeatedly(DoDefault());
 
-    ON_CALL(*this, updateAllocation(_, _, _))
+    ON_CALL(*this, updateAllocation(_, _, _, _))
       .WillByDefault(InvokeUpdateAllocation(this));
-    EXPECT_CALL(*this, updateAllocation(_, _, _))
+    EXPECT_CALL(*this, updateAllocation(_, _, _, _))
       .WillRepeatedly(DoDefault());
 
     ON_CALL(*this, updateAvailable(_, _))
-      .WillByDefault(InvokeUpdateResources(this));
+      .WillByDefault(InvokeUpdateAvailable(this));
     EXPECT_CALL(*this, updateAvailable(_, _))
       .WillRepeatedly(DoDefault());
 
@@ -329,14 +329,14 @@ public:
     EXPECT_CALL(*this, recoverResources(_, _, _, _))
       .WillRepeatedly(DoDefault());
 
-    ON_CALL(*this, suppressOffers(_))
+    ON_CALL(*this, suppressOffers(_, _))
       .WillByDefault(InvokeSuppressOffers(this));
-    EXPECT_CALL(*this, suppressOffers(_))
+    EXPECT_CALL(*this, suppressOffers(_, _))
       .WillRepeatedly(DoDefault());
 
-    ON_CALL(*this, reviveOffers(_))
+    ON_CALL(*this, reviveOffers(_, _))
       .WillByDefault(InvokeReviveOffers(this));
-    EXPECT_CALL(*this, reviveOffers(_))
+    EXPECT_CALL(*this, reviveOffers(_, _))
       .WillRepeatedly(DoDefault());
 
     ON_CALL(*this, setQuota(_, _))
@@ -361,20 +361,21 @@ public:
       const Duration&,
       const lambda::function<
           void(const FrameworkID&,
-               const hashmap<SlaveID, Resources>&)>&,
+               const hashmap<std::string, hashmap<SlaveID, Resources>>&)>&,
       const lambda::function<
           void(const FrameworkID&,
                const hashmap<SlaveID, UnavailableResources>&)>&,
-      const hashmap<std::string, double>&));
+      const Option<std::set<std::string>>&));
 
   MOCK_METHOD2(recover, void(
       const int expectedAgentCount,
       const hashmap<std::string, Quota>&));
 
-  MOCK_METHOD3(addFramework, void(
+  MOCK_METHOD4(addFramework, void(
       const FrameworkID&,
       const FrameworkInfo&,
-      const hashmap<SlaveID, Resources>&));
+      const hashmap<SlaveID, Resources>&,
+      bool active));
 
   MOCK_METHOD1(removeFramework, void(
       const FrameworkID&));
@@ -389,9 +390,10 @@ public:
       const FrameworkID&,
       const FrameworkInfo&));
 
-  MOCK_METHOD5(addSlave, void(
+  MOCK_METHOD6(addSlave, void(
       const SlaveID&,
       const SlaveInfo&,
+      const std::vector<SlaveInfo::Capability>&,
       const Option<Unavailability>&,
       const Resources&,
       const hashmap<FrameworkID, Resources>&));
@@ -399,9 +401,10 @@ public:
   MOCK_METHOD1(removeSlave, void(
       const SlaveID&));
 
-  MOCK_METHOD2(updateSlave, void(
+  MOCK_METHOD3(updateSlave, void(
       const SlaveID&,
-      const Resources&));
+      const Option<Resources>&,
+      const Option<std::vector<SlaveInfo::Capability>>&));
 
   MOCK_METHOD1(activateSlave, void(
       const SlaveID&));
@@ -410,15 +413,16 @@ public:
       const SlaveID&));
 
   MOCK_METHOD1(updateWhitelist, void(
-      const Option<hashset<std::string> >&));
+      const Option<hashset<std::string>>&));
 
   MOCK_METHOD2(requestResources, void(
       const FrameworkID&,
       const std::vector<Request>&));
 
-  MOCK_METHOD3(updateAllocation, void(
+  MOCK_METHOD4(updateAllocation, void(
       const FrameworkID&,
       const SlaveID&,
+      const Resources&,
       const std::vector<Offer::Operation>&));
 
   MOCK_METHOD2(updateAvailable, process::Future<Nothing>(
@@ -433,13 +437,13 @@ public:
       const SlaveID&,
       const FrameworkID&,
       const Option<UnavailableResources>&,
-      const Option<mesos::master::InverseOfferStatus>&,
+      const Option<mesos::allocator::InverseOfferStatus>&,
       const Option<Filters>&));
 
   MOCK_METHOD0(getInverseOfferStatuses, process::Future<
       hashmap<SlaveID, hashmap<
           FrameworkID,
-          mesos::master::InverseOfferStatus>>>());
+          mesos::allocator::InverseOfferStatus>>>());
 
   MOCK_METHOD4(recoverResources, void(
       const FrameworkID&,
@@ -447,11 +451,13 @@ public:
       const Resources&,
       const Option<Filters>& filters));
 
-  MOCK_METHOD1(suppressOffers, void(
-      const FrameworkID&));
+  MOCK_METHOD2(suppressOffers, void(
+      const FrameworkID&,
+      const Option<std::string>&));
 
-  MOCK_METHOD1(reviveOffers, void(
-      const FrameworkID&));
+  MOCK_METHOD2(reviveOffers, void(
+      const FrameworkID&,
+      const Option<std::string>&));
 
   MOCK_METHOD2(setQuota, void(
       const std::string&,
@@ -463,7 +469,7 @@ public:
   MOCK_METHOD1(updateWeights, void(
       const std::vector<WeightInfo>&));
 
-  process::Owned<mesos::master::allocator::Allocator> real;
+  process::Owned<mesos::allocator::Allocator> real;
 };
 
 } // namespace tests {

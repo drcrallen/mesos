@@ -14,28 +14,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef __LAUNCHER_EXECUTOR_HPP__
-#define __LAUNCHER_EXECUTOR_HPP__
+#ifndef __LAUNCHER_WINDOWS_EXECUTOR_HPP__
+#define __LAUNCHER_WINDOWS_EXECUTOR_HPP__
 
 #include <string>
 
-#include <mesos/v1/mesos.hpp>
+#include <mesos/mesos.hpp>
 
 #include <stout/option.hpp>
+#include <stout/windows.hpp>
 
 namespace mesos {
-namespace v1 {
 namespace internal {
 
 PROCESS_INFORMATION launchTaskWindows(
-    const TaskInfo& task,
     const CommandInfo& command,
-    char** argv,
-    Option<char**>& override,
     Option<std::string>& rootfs);
 
 } // namespace internal {
-} // namespace v1 {
 } // namespace mesos {
 
-#endif // __LAUNCHER_EXECUTOR_HPP__
+#endif // __LAUNCHER_WINDOWS_EXECUTOR_HPP__

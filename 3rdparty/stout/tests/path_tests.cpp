@@ -19,6 +19,7 @@
 
 #include <stout/os/exists.hpp>
 #include <stout/os/getcwd.hpp>
+#include <stout/os/int_fd.hpp>
 #include <stout/os/open.hpp>
 #include <stout/os/rm.hpp>
 #include <stout/os/touch.hpp>
@@ -167,6 +168,30 @@ TEST(PathTest, Absolute)
 }
 
 
+TEST(PathTest, Comparison)
+{
+  EXPECT_TRUE(Path("a") == Path("a"));
+  EXPECT_FALSE(Path("a") == Path("b"));
+
+  EXPECT_TRUE(Path("a") != Path("b"));
+  EXPECT_FALSE(Path("a") != Path("a"));
+
+  EXPECT_TRUE(Path("a") < Path("b"));
+  EXPECT_FALSE(Path("b") < Path("a"));
+
+  EXPECT_TRUE(Path("a") <= Path("b"));
+  EXPECT_TRUE(Path("a") <= Path("a"));
+  EXPECT_FALSE(Path("b") <= Path("a"));
+
+  EXPECT_TRUE(Path("b") > Path("a"));
+  EXPECT_FALSE(Path("a") > Path("a"));
+
+  EXPECT_TRUE(Path("b") >= Path("a"));
+  EXPECT_TRUE(Path("b") >= Path("b"));
+  EXPECT_FALSE(Path("a") >= Path("b"));
+}
+
+
 class PathFileTest : public TemporaryDirectoryTest {};
 
 
@@ -180,7 +205,7 @@ TEST_F(PathFileTest, ImplicitConversion)
   ASSERT_TRUE(os::exists(testfile));
 
   // Open and close the file.
-  Try<int> fd = os::open(
+  Try<int_fd> fd = os::open(
       testfile,
       O_RDONLY,
       S_IRUSR | S_IRGRP | S_IROTH);

@@ -20,12 +20,15 @@
 #include <stdio.h>
 
 #include <mesos/slave/container_logger.hpp>
+#include <mesos/slave/containerizer.hpp>
 
 #include <stout/bytes.hpp>
 #include <stout/flags.hpp>
 #include <stout/option.hpp>
 
+#include <stout/os/constants.hpp>
 #include <stout/os/exists.hpp>
+#include <stout/os/pagesize.hpp>
 #include <stout/os/shell.hpp>
 
 #include "slave/container_loggers/logrotate.hpp"
@@ -38,18 +41,22 @@ namespace logger {
 class LogrotateContainerLoggerProcess;
 
 
-struct Flags : public virtual flags::FlagsBase
+// These flags are loaded twice: once when the `ContainerLogger` module
+// is created and each time before launching executors. The flags loaded
+// at module creation act as global default values, whereas flags loaded
+// prior to executors can override the global values.
+struct LoggerFlags : public virtual flags::FlagsBase
 {
-  Flags()
+  LoggerFlags()
   {
-    add(&max_stdout_size,
+    add(&LoggerFlags::max_stdout_size,
         "max_stdout_size",
         "Maximum size, in bytes, of a single stdout log file.\n"
         "Defaults to 10 MB.  Must be at least 1 (memory) page.",
         Megabytes(10),
-        &Flags::validateSize);
+        &LoggerFlags::validateSize);
 
-    add(&logrotate_stdout_options,
+    add(&LoggerFlags::logrotate_stdout_options,
         "logrotate_stdout_options",
         "Additional config options to pass into 'logrotate' for stdout.\n"
         "This string will be inserted into a 'logrotate' configuration file.\n"
@@ -58,16 +65,16 @@ struct Flags : public virtual flags::FlagsBase
         "    <logrotate_stdout_options>\n"
         "    size <max_stdout_size>\n"
         "  }\n"
-        "NOTE: The 'size' option will be overriden by this module.");
+        "NOTE: The 'size' option will be overridden by this module.");
 
-    add(&max_stderr_size,
+    add(&LoggerFlags::max_stderr_size,
         "max_stderr_size",
         "Maximum size, in bytes, of a single stderr log file.\n"
         "Defaults to 10 MB.  Must be at least 1 (memory) page.",
         Megabytes(10),
-        &Flags::validateSize);
+        &LoggerFlags::validateSize);
 
-    add(&logrotate_stderr_options,
+    add(&LoggerFlags::logrotate_stderr_options,
         "logrotate_stderr_options",
         "Additional config options to pass into 'logrotate' for stderr.\n"
         "This string will be inserted into a 'logrotate' configuration file.\n"
@@ -76,9 +83,47 @@ struct Flags : public virtual flags::FlagsBase
         "    <logrotate_stderr_options>\n"
         "    size <max_stderr_size>\n"
         "  }\n"
-        "NOTE: The 'size' option will be overriden by this module.");
+        "NOTE: The 'size' option will be overridden by this module.");
+  }
 
-    add(&launcher_dir,
+  static Option<Error> validateSize(const Bytes& value)
+  {
+    if (value.bytes() < os::pagesize()) {
+      return Error(
+          "Expected --max_stdout_size and --max_stderr_size of "
+          "at least " + stringify(os::pagesize()) + " bytes");
+    }
+
+    return None();
+  }
+
+  Bytes max_stdout_size;
+  Option<std::string> logrotate_stdout_options;
+
+  Bytes max_stderr_size;
+  Option<std::string> logrotate_stderr_options;
+};
+
+
+struct Flags : public virtual LoggerFlags
+{
+  Flags()
+  {
+    add(&Flags::environment_variable_prefix,
+        "environment_variable_prefix",
+        "Prefix for environment variables meant to modify the behavior of\n"
+        "the logrotate logger for the specific executor being launched.\n"
+        "The logger will look for four prefixed environment variables in the\n"
+        "'ExecutorInfo's 'CommandInfo's 'Environment':\n"
+        "  * MAX_STDOUT_SIZE\n"
+        "  * LOGROTATE_STDOUT_OPTIONS\n"
+        "  * MAX_STDERR_SIZE\n"
+        "  * LOGROTATE_STDERR_OPTIONS\n"
+        "If present, these variables will overwrite the global values set\n"
+        "via module parameters.",
+        "CONTAINER_LOGGER_");
+
+    add(&Flags::launcher_dir,
         "launcher_dir",
         "Directory path of Mesos binaries.  The logrotate container logger\n"
         "will find the '" + mesos::internal::logger::rotate::NAME + "'\n"
@@ -95,7 +140,7 @@ struct Flags : public virtual flags::FlagsBase
           return None();
         });
 
-    add(&logrotate_path,
+    add(&Flags::logrotate_path,
         "logrotate_path",
         "If specified, the logrotate container logger will use the specified\n"
         "'logrotate' instead of the system's 'logrotate'.",
@@ -104,7 +149,7 @@ struct Flags : public virtual flags::FlagsBase
           // Check if `logrotate` exists via the help command.
           // TODO(josephw): Consider a more comprehensive check.
           Try<std::string> helpCommand =
-            os::shell(value + " --help > /dev/null");
+            os::shell(value + " --help > " + os::DEV_NULL);
 
           if (helpCommand.isError()) {
             return Error(
@@ -113,27 +158,28 @@ struct Flags : public virtual flags::FlagsBase
 
           return None();
         });
+
+    add(&Flags::libprocess_num_worker_threads,
+        "libprocess_num_worker_threads",
+        "Number of Libprocess worker threads.\n"
+        "Defaults to 8.  Must be at least 1.",
+        8u,
+        [](const size_t& value) -> Option<Error> {
+          if (value < 1u) {
+            return Error(
+                "Expected --libprocess_num_worker_threads of at least 1");
+          }
+
+          return None();
+        });
   }
 
-  static Option<Error> validateSize(const Bytes& value)
-  {
-    if (value.bytes() < (size_t) sysconf(_SC_PAGE_SIZE)) {
-      return Error(
-          "Expected --max_stdout_size and --max_stderr_size of "
-          "at least " + stringify(sysconf(_SC_PAGE_SIZE)) + " bytes");
-    }
-
-    return None();
-  }
-
-  Bytes max_stdout_size;
-  Option<std::string> logrotate_stdout_options;
-
-  Bytes max_stderr_size;
-  Option<std::string> logrotate_stderr_options;
+  std::string environment_variable_prefix;
 
   std::string launcher_dir;
   std::string logrotate_path;
+
+  size_t libprocess_num_worker_threads;
 };
 
 
@@ -151,14 +197,10 @@ public:
   // This is a noop.  The logrotate container logger has nothing to initialize.
   virtual Try<Nothing> initialize();
 
-  virtual process::Future<Nothing> recover(
+  virtual process::Future<mesos::slave::ContainerIO> prepare(
       const ExecutorInfo& executorInfo,
-      const std::string& sandboxDirectory);
-
-  virtual process::Future<mesos::slave::ContainerLogger::SubprocessInfo>
-  prepare(
-      const ExecutorInfo& executorInfo,
-      const std::string& sandboxDirectory);
+      const std::string& sandboxDirectory,
+      const Option<std::string>& user);
 
 protected:
   Flags flags;

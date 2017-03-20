@@ -33,7 +33,9 @@
 #include <stout/try.hpp>
 #include <stout/utils.hpp>
 
+#ifndef __WINDOWS__
 #include "log/leveldb.hpp"
+#endif // __WINDOWS__
 #include "log/replica.hpp"
 #include "log/storage.hpp"
 
@@ -354,7 +356,7 @@ bool ReplicaProcess::updatePromised(uint64_t promised)
 //     number, we return a REJECT response.
 //  2. If we can't vote on the request because we're in the wrong
 //     state (e.g., not finished the recovery or catchup protocols),
-//     we return an IGNORE response.
+//     we return an IGNORED response.
 //  3. If we encounter an error (e.g., I/O failure) handling the
 //     request, we log the error and silently ignore the request.
 //
@@ -377,7 +379,7 @@ void ReplicaProcess::promise(const UPID& from, const PromiseRequest& request)
               << " as it is in " << status() << " status";
 
     PromiseResponse response;
-    response.set_type(PromiseResponse::IGNORE);
+    response.set_type(PromiseResponse::IGNORED);
     response.set_okay(false);
     response.set_proposal(request.proposal());
     reply(response);
@@ -391,7 +393,7 @@ void ReplicaProcess::promise(const UPID& from, const PromiseRequest& request)
 
     // If the position has been truncated, tell the proposer that it's
     // a learned no-op. This can happen when a replica has missed some
-    // truncates and it's proposer tries to fill some truncated
+    // truncates and its proposer tries to fill some truncated
     // positions on election. A learned no-op is safe since the
     // proposer should eventually learn that this position was
     // actually truncated. The action must be _learned_ so that the
@@ -526,7 +528,7 @@ void ReplicaProcess::write(const UPID& from, const WriteRequest& request)
               << " as it is in " << status() << " status";
 
     WriteResponse response;
-    response.set_type(WriteResponse::IGNORE);
+    response.set_type(WriteResponse::IGNORED);
     response.set_okay(false);
     response.set_proposal(request.proposal());
     response.set_position(request.position());
@@ -692,11 +694,7 @@ void ReplicaProcess::learned(const UPID& from, const Action& action)
             << action.position() << " from " << from;
 
   CHECK(action.learned());
-
-  if (persist(action)) {
-    LOG(INFO) << "Replica learned " << action.type()
-              << " action at position " << action.position();
-  }
+  persist(action);
 }
 
 
@@ -709,7 +707,8 @@ bool ReplicaProcess::persist(const Action& action)
     return false;
   }
 
-  LOG(INFO) << "Persisted action at " << action.position();
+  VLOG(1) << "Persisted action " << action.type()
+          << " at position " << action.position();
 
   // No longer a hole here (if there even was one).
   holes -= action.position();

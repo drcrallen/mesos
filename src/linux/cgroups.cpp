@@ -37,6 +37,7 @@
 #include <process/collect.hpp>
 #include <process/defer.hpp>
 #include <process/delay.hpp>
+#include <process/id.hpp>
 #include <process/io.hpp>
 #include <process/process.hpp>
 #include <process/reap.hpp>
@@ -349,25 +350,7 @@ static Try<string> read(
     const string& control)
 {
   string path = path::join(hierarchy, cgroup, control);
-
-  // TODO(benh): Use os::read. Note that we do not use os::read
-  // currently because it cannot correctly read /proc or cgroups
-  // control files since lseek (in os::read) will return error.
-  ifstream file(path.c_str());
-
-  if (!file.is_open()) {
-    return Error("Failed to open file " + path);
-  }
-
-  ostringstream ss;
-  ss << file.rdbuf();
-
-  if (file.fail()) {
-    // TODO(jieyu): Does ifstream actually set errno?
-    return ErrnoError();
-  }
-
-  return ss.str();
+  return os::read(path);
 }
 
 
@@ -385,23 +368,7 @@ static Try<Nothing> write(
     const string& value)
 {
   string path = path::join(hierarchy, cgroup, control);
-  ofstream file(path.c_str());
-
-  if (!file.is_open()) {
-    return Error("Failed to open file " + path);
-  }
-
-  // NOTE: cgroups convention does not append a endln!
-  // Recent kernels will cause operations to fail if 'endl' is
-  // appended to the control file.
-  file << value;
-
-  if (file.fail()) {
-    // TODO(jieyu): Does ofstream actually set errno?
-    return ErrnoError();
-  }
-
-  return Nothing();
+  return os::write(path, value);
 }
 
 } // namespace internal {
@@ -429,7 +396,7 @@ Try<string> prepare(
   if (hierarchy.isError()) {
     return Error(
         "Failed to determine the hierarchy where the subsystem " +
-        subsystem + " is attached");
+        subsystem + " is attached: " + hierarchy.error());
   }
 
   if (hierarchy.isNone()) {
@@ -1073,6 +1040,33 @@ Try<Nothing> assign(const string& hierarchy, const string& cgroup, pid_t pid)
 }
 
 
+Try<Nothing> isolate(
+    const string& hierarchy,
+    const string& cgroup,
+    pid_t pid)
+{
+  // Create cgroup if necessary.
+  Try<bool> exists = cgroups::exists(hierarchy, cgroup);
+  if (exists.isError()) {
+    return Error("Failed to check existence of cgroup: " + exists.error());
+  }
+
+  if (!exists.get()) {
+    Try<Nothing> create = cgroups::create(hierarchy, cgroup, true);
+    if (create.isError()) {
+      return Error("Failed to create cgroup: " + create.error());
+    }
+  }
+
+  Try<Nothing> assign = cgroups::assign(hierarchy, cgroup, pid);
+  if (assign.isError()) {
+    return Error("Failed to assign process to cgroup: " + assign.error());
+  }
+
+  return Nothing();
+}
+
+
 namespace event {
 
 #ifndef EFD_SEMAPHORE
@@ -1192,7 +1186,8 @@ public:
            const string& _cgroup,
            const string& _control,
            const Option<string>& _args)
-    : hierarchy(_hierarchy),
+    : ProcessBase(ID::generate("cgroups-listener")),
+      hierarchy(_hierarchy),
       cgroup(_cgroup),
       control(_control),
       args(_args),
@@ -1382,7 +1377,8 @@ public:
   Freezer(
       const string& _hierarchy,
       const string& _cgroup)
-    : hierarchy(_hierarchy),
+    : ProcessBase(ID::generate("cgroups-freezer")),
+      hierarchy(_hierarchy),
       cgroup(_cgroup),
       start(Clock::now()) {}
 
@@ -1482,7 +1478,9 @@ class TasksKiller : public Process<TasksKiller>
 {
 public:
   TasksKiller(const string& _hierarchy, const string& _cgroup)
-    : hierarchy(_hierarchy), cgroup(_cgroup) {}
+    : ProcessBase(ID::generate("cgroups-tasks-killer")),
+      hierarchy(_hierarchy),
+      cgroup(_cgroup) {}
 
   virtual ~TasksKiller() {}
 
@@ -1589,14 +1587,25 @@ private:
       terminate(self());
       return;
     } else if (future.isFailed()) {
-      promise.fail(future.failure());
+      // If the `cgroup` still exists in the hierarchy, treat this as
+      // an error; otherwise, treat this as a success since the `cgroup`
+      // has actually been cleaned up.
+      if (os::exists(path::join(hierarchy, cgroup))) {
+        promise.fail(future.failure());
+      } else {
+        promise.set(Nothing());
+      }
+
       terminate(self());
       return;
     }
 
     // Verify the cgroup is now empty.
     Try<set<pid_t>> processes = cgroups::processes(hierarchy, cgroup);
-    if (processes.isError() || !processes.get().empty()) {
+
+    // If the `cgroup` is already removed, treat this as a success.
+    if ((processes.isError() || !processes.get().empty()) &&
+        os::exists(path::join(hierarchy, cgroup))) {
       promise.fail("Failed to kill all processes in cgroup: " +
                    (processes.isError() ? processes.error()
                                         : "processes remain"));
@@ -1621,7 +1630,9 @@ class Destroyer : public Process<Destroyer>
 {
 public:
   Destroyer(const string& _hierarchy, const vector<string>& _cgroups)
-    : hierarchy(_hierarchy), cgroups(_cgroups) {}
+    : ProcessBase(ID::generate("cgroups-destroyer")),
+      hierarchy(_hierarchy),
+      cgroups(_cgroups) {}
 
   virtual ~Destroyer() {}
 
@@ -1675,10 +1686,15 @@ private:
     foreach (const string& cgroup, cgroups) {
       Try<Nothing> remove = internal::remove(hierarchy, cgroup);
       if (remove.isError()) {
-        promise.fail(
-            "Failed to remove cgroup '" + cgroup + "': " + remove.error());
-        terminate(self());
-        return;
+        // If the `cgroup` still exists in the hierarchy, treat this as
+        // an error; otherwise, treat this as a success since the `cgroup`
+        // has actually been cleaned up.
+        if (os::exists(path::join(hierarchy, cgroup))) {
+          promise.fail(
+              "Failed to remove cgroup '" + cgroup + "': " + remove.error());
+          terminate(self());
+          return;
+        }
       }
     }
 
@@ -1728,7 +1744,12 @@ Future<Nothing> destroy(const string& hierarchy, const string& cgroup)
     foreach (const string& cgroup, candidates) {
       Try<Nothing> remove = cgroups::remove(hierarchy, cgroup);
       if (remove.isError()) {
-        return Failure(remove.error());
+        // If the `cgroup` still exists in the hierarchy, treat this as
+        // an error; otherwise, treat this as a success since the `cgroup`
+        // has actually been cleaned up.
+        if (os::exists(path::join(hierarchy, cgroup))) {
+          return Failure(remove.error());
+        }
       }
     }
   }
@@ -2294,20 +2315,14 @@ namespace pressure {
 ostream& operator<<(ostream& stream, Level level)
 {
   switch (level) {
-    case LOW:
-      stream << "low";
-      break;
-    case MEDIUM:
-      stream << "medium";
-      break;
-    case CRITICAL:
-      stream << "critical";
-      break;
-    default:
-      UNREACHABLE();
+    case LOW:      return stream << "low";
+    case MEDIUM:   return stream << "medium";
+    case CRITICAL: return stream << "critical";
+    // We omit the default case because we assume -Wswitch
+    // will trigger a compile-time error if a case is missed.
   }
 
-  return stream;
+  UNREACHABLE();
 }
 
 
@@ -2319,7 +2334,8 @@ public:
   CounterProcess(const string& hierarchy,
                  const string& cgroup,
                  Level level)
-    : value_(0),
+    : ProcessBase(ID::generate("cgroups-counter")),
+      value_(0),
       error(None()),
       process(new event::Listener(
           hierarchy,
@@ -2420,23 +2436,23 @@ Future<uint64_t> Counter::value() const
 
 namespace devices {
 
-ostream& operator<<(ostream& stream, const Entry::Selector& selector)
+ostream& operator<<(ostream& stream, const Entry::Selector::Type& type)
 {
-  switch (selector.type) {
-    case Entry::Selector::Type::ALL:
-      stream << "a";
-      break;
-    case Entry::Selector::Type::BLOCK:
-      stream << "b";
-      break;
-    case Entry::Selector::Type::CHARACTER:
-      stream << "c";
-      break;
+  switch (type) {
+    case Entry::Selector::Type::ALL:       return stream << "a";
+    case Entry::Selector::Type::BLOCK:     return stream << "b";
+    case Entry::Selector::Type::CHARACTER: return stream << "c";
     // We omit the default case because we assume -Wswitch
     // will trigger a compile-time error if a case is missed.
   }
 
-  stream << " ";
+  UNREACHABLE();
+}
+
+
+ostream& operator<<(ostream& stream, const Entry::Selector& selector)
+{
+  stream << selector.type << " ";
 
   if (selector.major.isSome()) {
     stream << stringify(selector.major.get());

@@ -14,13 +14,28 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "logging/logging.hpp"
-
 #include "master/allocator/sorter/drf/sorter.hpp"
 
-using std::list;
+#include <set>
+#include <string>
+#include <vector>
+
+#include <mesos/mesos.hpp>
+#include <mesos/resources.hpp>
+#include <mesos/values.hpp>
+
+#include <process/pid.hpp>
+
+#include <stout/check.hpp>
+#include <stout/foreach.hpp>
+#include <stout/hashmap.hpp>
+#include <stout/option.hpp>
+
 using std::set;
 using std::string;
+using std::vector;
+
+using process::UPID;
 
 namespace mesos {
 namespace internal {
@@ -40,9 +55,16 @@ bool DRFComparator::operator()(const Client& client1, const Client& client2)
 
 
 DRFSorter::DRFSorter(
-    const process::UPID& allocator,
-    const std::string& metricsPrefix)
+    const UPID& allocator,
+    const string& metricsPrefix)
   : metrics(Metrics(allocator, *this, metricsPrefix)) {}
+
+
+void DRFSorter::initialize(
+    const Option<set<string>>& _fairnessExcludeResourceNames)
+{
+  fairnessExcludeResourceNames = _fairnessExcludeResourceNames;
+}
 
 
 void DRFSorter::add(const string& name, double weight)
@@ -65,11 +87,20 @@ void DRFSorter::update(const string& name, double weight)
 {
   CHECK(weights.contains(name));
   weights[name] = weight;
+
+  // If the total resources have changed, we're going to
+  // recalculate all the shares, so don't bother just
+  // updating this client.
+  if (!dirty) {
+    updateShare(name);
+  }
 }
 
 
 void DRFSorter::remove(const string& name)
 {
+  CHECK(contains(name));
+
   set<Client, DRFComparator>::iterator it = find(name);
 
   if (it != clients.end()) {
@@ -87,7 +118,7 @@ void DRFSorter::remove(const string& name)
 
 void DRFSorter::activate(const string& name)
 {
-  CHECK(allocations.contains(name));
+  CHECK(contains(name));
 
   set<Client, DRFComparator>::iterator it = find(name);
   if (it == clients.end()) {
@@ -99,6 +130,8 @@ void DRFSorter::activate(const string& name)
 
 void DRFSorter::deactivate(const string& name)
 {
+  CHECK(contains(name));
+
   set<Client, DRFComparator>::iterator it = find(name);
 
   if (it != clients.end()) {
@@ -116,10 +149,16 @@ void DRFSorter::allocated(
     const SlaveID& slaveId,
     const Resources& resources)
 {
+  CHECK(contains(name));
+
   set<Client, DRFComparator>::iterator it = find(name);
 
-  if (it != clients.end()) { // TODO(benh): This should really be a CHECK.
-    // TODO(benh): Refactor 'update' to be able to reuse it here.
+  // The allocator might notify us about an allocation that has been
+  // made to an inactive sorter client. For example, this happens when
+  // an agent re-registers that is running tasks for a framework that
+  // has not yet re-registered.
+  if (it != clients.end()) {
+    // TODO(benh): Refactor 'updateShare' to be able to reuse it here.
     Client client(*it);
 
     // Update the 'allocations' to reflect the allocator decision.
@@ -130,15 +169,27 @@ void DRFSorter::allocated(
     clients.insert(client);
   }
 
-  allocations[name].resources[slaveId] += resources;
-  allocations[name].scalarQuantities +=
-    resources.createStrippedScalarQuantity();
+  // Add shared resources to the allocated quantities when the same
+  // resources don't already exist in the allocation.
+  const Resources newShared = resources.shared()
+    .filter([this, name, slaveId](const Resource& resource) {
+      return !allocations[name].resources[slaveId].contains(resource);
+    });
 
-  // If the total resources have changed, we're going to
-  // recalculate all the shares, so don't bother just
-  // updating this client.
+  const Resources scalarQuantities =
+    (resources.nonShared() + newShared).createStrippedScalarQuantity();
+
+  allocations[name].resources[slaveId] += resources;
+  allocations[name].scalarQuantities += scalarQuantities;
+
+  foreach (const Resource& resource, scalarQuantities) {
+    allocations[name].totals[resource.name()] += resource.scalar();
+  }
+
+  // If the total resources have changed, we're going to recalculate
+  // all the shares, so don't bother just updating this client.
   if (!dirty) {
-    update(name);
+    updateShare(name);
   }
 }
 
@@ -161,15 +212,6 @@ void DRFSorter::update(
   const Resources newAllocationQuantity =
     newAllocation.createStrippedScalarQuantity();
 
-  CHECK(total_.resources[slaveId].contains(oldAllocation));
-  CHECK(total_.scalarQuantities.contains(oldAllocationQuantity));
-
-  total_.resources[slaveId] -= oldAllocation;
-  total_.resources[slaveId] += newAllocation;
-
-  total_.scalarQuantities -= oldAllocationQuantity;
-  total_.scalarQuantities += newAllocationQuantity;
-
   CHECK(allocations[name].resources[slaveId].contains(oldAllocation));
   CHECK(allocations[name].scalarQuantities.contains(oldAllocationQuantity));
 
@@ -179,28 +221,38 @@ void DRFSorter::update(
   allocations[name].scalarQuantities -= oldAllocationQuantity;
   allocations[name].scalarQuantities += newAllocationQuantity;
 
+  foreach (const Resource& resource, oldAllocationQuantity) {
+    allocations[name].totals[resource.name()] -= resource.scalar();
+  }
+
+  foreach (const Resource& resource, newAllocationQuantity) {
+    allocations[name].totals[resource.name()] += resource.scalar();
+  }
+
   // Just assume the total has changed, per the TODO above.
   dirty = true;
 }
 
 
-const hashmap<SlaveID, Resources>& DRFSorter::allocation(const string& name)
+const hashmap<SlaveID, Resources>& DRFSorter::allocation(
+    const string& name) const
 {
   CHECK(contains(name));
 
-  return allocations[name].resources;
+  return allocations.at(name).resources;
 }
 
 
-const Resources& DRFSorter::allocationScalarQuantities(const string& name)
+const Resources& DRFSorter::allocationScalarQuantities(
+    const string& name) const
 {
   CHECK(contains(name));
 
-  return allocations[name].scalarQuantities;
+  return allocations.at(name).scalarQuantities;
 }
 
 
-hashmap<string, Resources> DRFSorter::allocation(const SlaveID& slaveId)
+hashmap<string, Resources> DRFSorter::allocation(const SlaveID& slaveId) const
 {
   // TODO(jmlvanre): We can index the allocation by slaveId to make this faster.
   // It is a tradeoff between speed vs. memory. For now we use existing data
@@ -220,21 +272,17 @@ hashmap<string, Resources> DRFSorter::allocation(const SlaveID& slaveId)
 }
 
 
-Resources DRFSorter::allocation(const string& name, const SlaveID& slaveId)
+Resources DRFSorter::allocation(
+    const string& name,
+    const SlaveID& slaveId) const
 {
   CHECK(contains(name));
 
-  if (allocations[name].resources.contains(slaveId)) {
-    return allocations[name].resources[slaveId];
+  if (allocations.at(name).resources.contains(slaveId)) {
+    return allocations.at(name).resources.at(slaveId);
   }
 
   return Resources();
-}
-
-
-const hashmap<SlaveID, Resources>& DRFSorter::total() const
-{
-  return total_.resources;
 }
 
 
@@ -249,16 +297,35 @@ void DRFSorter::unallocated(
     const SlaveID& slaveId,
     const Resources& resources)
 {
+  CHECK(contains(name));
+  CHECK(allocations.at(name).resources.contains(slaveId));
+  CHECK(allocations.at(name).resources.at(slaveId).contains(resources));
+
   allocations[name].resources[slaveId] -= resources;
-  allocations[name].scalarQuantities -=
-    resources.createStrippedScalarQuantity();
+
+  // Remove shared resources from the allocated quantities when there
+  // are no instances of same resources left in the allocation.
+  const Resources absentShared = resources.shared()
+    .filter([this, name, slaveId](const Resource& resource) {
+      return !allocations[name].resources[slaveId].contains(resource);
+    });
+
+  const Resources scalarQuantities =
+    (resources.nonShared() + absentShared).createStrippedScalarQuantity();
+
+  foreach (const Resource& resource, scalarQuantities) {
+    allocations[name].totals[resource.name()] -= resource.scalar();
+  }
+
+  CHECK(allocations[name].scalarQuantities.contains(scalarQuantities));
+  allocations[name].scalarQuantities -= scalarQuantities;
 
   if (allocations[name].resources[slaveId].empty()) {
     allocations[name].resources.erase(slaveId);
   }
 
   if (!dirty) {
-    update(name);
+    updateShare(name);
   }
 }
 
@@ -266,8 +333,23 @@ void DRFSorter::unallocated(
 void DRFSorter::add(const SlaveID& slaveId, const Resources& resources)
 {
   if (!resources.empty()) {
+    // Add shared resources to the total quantities when the same
+    // resources don't already exist in the total.
+    const Resources newShared = resources.shared()
+      .filter([this, slaveId](const Resource& resource) {
+        return !total_.resources[slaveId].contains(resource);
+      });
+
     total_.resources[slaveId] += resources;
-    total_.scalarQuantities += resources.createStrippedScalarQuantity();
+
+    const Resources scalarQuantities =
+      (resources.nonShared() + newShared).createStrippedScalarQuantity();
+
+    total_.scalarQuantities += scalarQuantities;
+
+    foreach (const Resource& resource, scalarQuantities) {
+      total_.totals[resource.name()] += resource.scalar();
+    }
 
     // We have to recalculate all shares when the total resources
     // change, but we put it off until sort is called so that if
@@ -282,9 +364,27 @@ void DRFSorter::remove(const SlaveID& slaveId, const Resources& resources)
 {
   if (!resources.empty()) {
     CHECK(total_.resources.contains(slaveId));
+    CHECK(total_.resources[slaveId].contains(resources))
+      << total_.resources[slaveId] << " does not contain " << resources;
 
     total_.resources[slaveId] -= resources;
-    total_.scalarQuantities -= resources.createStrippedScalarQuantity();
+
+    // Remove shared resources from the total quantities when there
+    // are no instances of same resources left in the total.
+    const Resources absentShared = resources.shared()
+      .filter([this, slaveId](const Resource& resource) {
+        return !total_.resources[slaveId].contains(resource);
+      });
+
+    const Resources scalarQuantities =
+      (resources.nonShared() + absentShared).createStrippedScalarQuantity();
+
+    foreach (const Resource& resource, scalarQuantities) {
+      total_.totals[resource.name()] -= resource.scalar();
+    }
+
+    CHECK(total_.scalarQuantities.contains(scalarQuantities));
+    total_.scalarQuantities -= scalarQuantities;
 
     if (total_.resources[slaveId].empty()) {
       total_.resources.erase(slaveId);
@@ -295,35 +395,12 @@ void DRFSorter::remove(const SlaveID& slaveId, const Resources& resources)
 }
 
 
-void DRFSorter::update(const SlaveID& slaveId, const Resources& resources)
-{
-  const Resources oldSlaveQuantity =
-    total_.resources[slaveId].createStrippedScalarQuantity();
-
-  CHECK(total_.scalarQuantities.contains(oldSlaveQuantity));
-
-  total_.scalarQuantities -= oldSlaveQuantity;
-  total_.scalarQuantities += resources.createStrippedScalarQuantity();
-
-  total_.resources[slaveId] = resources;
-
-  if (total_.resources[slaveId].empty()) {
-    total_.resources.erase(slaveId);
-  }
-
-  dirty = true;
-}
-
-
-list<string> DRFSorter::sort()
+vector<string> DRFSorter::sort()
 {
   if (dirty) {
     set<Client, DRFComparator> temp;
 
-    set<Client, DRFComparator>::iterator it;
-    for (it = clients.begin(); it != clients.end(); it++) {
-      Client client(*it);
-
+    foreach (Client client, clients) {
       // Update the 'share' to get proper sorting.
       client.share = calculateShare(client.name);
 
@@ -331,32 +408,36 @@ list<string> DRFSorter::sort()
     }
 
     clients = temp;
+
+    // Reset dirty to false so as not to re-calculate *all*
+    // shares unless another dirtying operation occurs.
+    dirty = false;
   }
 
-  list<string> result;
+  vector<string> result;
+  result.reserve(clients.size());
 
-  set<Client, DRFComparator>::iterator it;
-  for (it = clients.begin(); it != clients.end(); it++) {
-    result.push_back((*it).name);
+  foreach (const Client& client, clients) {
+    result.push_back(client.name);
   }
 
   return result;
 }
 
 
-bool DRFSorter::contains(const string& name)
+bool DRFSorter::contains(const string& name) const
 {
   return allocations.contains(name);
 }
 
 
-int DRFSorter::count()
+int DRFSorter::count() const
 {
   return allocations.size();
 }
 
 
-void DRFSorter::update(const string& name)
+void DRFSorter::updateShare(const string& name)
 {
   set<Client, DRFComparator>::iterator it = find(name);
 
@@ -373,50 +454,35 @@ void DRFSorter::update(const string& name)
 }
 
 
-double DRFSorter::calculateShare(const string& name)
+double DRFSorter::calculateShare(const string& name) const
 {
+  CHECK(contains(name));
+
   double share = 0.0;
 
   // TODO(benh): This implementation of "dominant resource fairness"
   // currently does not take into account resources that are not
   // scalars.
 
-  foreach (const string& scalar, total_.scalarQuantities.names()) {
-    // We collect the scalar accumulated total value from the
-    // `Resources` object.
-    //
-    // NOTE: Although in principle scalar resources may be spread
-    // across multiple `Resource` objects (e.g., persistent volumes),
-    // we currently strip persistence and reservation metadata from
-    // the resources in `scalarQuantities`.
-    Option<Value::Scalar> __total =
-      total_.scalarQuantities.get<Value::Scalar>(scalar);
+  foreachpair (const string& resourceName,
+               const Value::Scalar& scalar,
+               total_.totals) {
+    // Filter out the resources excluded from fair sharing.
+    if (fairnessExcludeResourceNames.isSome() &&
+        fairnessExcludeResourceNames->count(resourceName) > 0) {
+      continue;
+    }
 
-    CHECK_SOME(__total);
-    const double _total = __total.get().value();
+    if (scalar.value() > 0.0 &&
+        allocations.at(name).totals.contains(resourceName)) {
+      const double allocation =
+        allocations.at(name).totals.at(resourceName).value();
 
-    if (_total > 0.0) {
-      double allocation = 0.0;
-
-      // We collect the scalar accumulated allocation value from the
-      // `Resources` object.
-      //
-      // NOTE: Although in principle scalar resources may be spread
-      // across multiple `Resource` objects (e.g., persistent volumes),
-      // we currently strip persistence and reservation metadata from
-      // the resources in `scalarQuantities`.
-      Option<Value::Scalar> _allocation =
-        allocations[name].scalarQuantities.get<Value::Scalar>(scalar);
-
-      if (_allocation.isSome()) {
-        allocation = _allocation.get().value();
-      }
-
-      share = std::max(share, allocation / _total);
+      share = std::max(share, allocation / scalar.value());
     }
   }
 
-  return share / weights[name];
+  return share / weights.at(name);
 }
 
 
@@ -424,7 +490,7 @@ set<Client, DRFComparator>::iterator DRFSorter::find(const string& name)
 {
   set<Client, DRFComparator>::iterator it;
   for (it = clients.begin(); it != clients.end(); it++) {
-    if (name == (*it).name) {
+    if (name == it->name) {
       break;
     }
   }

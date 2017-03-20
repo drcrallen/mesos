@@ -59,6 +59,7 @@
 #include <stout/stringify.hpp>
 #include <stout/try.hpp>
 
+#include <stout/os/int_fd.hpp>
 #include <stout/os/open.hpp>
 
 
@@ -138,7 +139,7 @@ inline Try<int> download(const std::string& url, const std::string& path)
 {
   initialize();
 
-  Try<int> fd = os::open(
+  Try<int_fd> fd = os::open(
       path,
       O_CREAT | O_WRONLY | O_CLOEXEC,
       S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
@@ -159,7 +160,13 @@ inline Try<int> download(const std::string& url, const std::string& path)
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, nullptr);
   curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, true);
 
-  FILE* file = fdopen(fd.get(), "w");
+  // We don't bother introducing a `os::fdopen` since this is the only place
+  // we use `fdopen` in the entire codebase as of writing this comment.
+#ifdef __WINDOWS__
+  FILE* file = ::_fdopen(fd->crt(), "w");
+#else
+  FILE* file = ::fdopen(fd.get(), "w");
+#endif
   if (file == nullptr) {
     curl_easy_cleanup(curl);
     os::close(fd.get());
@@ -198,32 +205,6 @@ inline struct addrinfo createAddrInfo(int socktype, int family, int flags)
 }
 
 
-// TODO(evelinad): Move this to Address.
-inline struct sockaddr_storage createSockaddrStorage(const IP& ip, int port)
-{
-  struct sockaddr_storage storage;
-  memset(&storage, 0, sizeof(storage));
-
-  switch (ip.family()) {
-    case AF_INET: {
-      struct sockaddr_in addr;
-      memset(&addr, 0, sizeof(addr));
-      addr.sin_family = AF_INET;
-      addr.sin_addr = ip.in().get();
-      addr.sin_port = htons(port);
-
-      memcpy(&storage, &addr, sizeof(addr));
-      break;
-    }
-    default: {
-      ABORT("Unsupported family type: " + stringify(ip.family()));
-    }
-  }
-
-  return storage;
-}
-
-
 inline Try<std::string> hostname()
 {
   char host[512];
@@ -252,9 +233,29 @@ inline Try<std::string> hostname()
 // Returns a Try of the hostname for the provided IP. If the hostname
 // cannot be resolved, then a string version of the IP address is
 // returned.
+//
+// TODO(benh): Merge with `net::hostname`.
 inline Try<std::string> getHostname(const IP& ip)
 {
-  struct sockaddr_storage storage = createSockaddrStorage(ip, 0);
+  struct sockaddr_storage storage;
+  memset(&storage, 0, sizeof(storage));
+
+  switch (ip.family()) {
+    case AF_INET: {
+      struct sockaddr_in addr;
+      memset(&addr, 0, sizeof(addr));
+      addr.sin_family = AF_INET;
+      addr.sin_addr = ip.in().get();
+      addr.sin_port = 0;
+
+      memcpy(&storage, &addr, sizeof(addr));
+      break;
+    }
+    default: {
+      ABORT("Unsupported family type: " + stringify(ip.family()));
+    }
+  }
+
   char hostname[MAXHOSTNAMELEN];
 
   int error = getnameinfo(

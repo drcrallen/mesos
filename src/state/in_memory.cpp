@@ -22,6 +22,7 @@
 
 #include <process/dispatch.hpp>
 #include <process/future.hpp>
+#include <process/id.hpp>
 #include <process/process.hpp>
 
 #include <stout/hashmap.hpp>
@@ -43,6 +44,9 @@ namespace state {
 class InMemoryStorageProcess : public Process<InMemoryStorageProcess>
 {
 public:
+  InMemoryStorageProcess()
+    : ProcessBase(process::ID::generate("in-memory-storage")) {}
+
   Option<Entry> get(const string& name)
   {
     return entries.get(name);
@@ -52,7 +56,8 @@ public:
   {
     const Option<Entry>& option = entries.get(entry.name());
 
-    if (option.isSome() && UUID::fromBytes(option.get().uuid()) != uuid) {
+    if (option.isSome() &&
+        UUID::fromBytes(option.get().uuid()).get() != uuid) {
       return false;
     }
 
@@ -68,7 +73,8 @@ public:
       return false;
     }
 
-    if (UUID::fromBytes(option.get().uuid()) != UUID::fromBytes(entry.uuid())) {
+    if (UUID::fromBytes(option.get().uuid()).get() !=
+        UUID::fromBytes(entry.uuid()).get()) {
       return false;
     }
 

@@ -27,6 +27,7 @@ fi
 MASTER_PID=
 AGENT_PID=
 MESOS_WORK_DIR=
+MESOS_RUNTIME_DIR=
 
 # This function ensures that we first kill the agent (if present) and
 # then cleanup the cgroups. This is necessary because a running agent
@@ -46,7 +47,7 @@ function cleanup() {
   fi
 
   # Make sure we cleanup any cgroups we created on exiting.
-  find ${TEST_CGROUP_HIERARCHY}/*/${TEST_CGROUP_ROOT} -mindepth 1 -depth -type d | xargs -r rmdir
+  find ${TEST_CGROUP_HIERARCHY}/*/${TEST_CGROUP_ROOT} -mindepth 1 -depth -type d -exec rmdir '{}' \+
 
   # Make sure we cleanup the hierarchy, if we created it.
   # NOTE: We do a sleep here, to ensure the hierarchy is not busy.
@@ -56,6 +57,10 @@ function cleanup() {
 
   if [[ -d "${MESOS_WORK_DIR}" ]]; then
     rm -rf ${MESOS_WORK_DIR};
+  fi
+
+  if [[ -d "${MESOS_RUNTIME_DIR}" ]]; then
+    rm -rf ${MESOS_RUNTIME_DIR};
   fi
 }
 
@@ -75,6 +80,7 @@ unset MESOS_HELPER_DIR
 unset MESOS_VERBOSE
 
 MESOS_WORK_DIR=`mktemp -d -t mesos-XXXXXX`
+MESOS_RUNTIME_DIR=`mktemp -d -t mesos-XXXXXX`
 
 # Launch master.
 ${MASTER} \
@@ -89,18 +95,21 @@ sleep 2
 kill -0 ${MASTER_PID} >/dev/null 2>&1
 STATUS=${?}
 if [[ ${STATUS} -ne 0 ]]; then
-  echo "{RED}Master crashed; failing test${NORMAL}"
+  echo "${RED}Master crashed; failing test${NORMAL}"
   exit 2
 fi
 
+EXECUTOR_ENVIRONMENT_VARIABLES="{\"LD_LIBRARY_PATH\":\"${LD_LIBRARY_PATH}\"}"
 
 # Launch agent.
 ${AGENT} \
     --work_dir=${MESOS_WORK_DIR} \
+    --runtime_dir=${MESOS_RUNTIME_DIR} \
     --master=127.0.0.1:5432 \
     --isolation=cgroups/mem \
     --cgroups_hierarchy=${TEST_CGROUP_HIERARCHY} \
     --cgroups_root=${TEST_CGROUP_ROOT} \
+    --executor_environment_variables=${EXECUTOR_ENVIRONMENT_VARIABLES} \
     --resources="cpus:1;mem:96" &
 AGENT_PID=${!}
 echo "${GREEN}Launched agent at ${AGENT_PID}${NORMAL}"
@@ -115,7 +124,10 @@ if [[ ${STATUS} -ne 0 ]]; then
 fi
 
 # The main event!
-${BALLOON_FRAMEWORK} --master=127.0.0.1:5432 --task_memory_usage_limit=1024MB --task_memory=32MB
+${BALLOON_FRAMEWORK} \
+    --master=127.0.0.1:5432 \
+    --task_memory_usage_limit=1024MB \
+    --task_memory=32MB
 STATUS=${?}
 
 # Make sure the balloon framework "failed".

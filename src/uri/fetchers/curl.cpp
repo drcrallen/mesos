@@ -30,6 +30,7 @@
 #include <stout/path.hpp>
 #include <stout/strings.hpp>
 
+#include <stout/os/constants.hpp>
 #include <stout/os/mkdir.hpp>
 
 #include "uri/fetchers/curl.hpp"
@@ -53,6 +54,9 @@ using process::Subprocess;
 namespace mesos {
 namespace uri {
 
+const char CurlFetcherPlugin::NAME[] = "curl";
+
+
 Try<Owned<Fetcher::Plugin>> CurlFetcherPlugin::create(const Flags& flags)
 {
   // TODO(jieyu): Make sure curl is available.
@@ -61,15 +65,21 @@ Try<Owned<Fetcher::Plugin>> CurlFetcherPlugin::create(const Flags& flags)
 }
 
 
-set<string> CurlFetcherPlugin::schemes()
+set<string> CurlFetcherPlugin::schemes() const
 {
   return {"http", "https", "ftp", "ftps"};
 }
 
 
+string CurlFetcherPlugin::name() const
+{
+  return NAME;
+}
+
+
 Future<Nothing> CurlFetcherPlugin::fetch(
     const URI& uri,
-    const string& directory)
+    const string& directory) const
 {
   // TODO(jieyu): Validate the given URI.
 
@@ -100,7 +110,7 @@ Future<Nothing> CurlFetcherPlugin::fetch(
   Try<Subprocess> s = subprocess(
       "curl",
       argv,
-      Subprocess::PATH("/dev/null"),
+      Subprocess::PATH(os::DEV_NULL),
       Subprocess::PIPE(),
       Subprocess::PIPE());
 

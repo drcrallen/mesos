@@ -15,8 +15,18 @@
   // specified window_title.
   function pailer(host, path, window_title) {
     var url = '//' + host + '/files/read?path=' + path;
+
+    // The randomized `storageKey` is removed from `localStorage` once the
+    // pailer window loads the URL into its `sessionStorage`, therefore
+    // the probability of collisions is low and we do not use a uuid.
+    var storageKey = Math.random().toString(36).substr(2, 8);
+
+    // Store the target URL in `localStorage` which is
+    // accessed by the pailer window when opened.
+    localStorage.setItem(storageKey, url);
+
     var pailer =
-      window.open('/static/pailer.html', url, 'width=580px, height=700px');
+      window.open('/static/pailer.html', storageKey, 'width=580px, height=700px');
 
     // Need to use window.onload instead of document.ready to make
     // sure the title doesn't get overwritten.
@@ -49,37 +59,30 @@
     }
   }
 
+  // Set the task sandbox directory for use by the WebUI.
+  function setTaskSandbox(executor) {
+    _.each(
+        [executor.tasks, executor.queued_tasks, executor.completed_tasks],
+        function(tasks) {
+      _.each(tasks, function(task) {
+        if (executor.type === 'DEFAULT') {
+          task.directory = executor.directory + '/tasks/' + task.id;
+        } else {
+          task.directory = executor.directory;
+        };
+      });
+    });
+  }
+
 
   // Update the outermost scope with the new state.
-  function updateState($scope, $timeout, data) {
-    // Don't do anything if the data hasn't changed.
-    if ($scope.data == data) {
+  function updateState($scope, $timeout, state) {
+    // Don't do anything if the state hasn't changed.
+    if ($scope.state == state) {
       return true; // Continue polling.
     }
 
-    $scope.state = JSON.parse(data);
-
-    // Determine if there is a leader (and redirect if not the leader).
-    if ($scope.state.leader) {
-
-      // Redirect if we aren't the leader.
-      if ($scope.state.leader != $scope.state.pid) {
-        $scope.redirect = 6000;
-        $("#not-leader-alert").removeClass("hide");
-
-        var countdown = function() {
-          if ($scope.redirect == 0) {
-            // TODO(benh): Use '$window'.
-            window.location = '/master/redirect';
-          } else {
-            $scope.redirect = $scope.redirect - 1000;
-            $timeout(countdown, 1000);
-          }
-        };
-        countdown();
-        return false; // Don't continue polling.
-      }
-    }
+    $scope.state = state;
 
     // A cluster is named if the state returns a non-empty string name.
     // Track whether this cluster is named in a Boolean for display purposes.
@@ -96,8 +99,6 @@
       return true;
     }
 
-    $scope.data = data;
-
     // Pass this pollTime to all relativeDate calls to make them all relative to
     // the same moment in time.
     //
@@ -112,7 +113,9 @@
     $scope.offers = {};
     $scope.completed_frameworks = {};
     $scope.active_tasks = [];
+    $scope.unreachable_tasks = [];
     $scope.completed_tasks = [];
+    $scope.orphan_tasks = [];
 
     // Update the stats.
     $scope.cluster = $scope.state.cluster;
@@ -131,6 +134,7 @@
 
     $scope.activated_agents = $scope.state.activated_slaves;
     $scope.deactivated_agents = $scope.state.deactivated_slaves;
+    $scope.unreachable_agents = $scope.state.unreachable_slaves;
 
     _.each($scope.state.slaves, function(agent) {
       $scope.agents[agent.id] = agent;
@@ -145,14 +149,38 @@
         task.executor_id = task.id;
       }
       if (task.statuses.length > 0) {
-        task.start_time = task.statuses[0].timestamp * 1000;
-        task.finish_time =
-          task.statuses[task.statuses.length - 1].timestamp * 1000;
+          var firstStatus = task.statuses[0];
+          if (!isStateTerminal(firstStatus.state)) {
+              task.start_time = firstStatus.timestamp * 1000;
+          }
+          var lastStatus = task.statuses[task.statuses.length - 1];
+          if (isStateTerminal(task.state)) {
+              task.finish_time = lastStatus.timestamp * 1000;
+          }
       }
+    };
+
+    var isStateTerminal = function(taskState) {
+      var terminalStates = [
+          'TASK_ERROR',
+          'TASK_FAILED',
+          'TASK_FINISHED',
+          'TASK_KILLED',
+          'TASK_LOST',
+          'TASK_DROPPED',
+          'TASK_GONE',
+          'TASK_GONE_BY_OPERATOR'
+      ];
+      return terminalStates.indexOf(taskState) > -1;
     };
 
     _.each($scope.state.frameworks, function(framework) {
       $scope.frameworks[framework.id] = framework;
+
+      // Fill in the `roles` field for non-MULTI_ROLE schedulers.
+      if (framework.role) {
+        framework.roles = [framework.role];
+      }
 
       _.each(framework.offers, function(offer) {
         $scope.offers[offer.id] = offer;
@@ -171,22 +199,22 @@
 
       framework.cpus_share = 0;
       if ($scope.total_cpus > 0) {
-        framework.cpus_share = framework.resources.cpus / $scope.total_cpus;
+        framework.cpus_share = framework.used_resources.cpus / $scope.total_cpus;
       }
 
       framework.gpus_share = 0;
       if ($scope.total_gpus > 0) {
-        framework.gpus_share = framework.resources.gpus / $scope.total_gpus;
+        framework.gpus_share = framework.used_resources.gpus / $scope.total_gpus;
       }
 
       framework.mem_share = 0;
       if ($scope.total_mem > 0) {
-        framework.mem_share = framework.resources.mem / $scope.total_mem;
+        framework.mem_share = framework.used_resources.mem / $scope.total_mem;
       }
 
       framework.disk_share = 0;
       if ($scope.total_disk > 0) {
-        framework.disk_share = framework.resources.disk / $scope.total_disk;
+        framework.disk_share = framework.used_resources.disk / $scope.total_disk;
       }
 
       framework.max_share = Math.max(
@@ -200,9 +228,11 @@
       // TODO(brenden): Remove this once
       // https://issues.apache.org/jira/browse/MESOS-527 is fixed.
       _.each(framework.tasks, setTaskMetadata);
+      _.each(framework.unreachable_tasks, setTaskMetadata);
       _.each(framework.completed_tasks, setTaskMetadata);
 
       $scope.active_tasks = $scope.active_tasks.concat(framework.tasks);
+      $scope.unreachable_tasks = $scope.unreachable_tasks.concat(framework.unreachable_tasks);
       $scope.completed_tasks =
         $scope.completed_tasks.concat(framework.completed_tasks);
     });
@@ -210,8 +240,16 @@
     _.each($scope.state.completed_frameworks, function(framework) {
       $scope.completed_frameworks[framework.id] = framework;
 
+      // Fill in the `roles` field for non-MULTI_ROLE schedulers.
+      if (framework.role) {
+        framework.roles = [framework.role];
+      }
+
       _.each(framework.completed_tasks, setTaskMetadata);
     });
+
+    $scope.orphan_tasks = $scope.state.orphan_tasks;
+    _.each($scope.orphan_tasks, setTaskMetadata);
 
     $scope.used_cpus -= $scope.offered_cpus;
     $scope.used_gpus -= $scope.offered_gpus;
@@ -229,16 +267,8 @@
     return true; // Continue polling.
   }
 
-  // Add a filter to convert small float number to decimal string
-  mesosApp.filter('decimalFloat', function() {
-    return function(num) {
-      return num ? parseFloat(num.toFixed(4)).toString() : num;
-    }
-  });
-
   // Update the outermost scope with the metrics/snapshot endpoint.
-  function updateMetrics($scope, $timeout, data) {
-    var metrics = JSON.parse(data);
+  function updateMetrics($scope, $timeout, metrics) {
     $scope.staging_tasks = metrics['master/tasks_staging'];
     $scope.starting_tasks = metrics['master/tasks_starting'];
     $scope.running_tasks = metrics['master/tasks_running'];
@@ -255,10 +285,10 @@
   // Main controller that can be used to handle "global" events. E.g.,:
   //     $scope.$on('$afterRouteChange', function() { ...; });
   //
-  // In addition, the MainCntl encapsulates the "view", allowing the
+  // In addition, the MainCtrl encapsulates the "view", allowing the
   // active controller/view to easily access anything in scope (e.g.,
   // the state).
-  mesosApp.controller('MainCntl', [
+  mesosApp.controller('MainCtrl', [
       '$scope', '$http', '$location', '$timeout', '$modal',
       function($scope, $http, $location, $timeout, $modal) {
     $scope.doneLoading = true;
@@ -301,8 +331,16 @@
         tab: 'frameworks'
       },
       {
+        pathRegexp: /^\/roles/,
+        tab: 'roles'
+      },
+      {
         pathRegexp: /^\/offers/,
         tab: 'offers'
+      },
+      {
+        pathRegexp: /^\/maintenance/,
+        tab: 'maintenance'
       }
     ];
 
@@ -320,6 +358,18 @@
 
       if (!matched) $scope.navbarActiveTab = null;
     });
+
+    var leadingMasterURL = function(path) {
+      // Use current location as address in case we could not find the
+      // leading master.
+      var address = location.hostname + ':' + location.port;
+      if ($scope.state && $scope.state.leader_info) {
+          address = $scope.state.leader_info.hostname + ':' +
+                    $scope.state.leader_info.port;
+      }
+
+      return '//' + address + path;
+    }
 
     var popupErrorModal = function() {
       if ($scope.delay >= 128000) {
@@ -376,10 +426,13 @@
     };
 
     var pollState = function() {
-      $http.get('master/state',
-                {transformResponse: function(data) { return data; }})
-        .success(function(data) {
-          if (updateState($scope, $timeout, data)) {
+      // When the current master is not the leader, the request is redirected to
+      // the leading master automatically. This would cause a CORS error if we
+      // use XMLHttpRequest here. To avoid the CORS error, we use JSONP as a
+      // workaround. Please refer to MESOS-5911 for further details.
+      $http.jsonp(leadingMasterURL('/master/state?jsonp=JSON_CALLBACK'))
+        .success(function(response) {
+          if (updateState($scope, $timeout, response)) {
             $scope.delay = updateInterval(_.size($scope.agents));
             $timeout(pollState, $scope.delay);
           }
@@ -392,17 +445,20 @@
     };
 
     var pollMetrics = function() {
-      $http.get('metrics/snapshot',
-                {transformResponse: function(data) { return data; }})
-        .success(function(data) {
-          if (updateMetrics($scope, $timeout, data)) {
+      $http.jsonp(leadingMasterURL('/metrics/snapshot?jsonp=JSON_CALLBACK'))
+        .success(function(response) {
+          if (updateMetrics($scope, $timeout, response)) {
             $scope.delay = updateInterval(_.size($scope.agents));
             $timeout(pollMetrics, $scope.delay);
           }
         })
-        .error(function() {
+        .error(function(message, code) {
           if ($scope.isErrorModalOpen === false) {
-            popupErrorModal();
+            // If return code is 401 or 403 the user is unauthorized to reach
+            // the endpoint, which is not a connection error.
+            if ([401, 403].indexOf(code) < 0) {
+              popupErrorModal();
+            }
           }
         });
     };
@@ -431,7 +487,53 @@
 
   mesosApp.controller('FrameworksCtrl', function() {});
 
+  mesosApp.controller('RolesCtrl', function($scope, $http) {
+    var update = function() {
+      // TODO(haosdent): Send requests to the leading master directly
+      // once `leadingMasterURL` is public.
+      $http.jsonp('/master/roles?jsonp=JSON_CALLBACK')
+      .success(function(response) {
+        $scope.roles = response;
+      })
+      .error(function() {
+        if ($scope.isErrorModalOpen === false) {
+          popupErrorModal();
+        }
+      });
+    };
+
+    if ($scope.state) {
+      update();
+    }
+
+    var removeListener = $scope.$on('state_updated', update);
+    $scope.$on('$routeChangeStart', removeListener);
+  });
+
   mesosApp.controller('OffersCtrl', function() {});
+
+  mesosApp.controller('MaintenanceCtrl', function($scope, $http) {
+    var update = function() {
+      // TODO(haosdent): Send requests to the leading master directly
+      // once `leadingMasterURL` is public.
+      $http.jsonp('/master/maintenance/schedule?jsonp=JSON_CALLBACK')
+      .success(function(response) {
+        $scope.maintenance = response;
+      })
+      .error(function() {
+        if ($scope.isErrorModalOpen === false) {
+          popupErrorModal();
+        }
+      });
+    };
+
+    if ($scope.state) {
+      update();
+    }
+
+    var removeListener = $scope.$on('state_updated', update);
+    $scope.$on('$routeChangeStart', removeListener);
+  });
 
   mesosApp.controller('FrameworkCtrl', function($scope, $routeParams) {
     var update = function() {
@@ -492,7 +594,7 @@
 
       // Set up polling for the monitor if this is the first update.
       if (!$top.started()) {
-        $top.start(host, $scope);
+        $top.start(host, id, $scope);
       }
 
       $http.jsonp('//' + host + '/' + id + '/state?jsonp=JSON_CALLBACK')
@@ -526,11 +628,21 @@
           _.each($scope.state.frameworks, function(framework) {
             $scope.agent.frameworks[framework.id] = framework;
             computeFrameworkStats(framework);
+
+            // Fill in the `roles` field for non-MULTI_ROLE schedulers.
+            if (framework.role) {
+              framework.roles = [framework.role];
+            }
           });
 
           _.each($scope.state.completed_frameworks, function(framework) {
             $scope.agent.completed_frameworks[framework.id] = framework;
             computeFrameworkStats(framework);
+
+            // Fill in the `roles` field for non-MULTI_ROLE schedulers.
+            if (framework.role) {
+              framework.roles = [framework.role];
+            }
           });
 
           $('#agent').show();
@@ -542,18 +654,14 @@
 
       $http.jsonp('//' + host + '/metrics/snapshot?jsonp=JSON_CALLBACK')
         .success(function (response) {
-          if (!$scope.state) {
-            $scope.state = {};
-          }
-
-          $scope.state.staging_tasks = response['slave/tasks_staging'];
-          $scope.state.starting_tasks = response['slave/tasks_starting'];
-          $scope.state.running_tasks = response['slave/tasks_running'];
-          $scope.state.killing_tasks = response['slave/tasks_killing'];
-          $scope.state.finished_tasks = response['slave/tasks_finished'];
-          $scope.state.killed_tasks = response['slave/tasks_killed'];
-          $scope.state.failed_tasks = response['slave/tasks_failed'];
-          $scope.state.lost_tasks = response['slave/tasks_lost'];
+          $scope.staging_tasks = response['slave/tasks_staging'];
+          $scope.starting_tasks = response['slave/tasks_starting'];
+          $scope.running_tasks = response['slave/tasks_running'];
+          $scope.killing_tasks = response['slave/tasks_killing'];
+          $scope.finished_tasks = response['slave/tasks_finished'];
+          $scope.killed_tasks = response['slave/tasks_killed'];
+          $scope.failed_tasks = response['slave/tasks_failed'];
+          $scope.lost_tasks = response['slave/tasks_lost'];
         })
         .error(function(reason) {
           $scope.alert_message = 'Failed to get agent metrics: ' + reason;
@@ -590,7 +698,7 @@
 
       // Set up polling for the monitor if this is the first update.
       if (!$top.started()) {
-        $top.start(host, $scope);
+        $top.start(host, id, $scope);
       }
 
       $http.jsonp('//' + host + '/' + id + '/state?jsonp=JSON_CALLBACK')
@@ -614,6 +722,11 @@
             return;
           }
 
+          // Fill in the `roles` field for non-MULTI_ROLE schedulers.
+          if ($scope.framework.role) {
+            $scope.framework.roles = [$scope.framework.role];
+          }
+
           // Compute the framework stats.
           $scope.framework.num_tasks = 0;
           $scope.framework.cpus = 0;
@@ -627,6 +740,11 @@
             $scope.framework.gpus += executor.resources.gpus;
             $scope.framework.mem += executor.resources.mem;
             $scope.framework.disk += executor.resources.disk;
+
+            // If 'role' is not present in executor, we are talking
+            // to a non-MULTI_ROLE capable agent. This means that we
+            // can use the 'role' of the framework.
+            executor.role = executor.role || $scope.framework.role;
           });
 
           $('#agent').show();
@@ -667,7 +785,7 @@
 
       // Set up polling for the monitor if this is the first update.
       if (!$top.started()) {
-        $top.start(host, $scope);
+        $top.start(host, id, $scope);
       }
 
       $http.jsonp('//' + host + '/' + id + '/state?jsonp=JSON_CALLBACK')
@@ -706,6 +824,25 @@
             return;
           }
 
+          // If 'role' is not present in the task, we are talking
+          // to a non-MULTI_ROLE capable agent. This means that we
+          // can use the 'role' of the framework.
+          if (!("role" in $scope.executor)) {
+            $scope.executor.role = $scope.framework.role;
+
+            function setRole(tasks) {
+              _.each(tasks, function(task) {
+                task.role = $scope.framework.role;
+              });
+            }
+
+            setRole($scope.executor.tasks);
+            setRole($scope.executor.queued_tasks);
+            setRole($scope.executor.completed_tasks);
+          }
+
+          setTaskSandbox($scope.executor);
+
           $('#agent').show();
         })
         .error(function (reason) {
@@ -723,15 +860,17 @@
   }]);
 
 
-  // Reroutes a request like
-  // '/agents/:agent_id/frameworks/:framework_id/executors/:executor_id/browse'
-  // to the executor's sandbox. This requires a second request because the
-  // directory to browse is known by the agent but not by the master. Request
-  // the directory from the agent, and then redirect to it.
+  // Reroutes requests like:
+  //   * '/agents/:agent_id/frameworks/:framework_id/executors/:executor_id/browse'
+  //   * '/agents/:agent_id/frameworks/:framework_id/executors/:executor_id/tasks/:task_id/browse'
+  // to the sandbox directory of the executor or the task respectively. This
+  // requires a second request because the directory to browse is known by the
+  // agent but not by the master. Request the directory from the agent, and then
+  // redirect to it.
   //
   // TODO(ssorallen): Add `executor.directory` to the master's state endpoint
   // output so this controller of rerouting is no longer necessary.
-  mesosApp.controller('AgentExecutorRerouterCtrl',
+  mesosApp.controller('AgentTaskAndExecutorRerouterCtrl',
       function($alert, $http, $location, $routeParams, $scope, $window) {
 
     function goBack(flashMessageOrOptions) {
@@ -810,10 +949,37 @@
           );
         }
 
+        var sandboxDirectory = executor.directory;
+
+        function matchTask(task) {
+          return $routeParams.task_id === task.id;
+        }
+
+        // Continue to navigate to the task's sandbox if the task id is
+        // specified in route parameters.
+        if ($routeParams.task_id) {
+          setTaskSandbox(executor);
+
+          var task =
+            _.find(executor.tasks, matchTask) ||
+            _.find(executor.queued_tasks, matchTask) ||
+            _.find(executor.completed_tasks, matchTask);
+
+          if (!task) {
+            return goBack(
+              "Task with ID '" + $routeParams.task_id +
+                "' does not exist on agent with ID '" + $routeParams.agent_id +
+                "'."
+            );
+          }
+
+          sandboxDirectory = task.directory;
+        }
+
         // Navigate to a path like '/agents/:id/browse?path=%2Ftmp%2F', the
         // recognized "browse" endpoint for an agent.
         $location.path('/agents/' + $routeParams.agent_id + '/browse')
-          .search({path: executor.directory})
+          .search({path: sandboxDirectory})
           .replace();
       })
       .error(function(response) {

@@ -46,6 +46,8 @@ public:
 
   virtual ~LinuxFilesystemIsolatorProcess();
 
+  virtual bool supportsNesting();
+
   virtual process::Future<Nothing> recover(
       const std::list<mesos::slave::ContainerState>& states,
       const hashset<ContainerID>& orphans);
@@ -64,7 +66,7 @@ public:
 private:
   LinuxFilesystemIsolatorProcess(const Flags& flags);
 
-  Try<std::string> script(
+  Try<std::vector<CommandInfo>> getPreExecCommands(
       const ContainerID& containerId,
       const mesos::slave::ContainerConfig& containerConfig);
 
@@ -75,7 +77,7 @@ private:
     Info(const std::string& _directory) : directory(_directory) {}
 
     Info(const std::string& _directory,
-         const ExecutorInfo& _executor)
+         const Option<ExecutorInfo>& _executor)
       : directory(_directory),
         executor(_executor) {}
 

@@ -26,8 +26,8 @@ the life cycle of a container.
 
 Therefore, we made an effort to unify containerizers in Mesos
 ([MESOS-2840](https://issues.apache.org/jira/browse/MESOS-2840),
-a.k.a. the Unified Containerizer). We improved Mesos containerizer so
-that it now supports launching containers that specify container
+a.k.a. the Universal Containerizer). We improved Mesos containerizer
+so that it now supports launching containers that specify container
 images (e.g., Docker/Appc images).
 
 
@@ -183,12 +183,39 @@ API](https://docs.docker.com/registry/spec/api/) to fetch Docker
 images/layers. The fetching is based on `curl`, therefore SSL is
 automatically handled. For private registries, the operator needs to
 configure `curl` accordingly so that it knows where to find the
-additional certificate files. Fetching requiring authentication is
-currently not supported yet (coming soon).
+additional certificate files.
 
-Private registry is supported through the `--docker_registry` agent
-flag. Specifying private registry for each container using
-`Image.Docker.name` is not supported yet (coming soon).
+Fetching requiring authentication is supported through the
+`--docker_config` agent flag. Starting from 1.0, operators can use
+this agent flag to specify a shared docker config file, which is
+used for pulling private repositories with authentication. Per
+container credential is not supported yet (coming soon).
+
+Operators can either specify the flag as an absolute path pointing to
+the docker config file (need to manually configure
+`.docker/config.json` or `.dockercfg` on each agent), or specify the
+flag as a JSON-formatted string. See [configuration
+documentation](configuration.md) for detail. For example:
+
+    --docker_config=file:///home/vagrant/.docker/config.json
+
+or as a JSON object,
+
+    --docker_config="{ \
+      \"auths\": { \
+        \"https://index.docker.io/v1/\": { \
+          \"auth\": \"xXxXxXxXxXx=\", \
+          \"email\": \"username@example.com\" \
+        } \
+      } \
+    }"
+
+Private registry is supported either through the `--docker_registry`
+agent flag, or specifying private registry for each container using
+image name `<REGISTRY>/<REPOSITORY>` (e.g.,
+`localhost:80/gilbert/inky:latest`). If `<REGISTRY>` is included as
+a prefix in the image name, the registry specified through the agent
+flag `--docker_registry` will be ignored.
 
 If the `--docker_registry` agent flag points to a local directory
 (e.g., `/tmp/mesos/images/docker`), the provisioner will pull Docker
@@ -224,6 +251,12 @@ could either be a Docker registry server URL (i.e:
 images in. All the Docker images are cached under this directory. The
 default value is `/tmp/mesos/store/docker`.
 
+`--docker_config`: The default docker config file for agent. Can
+be provided either as an absolute path pointing to the agent local
+docker config file, or as a JSON-formatted string. The format of
+the docker config file should be identical to docker's default one
+(e.g., either `$HOME/.docker/config.json` or `$HOME/.dockercfg`).
+
 
 ## Appc Support and Current Limitations
 
@@ -252,8 +285,29 @@ is `/tmp/mesos/store/appc`.
 ## Provisioner Backends
 
 A provisioner backend takes a set of filesystem layers and stacks them
-into a root filesystem. The following backends are supported
-currently.
+into a root filesystem. Currently, we support the following backends:
+`copy`, `bind`, `overlay` and `aufs`. Mesos will validate if the
+selected backend works with the underlying filesystem (the filesystem
+used by the image store `--docker_store_dir` or `--appc_store_dir`)
+using the following logic table:
+
+    +---------+--------------+------------------------------------------+
+    | Backend | Suggested on | Disabled on                              |
+    +---------+--------------+------------------------------------------+
+    | aufs    | ext4 xfs     | btrfs aufs eCryptfs                      |
+    | overlay | ext4 xfs     | btrfs aufs overlay overlay2 zfs eCryptfs |
+    | bind    |              | N/A(`--sandbox_directory' must exist)    |
+    | copy    |              | N/A                                      |
+    +---------+--------------+------------------------------------------+
+
+The provisioner backend can be specified through the agent flag
+`--provisioner_image_backend`. If not set, Mesos will select the best
+backend automatically for the users/operators. The selection logic is
+as following:
+
+    1. Use `overlay` backend if the overlayfs is available.
+    2. Use `aufs` backend if the aufs is available and overlayfs is not supported.
+    3. Use `copy` backend if none of above is selected.
 
 ### Copy
 
@@ -278,10 +332,10 @@ share the source. Select writable areas can be achieved by mounting
 read-write volumes to places like `/tmp`, `/var/tmp`, `/home`, etc.
 using the `ContainerInfo`. These can be relative to the executor work
 directory. Since the filesystem is read-only, `--sandbox_directory`
-must already exist within the filesystem because the filesystem
-isolator is unable to create it (e.g., either the image writer needs
-to create the mount point in the image, or the operator needs to set
-agent flag `--sandbox_directory` properly).
+and `/tmp` must already exist within the filesystem because the
+filesystem isolator is unable to create it (e.g., either the image
+writer needs to create the mount point in the image, or the operator
+needs to set agent flag `--sandbox_directory` properly).
 
 ### Overlay
 
@@ -290,14 +344,26 @@ will waste IO and space while the bind backend can only deal with one
 layer. The overlay backend allows containizer to utilize the
 filesystem to merge multiple filesystems into one efficiently.
 
-As the overlay backend request multiple lower layers support, the
-version of linux kernel should be greater than 4.0, refer
-[here](https://github.com/manjaro/manjaro-tools-iso-profiles/issues/40)
-for more detail.
-
-For more information of overlayfs, please refer to
+The overlay backend depends on support for multiple lower layers,
+which requires Linux kernel version 4.0 or later. For more information
+of overlayfs, please refer to
 [here](https://www.kernel.org/doc/Documentation/filesystems/overlayfs.txt).
 
+### AUFS
+
+The reason AUFS is introduced is because overlayfs support hasn't been
+merged until kernel 3.18 and Docker's default storage backend for
+ubuntu 14.04 is AUFS.
+
+Like overlayfs, AUFS is also a unioned file system, which is very
+stable, has a lot of real-world deployments, and has strong community
+support.
+
+Some Linux distributions do not support AUFS. This is usually because
+AUFS is not included in the mainline (upstream) Linux kernel.
+
+For more information of AUFS, please refer to
+[here](http://aufs.sourceforge.net/aufs2/man.html).
 
 ## Executor Dependencies in a Container Image
 

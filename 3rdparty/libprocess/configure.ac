@@ -57,6 +57,8 @@ LT_OUTPUT
 CONFIGURE_ARGS="$ac_configure_args"
 AC_SUBST(CONFIGURE_ARGS)
 
+AM_CONDITIONAL([STANDALONE_LIBPROCESS], [true])
+
 AC_CONFIG_FILES([Makefile])
 AC_CONFIG_FILES([include/Makefile])
 AC_CONFIG_FILES([3rdparty/Makefile])
@@ -67,56 +69,62 @@ AC_CONFIG_FILES([3rdparty/gmock_sources.cc])
 # Optional features.
 ###############################################################################
 
+AC_ARG_ENABLE([hardening],
+              AS_HELP_STRING([--disable-hardening],
+                             [disables security measures such as stack
+                             protection and position independent library code]),
+                             [], [enable_hardening=yes])
+
 AC_ARG_ENABLE([bundled],
               AS_HELP_STRING([--disable-bundled],
                              [build against preinstalled dependencies instead
                              of bundled libraries]),
-              [enable_bundled=no], [enable_bundled=yes])
+              [], [enable_bundled=yes])
 
 AC_ARG_ENABLE([debug],
               AS_HELP_STRING([--enable-debug],
                              [enable debugging. If CFLAGS/CXXFLAGS are set, this
                               option won't change them default: no]),
-              [enable_debug=yes], [])
+              [], [enable_debug=no])
 
 AC_ARG_ENABLE([install],
               AS_HELP_STRING([--enable-install],
                              [install libprocess]),
-              [AC_MSG_ERROR([libprocess can not currently be installed])])
+              [AC_MSG_ERROR([libprocess cannot currently be installed])])
 
 AC_ARG_ENABLE([libevent],
               AS_HELP_STRING([--enable-libevent],
                              [use libevent instead of libev default: no]),
-              [enable_libevent=yes], [])
+              [], [enable_libevent=no])
 
 AC_ARG_ENABLE([optimize],
               AS_HELP_STRING([--enable-optimize],
                              [enable optimizations. If CFLAGS/CXXFLAGS are set,
                               this option won't change them default: no]),
-              [enable_optimize=yes], [])
+              [], [enable_optimize=no])
 
 AC_ARG_ENABLE([perftools],
               AS_HELP_STRING([--enable-perftools],
-                             [enable google perftools]),
-              [gperftools=yes], [])
+                             [enable Google perftools]),
+              [], [enable_perftools=no])
 
 AC_ARG_ENABLE([ssl],
               AS_HELP_STRING([--enable-ssl],
                              [use ssl for libprocess communication
                              default: no]),
-              [enable_ssl=yes], [])
+              [], [enable_ssl=no])
 
 AC_ARG_ENABLE([static-unimplemented],
               AS_HELP_STRING([--enable-static-unimplemented],
                              [generate static assertion errors for unimplemented
                              functions default: no]),
-              [enable_static_unimplemented=yes], [])
+              [], [enable_static_unimplemented=no])
 
 AC_ARG_ENABLE([zlib],
             AS_HELP_STRING([--disable-zlib],
                            [disables zlib compression, which means the webui
                            will be far less responsive; not recommended]),
-            [enable_zlib=no], [enable_zlib=yes])
+            [], [enable_zlib=yes])
 
 
 ###############################################################################
@@ -139,6 +147,13 @@ AC_ARG_WITH([curl],
             AS_HELP_STRING([--with-curl=@<:@=DIR@:>@],
                            [specify where to locate the curl library]),
             [], [])
+
+AC_ARG_WITH([elfio],
+            AS_HELP_STRING([--with-elfio@<:@=DIR@:>@],
+                           [excludes building and using the bundled ELFIO
+                           package in lieu of an installed version at a
+                           location prefixed by the given path]),
+            [without_bundled_elfio=yes], [])
 
 AC_ARG_WITH([glog],
             AS_HELP_STRING([--with-glog@<:@=DIR@:>@],
@@ -204,8 +219,17 @@ AC_ARG_WITH([svn],
 
 
 ###############################################################################
+# Miscellaneous flags/library/tool checks.
+###############################################################################
+AC_ARG_VAR([TEST_DRIVER], [executable and arguments of a test driver])
+
+
+###############################################################################
 # Compiler checks.
 ###############################################################################
+
+# Check to see if we should harden or not.
+AM_CONDITIONAL([ENABLE_HARDENING], [test x"$enable_hardening" = "xyes"])
 
 AS_CASE($ax_cv_cxx_compiler_vendor,
   [clang], [
@@ -253,6 +277,12 @@ AS_CASE($ax_cv_cxx_compiler_vendor,
     AC_MSG_WARN([$ax_cv_cxx_compiler_vendor is an unsupported compiler])
   ]
 )
+
+# If our compiler supports strong stack protection, use it.
+# If not, use a lesser form of stack protection.
+AX_CHECK_COMPILE_FLAG([-fstack-protector-strong],
+  [AC_SUBST(STACK_PROTECTOR, "-fstack-protector-strong")],
+  [AC_SUBST(STACK_PROTECTOR, "-fstack-protector")])
 
 # Ensure that the build environment supports C++11 (with "strict" conformance),
 # and set "--std=" flag and CXXFLAGS environment variable as appropriate.
@@ -329,7 +359,7 @@ if test "x$enable_static_unimplemented" = "xyes"; then
   AC_DEFINE([ENABLE_STATIC_UNIMPLEMENTED], [1])
 fi
 
-AM_CONDITIONAL([HAS_GPERFTOOLS], [test x"$gperftools" = "xyes"])
+AM_CONDITIONAL([HAS_GPERFTOOLS], [test x"$enable_perftools" = "xyes"])
 AM_COND_IF([HAS_GPERFTOOLS], AC_DEFINE([ENABLE_GPERFTOOLS], [1]))
 
 # Disable static libprocess by default.
@@ -409,6 +439,15 @@ on this system (e.g., musl), a separate FTS package must be installed.
 # Miscellaneous checks related to (un)bundled software.
 ###############################################################################
 
+# On OS X, if `--with-apr` was not provided, we try to use an available
+# brew installed version.
+if test -z "`echo $with_apr`" &&
+   test "$OS_NAME" = "darwin" &&
+   test -n "`command -v brew`" &&
+   test -n "`brew list --versions apr`"; then
+  with_apr=`brew --prefix apr`/libexec
+fi
+
 # Check if libapr-1 prefix path was provided, and if so, add it to
 # the CPPFLAGS and LDFLAGS with respective /include/apr-1 and /lib path
 # suffixes. We include /include/apr-1 because we include <apr*>
@@ -487,6 +526,34 @@ AC_CHECK_LIB([curl], [curl_global_init], [],
 libcurl is required for libprocess to build.
 -------------------------------------------------------------------
 ])])
+
+
+# If the user has asked not to include the bundled ELFIO headers,
+# check to see if the path to the ELFIO headers has been specified. If
+# it has, make sure that the path is absolute. If everything is in
+# order, add this path to the CPPFLAGS.
+if test "x$without_bundled_elfio" = "xyes" || \
+   test "x$enable_bundled" != "xyes"; then
+  if test -n "`echo $with_elfio`"; then
+    if test "$with_elfio" = "${with_elfio#/}"; then
+      AC_MSG_ERROR([The path passed to --with-elfio must be absolute.])
+    fi
+     CPPFLAGS="-I${with_elfio} $CPPFLAGS"
+  fi
+
+  AC_CHECK_HEADERS([elfio/elfio.h], [],
+                   [AC_MSG_ERROR([Cannot find the ELFIO headers
+-------------------------------------------------------------------
+You have requested the use of a non-bundled ELFIO but no suitable
+ELFIO headers could be found. Make sure these headers are either
+installed on the system or the path passed via --with-elfio is correct.
+-------------------------------------------------------------------
+  ])])
+else
+  with_bundled_elfio=yes
+fi
+
+AM_CONDITIONAL([WITH_BUNDLED_ELFIO], [test "x$with_bundled_elfio" = "xyes"])
 
 
 if test -n "`echo $with_glog`"; then
@@ -949,6 +1016,37 @@ you can get away without it by doing --disable-zlib.
 -------------------------------------------------------------------
   ])])
 fi
+
+
+# Once all CXXFLAGS are completely assembled, make sure the we are not
+# affected by libcxx undefined behavior,
+# https://llvm.org/bugs/show_bug.cgi?id=28469.
+AC_MSG_CHECKING([C++ standard library for undefined behaviour with selected optimization level])
+AC_LANG_PUSH([C++])
+AC_RUN_IFELSE([
+  AC_LANG_SOURCE([[
+    #include <functional>
+    #include <map>
+
+    struct F {
+      std::map<int, std::function<void()>> m;
+      F() { m[42] = []() {}; }
+    };
+
+    int main() {
+      F f;
+      f = F{};
+    }
+  ]])],
+  [
+    AC_MSG_RESULT([no])
+  ], [
+    AC_MSG_RESULT([yes])
+    AC_MSG_ERROR([libprocess cannot be built with optimizations against this version of libcxx (MESOS-5745).
+                  Consider building without optimizations, or changing the used C++ standard library.])
+  ]
+)
+AC_LANG_POP([C++])
 
 
 # Also pass the flags to 3rdparty libraries.

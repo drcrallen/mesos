@@ -17,6 +17,11 @@
 #ifndef __DOCKER_CONTAINERIZER_HPP__
 #define __DOCKER_CONTAINERIZER_HPP__
 
+#include <list>
+#include <map>
+#include <set>
+#include <string>
+
 #include <mesos/slave/container_logger.hpp>
 
 #include <process/owned.hpp>
@@ -29,6 +34,8 @@
 #include "docker/executor.hpp"
 
 #include "slave/containerizer/containerizer.hpp"
+
+#include "slave/containerizer/mesos/isolators/gpu/components.hpp"
 
 namespace mesos {
 namespace internal {
@@ -58,14 +65,16 @@ class DockerContainerizer : public Containerizer
 public:
   static Try<DockerContainerizer*> create(
       const Flags& flags,
-      Fetcher* fetcher);
+      Fetcher* fetcher,
+      const Option<NvidiaComponents>& nvidia = None());
 
   // This is only public for tests.
   DockerContainerizer(
       const Flags& flags,
       Fetcher* fetcher,
       const process::Owned<mesos::slave::ContainerLogger>& logger,
-      process::Shared<Docker> docker);
+      process::Shared<Docker> docker,
+      const Option<NvidiaComponents>& nvidia = None());
 
   // This is only public for tests.
   DockerContainerizer(
@@ -78,21 +87,12 @@ public:
 
   virtual process::Future<bool> launch(
       const ContainerID& containerId,
+      const Option<TaskInfo>& taskInfo,
       const ExecutorInfo& executorInfo,
       const std::string& directory,
       const Option<std::string>& user,
       const SlaveID& slaveId,
-      const process::PID<Slave>& slavePid,
-      bool checkpoint);
-
-  virtual process::Future<bool> launch(
-      const ContainerID& containerId,
-      const TaskInfo& taskInfo,
-      const ExecutorInfo& executorInfo,
-      const std::string& directory,
-      const Option<std::string>& user,
-      const SlaveID& slaveId,
-      const process::PID<Slave>& slavePid,
+      const std::map<std::string, std::string>& environment,
       bool checkpoint);
 
   virtual process::Future<Nothing> update(
@@ -102,10 +102,13 @@ public:
   virtual process::Future<ResourceStatistics> usage(
       const ContainerID& containerId);
 
-  virtual process::Future<containerizer::Termination> wait(
+  virtual process::Future<ContainerStatus> status(
       const ContainerID& containerId);
 
-  virtual void destroy(const ContainerID& containerId);
+  virtual process::Future<Option<mesos::slave::ContainerTermination>> wait(
+      const ContainerID& containerId);
+
+  virtual process::Future<bool> destroy(const ContainerID& containerId);
 
   virtual process::Future<hashset<ContainerID>> containers();
 
@@ -123,11 +126,13 @@ public:
       const Flags& _flags,
       Fetcher* _fetcher,
       const process::Owned<mesos::slave::ContainerLogger>& _logger,
-      process::Shared<Docker> _docker)
+      process::Shared<Docker> _docker,
+      const Option<NvidiaComponents>& _nvidia)
     : flags(_flags),
       fetcher(_fetcher),
       logger(_logger),
-      docker(_docker) {}
+      docker(_docker),
+      nvidia(_nvidia) {}
 
   virtual process::Future<Nothing> recover(
       const Option<state::SlaveState>& state);
@@ -139,7 +144,7 @@ public:
       const std::string& directory,
       const Option<std::string>& user,
       const SlaveID& slaveId,
-      const process::PID<Slave>& slavePid,
+      const std::map<std::string, std::string>& environment,
       bool checkpoint);
 
   // force = true causes the containerizer to update the resources
@@ -152,10 +157,13 @@ public:
   virtual process::Future<ResourceStatistics> usage(
       const ContainerID& containerId);
 
-  virtual process::Future<containerizer::Termination> wait(
+  virtual process::Future<ContainerStatus> status(
       const ContainerID& containerId);
 
-  virtual void destroy(
+  virtual process::Future<Option<mesos::slave::ContainerTermination>> wait(
+      const ContainerID& containerId);
+
+  virtual process::Future<bool> destroy(
       const ContainerID& containerId,
       bool killed = true); // process is either killed or reaped.
 
@@ -223,6 +231,11 @@ private:
       bool killed,
       const process::Future<Option<int>>& status);
 
+  void ____destroy(
+      const ContainerID& containerId,
+      bool killed,
+      const process::Future<Option<int>>& status);
+
   process::Future<Nothing> destroyTimeout(
       const ContainerID& containerId,
       process::Future<Nothing> future);
@@ -249,6 +262,25 @@ private:
     const Resources& current,
     const Resources& updated);
 
+#ifdef __linux__
+  // Allocate GPU resources for a specified container.
+  process::Future<Nothing> allocateNvidiaGpus(
+      const ContainerID& containerId,
+      const size_t count);
+
+  process::Future<Nothing> _allocateNvidiaGpus(
+      const ContainerID& containerId,
+      const std::set<Gpu>& allocated);
+
+  // Deallocate GPU resources for a specified container.
+  process::Future<Nothing> deallocateNvidiaGpus(
+      const ContainerID& containerId);
+
+  process::Future<Nothing> _deallocateNvidiaGpus(
+      const ContainerID& containerId,
+      const std::set<Gpu>& deallocated);
+#endif // __linux__
+
   Try<ResourceStatistics> cgroupsStatistics(pid_t pid) const;
 
   // Call back for when the executor exits. This will trigger
@@ -268,6 +300,8 @@ private:
 
   process::Shared<Docker> docker;
 
+  Option<NvidiaComponents> nvidia;
+
   struct Container
   {
     static Try<Container*> create(
@@ -277,7 +311,7 @@ private:
         const std::string& directory,
         const Option<std::string>& user,
         const SlaveID& slaveId,
-        const process::PID<Slave>& slavePid,
+        const std::map<std::string, std::string>& environment,
         bool checkpoint,
         const Flags& flags);
 
@@ -296,22 +330,21 @@ private:
               const std::string& directory,
               const Option<std::string>& user,
               const SlaveID& slaveId,
-              const process::PID<Slave>& slavePid,
               bool checkpoint,
               bool symlinked,
               const Flags& flags,
               const Option<CommandInfo>& _command,
               const Option<ContainerInfo>& _container,
-              const Option<std::map<std::string, std::string>>& _environment,
+              const std::map<std::string, std::string>& _environment,
               bool launchesExecutorContainer)
       : state(FETCHING),
         id(id),
         task(taskInfo),
         executor(executorInfo),
+        environment(_environment),
         directory(directory),
         user(user),
         slaveId(slaveId),
-        slavePid(slavePid),
         checkpoint(checkpoint),
         symlinked(symlinked),
         flags(flags),
@@ -347,19 +380,6 @@ private:
         container = task.get().container();
       } else {
         container = executor.container();
-      }
-
-      if (_environment.isSome()) {
-        environment = _environment.get();
-      } else {
-        environment = executorEnvironment(
-            executor,
-            directory,
-            slaveId,
-            slavePid,
-            checkpoint,
-            flags,
-            false);
       }
     }
 
@@ -453,13 +473,12 @@ private:
 
     const Option<std::string> user;
     SlaveID slaveId;
-    const process::PID<Slave> slavePid;
     bool checkpoint;
     bool symlinked;
     const Flags flags;
 
     // Promise for future returned from wait().
-    process::Promise<containerizer::Termination> termination;
+    process::Promise<mesos::slave::ContainerTermination> termination;
 
     // Exit status of executor or container (depending on whether or
     // not we used the command executor). Represented as a promise so
@@ -488,6 +507,11 @@ private:
     // container. This is stored so we can clean up the executor
     // on destroy.
     Option<pid_t> executorPid;
+
+#ifdef __linux__
+    // GPU resources allocated to the container.
+    std::set<Gpu> gpus;
+#endif // __linux__
 
     // Marks if this container launches an executor in a docker
     // container.

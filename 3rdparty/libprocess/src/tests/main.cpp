@@ -23,9 +23,7 @@
 #include <process/gtest.hpp>
 #include <process/process.hpp>
 
-#ifdef __WINDOWS__
-#include <process/windows/winsock.hpp>
-#else
+#ifndef __WINDOWS__
 #include <stout/os/signals.hpp>
 #endif // __WINDOWS__
 
@@ -42,16 +40,14 @@ inline void handler(int signal)
 
 int main(int argc, char** argv)
 {
-#ifdef __WINDOWS__
-  // Initialize the Windows socket stack.
-  process::Winsock winsock;
-#endif
-
   // Initialize Google Mock/Test.
   testing::InitGoogleMock(&argc, argv);
 
   // Initialize libprocess.
-  process::initialize(None(), process::DEFAULT_HTTP_AUTHENTICATION_REALM);
+  process::initialize(
+      None(),
+      process::READWRITE_HTTP_AUTHENTICATION_REALM,
+      process::READONLY_HTTP_AUTHENTICATION_REALM);
 
   // NOTE: Windows does not support signal semantics required for these
   // handlers to be useful.
@@ -74,6 +70,6 @@ int main(int argc, char** argv)
 
   int result = RUN_ALL_TESTS();
 
-  process::finalize();
+  process::finalize(true);
   return result;
 }

@@ -23,6 +23,7 @@
 
 #include "abort.hpp"
 #include "hashmap.hpp"
+#include "set.hpp"
 
 template <typename T>
 std::string stringify(T t)

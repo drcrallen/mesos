@@ -30,11 +30,23 @@
 #include <stout/none.hpp>
 #include <stout/nothing.hpp>
 #include <stout/option.hpp>
+#include <stout/path.hpp>
 #include <stout/version.hpp>
 
 #include <stout/os/rm.hpp>
 
 #include "mesos/resources.hpp"
+
+
+// OS-specific default prefix to be used for the DOCKER_HOST environment
+// variable. Note that on Linux, the default prefix is the only prefix
+// available; only Windows supports multiple prefixes.
+// TODO(hausdorff): Add support for the Windows `tcp://` prefix as well.
+#ifdef __WINDOWS__
+constexpr char DEFAULT_DOCKER_HOST_PREFIX[] = "npipe://";
+#else
+constexpr char DEFAULT_DOCKER_HOST_PREFIX[] = "unix://";
+#endif // __WINDOWS__
 
 
 // Abstraction for working with Docker (modeled on CLI).
@@ -51,6 +63,28 @@ public:
       const Option<JSON::Object>& config = None());
 
   virtual ~Docker() {}
+
+  struct Device
+  {
+    Path hostPath;
+    Path containerPath;
+
+    struct Access
+    {
+      Access() : read(false), write(false), mknod(false) {}
+
+      bool read;
+      bool write;
+      bool mknod;
+    } access;
+  };
+
+  struct PortMapping
+  {
+    uint32_t hostPort;
+    uint32_t containerPort;
+    Option<std::string> protocol;
+  };
 
   class Container
   {
@@ -79,6 +113,8 @@ public:
     // been not been assigned.
     const Option<std::string> ipAddress;
 
+    const std::vector<Device> devices;
+
   private:
     Container(
         const std::string& output,
@@ -86,13 +122,15 @@ public:
         const std::string& name,
         const Option<pid_t>& pid,
         bool started,
-        const Option<std::string>& ipAddress)
+        const Option<std::string>& ipAddress,
+        const std::vector<Device>& devices)
       : output(output),
         id(id),
         name(name),
         pid(pid),
         started(started),
-        ipAddress(ipAddress) {}
+        ipAddress(ipAddress),
+        devices(devices) {}
   };
 
   class Image
@@ -111,6 +149,72 @@ public:
         environment(_environment) {}
   };
 
+  // See https://docs.docker.com/engine/reference/run for a complete
+  // explanation of each option.
+  class RunOptions
+  {
+  public:
+    static Try<RunOptions> create(
+        const mesos::ContainerInfo& containerInfo,
+        const mesos::CommandInfo& commandInfo,
+        const std::string& containerName,
+        const std::string& sandboxDirectory,
+        const std::string& mappedDirectory,
+        const Option<mesos::Resources>& resources = None(),
+        bool enableCfsQuota = false,
+        const Option<std::map<std::string, std::string>>& env = None(),
+        const Option<std::vector<Device>>& devices = None());
+
+    // "--privileged" option.
+    bool privileged;
+
+    // "--cpu-shares" option.
+    Option<uint64_t> cpuShares;
+
+    // "--cpu-quota" option.
+    Option<uint64_t> cpuQuota;
+
+    // "--memory" option.
+    Option<Bytes> memory;
+
+    // Environment variable overrides. These overrides will be passed
+    // to docker container through "--env-file" option.
+    std::map<std::string, std::string> env;
+
+    // "--volume" option.
+    std::vector<std::string> volumes;
+
+    // "--volume-driver" option.
+    Option<std::string> volumeDriver;
+
+    // "--network" option.
+    Option<std::string> network;
+
+    // "--hostname" option.
+    Option<std::string> hostname;
+
+    // Port mappings for "-p" option.
+    std::vector<PortMapping> portMappings;
+
+    // "--device" option.
+    std::vector<Device> devices;
+
+    // "--entrypoint" option.
+    Option<std::string> entrypoint;
+
+    // "--name" option.
+    Option<std::string> name;
+
+    // Additional docker options passed through containerizer.
+    std::vector<std::string> additionalOptions;
+
+    // "IMAGE[:TAG|@DIGEST]" part of docker run.
+    std::string image;
+
+    // Arguments for docker run.
+    std::vector<std::string> arguments;
+  };
+
   // Performs 'docker run IMAGE'. Returns the exit status of the
   // container. Note that currently the exit status may correspond
   // to the exit code from a failure of the docker client or daemon
@@ -123,16 +227,11 @@ public:
   //
   // [1]: https://github.com/docker/docker/pull/14012
   virtual process::Future<Option<int>> run(
-      const mesos::ContainerInfo& containerInfo,
-      const mesos::CommandInfo& commandInfo,
-      const std::string& containerName,
-      const std::string& sandboxDirectory,
-      const std::string& mappedDirectory,
-      const Option<mesos::Resources>& resources = None(),
-      const Option<std::map<std::string, std::string>>& env = None(),
-      const process::Subprocess::IO& _stdout = process::Subprocess::PIPE(),
-      const process::Subprocess::IO& _stderr = process::Subprocess::PIPE())
-    const;
+      const RunOptions& options,
+      const process::Subprocess::IO& _stdout =
+        process::Subprocess::FD(STDOUT_FILENO),
+      const process::Subprocess::IO& _stderr =
+        process::Subprocess::FD(STDERR_FILENO)) const;
 
   // Returns the current docker version.
   virtual process::Future<Version> version() const;
@@ -189,7 +288,7 @@ protected:
          const std::string& _socket,
          const Option<JSON::Object>& _config)
        : path(_path),
-         socket("unix://" + _socket),
+         socket(DEFAULT_DOCKER_HOST_PREFIX + _socket),
          config(_config) {}
 
 private:

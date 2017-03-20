@@ -34,8 +34,12 @@
 
 #include "master/master.hpp"
 
+#include "master/detector/standalone.hpp"
+
 #include "tests/containerizer.hpp"
 #include "tests/mesos.hpp"
+
+#include "tests/containerizer/mock_containerizer.hpp"
 
 using mesos::internal::master::Master;
 
@@ -44,6 +48,7 @@ using mesos::internal::recordio::Reader;
 using mesos::internal::slave::Slave;
 
 using mesos::master::detector::MasterDetector;
+using mesos::master::detector::StandaloneMasterDetector;
 
 using mesos::v1::executor::Call;
 using mesos::v1::executor::Event;
@@ -53,6 +58,7 @@ using process::Future;
 using process::Message;
 using process::Owned;
 using process::PID;
+using process::Promise;
 
 using process::http::BadRequest;
 using process::http::MethodNotAllowed;
@@ -60,6 +66,7 @@ using process::http::NotAcceptable;
 using process::http::OK;
 using process::http::Pipe;
 using process::http::Response;
+using process::http::ServiceUnavailable;
 using process::http::UnsupportedMediaType;
 
 using recordio::Decoder;
@@ -324,9 +331,10 @@ TEST_P(ExecutorHttpApiTest, DefaultAccept)
   Try<Owned<cluster::Master>> master = StartMaster();
   ASSERT_SOME(master);
 
+  auto executor = std::make_shared<v1::MockHTTPExecutor>();
+
   ExecutorID executorId = DEFAULT_EXECUTOR_ID;
-  MockExecutor exec(executorId);
-  TestContainerizer containerizer(&exec);
+  TestContainerizer containerizer(executorId, executor);
 
   Owned<MasterDetector> detector = master.get()->createDetector();
   Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), &containerizer);
@@ -344,29 +352,23 @@ TEST_P(ExecutorHttpApiTest, DefaultAccept)
   EXPECT_CALL(sched, resourceOffers(&driver, _))
     .WillOnce(FutureArg<1>(&offers));
 
-  Future<Nothing> statusUpdate;
-  EXPECT_CALL(sched, statusUpdate(&driver, _))
-    .WillOnce(FutureSatisfy(&statusUpdate));
-
   driver.start();
 
   AWAIT_READY(frameworkId);
   AWAIT_READY(offers);
 
-  ASSERT_EQ(1u, offers.get().size());
+  ASSERT_EQ(1u, offers->size());
 
-  EXPECT_CALL(exec, registered(_, _, _, _))
-    .Times(1);
-
-  EXPECT_CALL(exec, launchTask(_, _))
-    .WillOnce(SendStatusUpdateFromTask(TASK_RUNNING));
+  Future<v1::executor::Mesos*> executorLib;
+  EXPECT_CALL(*executor, connected(_))
+    .WillOnce(FutureArg<0>(&executorLib));
 
   TaskInfo taskInfo = createTask(offers.get()[0], "", executorId);
   driver.launchTasks(offers.get()[0].id(), {taskInfo});
 
-  // Wait until status update is received on the scheduler
-  // before sending an executor subscribe request.
-  AWAIT_READY(statusUpdate);
+  // Wait for the executor to be launched before sending
+  // an executor subscribe request.
+  AWAIT_READY(executorLib);
 
   // Only subscribe needs to 'Accept' JSON or protobuf.
   Call call;
@@ -406,9 +408,10 @@ TEST_P(ExecutorHttpApiTest, NoAcceptHeader)
   Try<Owned<cluster::Master>> master = StartMaster();
   ASSERT_SOME(master);
 
+  auto executor = std::make_shared<v1::MockHTTPExecutor>();
+
   ExecutorID executorId = DEFAULT_EXECUTOR_ID;
-  MockExecutor exec(executorId);
-  TestContainerizer containerizer(&exec);
+  TestContainerizer containerizer(executorId, executor);
 
   Owned<MasterDetector> detector = master.get()->createDetector();
   Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), &containerizer);
@@ -426,29 +429,23 @@ TEST_P(ExecutorHttpApiTest, NoAcceptHeader)
   EXPECT_CALL(sched, resourceOffers(&driver, _))
     .WillOnce(FutureArg<1>(&offers));
 
-  Future<Nothing> statusUpdate;
-  EXPECT_CALL(sched, statusUpdate(&driver, _))
-    .WillOnce(FutureSatisfy(&statusUpdate));
-
   driver.start();
 
   AWAIT_READY(frameworkId);
   AWAIT_READY(offers);
 
-  ASSERT_EQ(1u, offers.get().size());
+  ASSERT_EQ(1u, offers->size());
 
-  EXPECT_CALL(exec, registered(_, _, _, _))
-    .Times(1);
-
-  EXPECT_CALL(exec, launchTask(_, _))
-    .WillOnce(SendStatusUpdateFromTask(TASK_RUNNING));
+  Future<v1::executor::Mesos*> executorLib;
+  EXPECT_CALL(*executor, connected(_))
+    .WillOnce(FutureArg<0>(&executorLib));
 
   TaskInfo taskInfo = createTask(offers.get()[0], "", executorId);
   driver.launchTasks(offers.get()[0].id(), {taskInfo});
 
-  // Wait until status update is received on the scheduler before sending
+  // Wait for the executor to be launched before sending
   // an executor subscribe request.
-  AWAIT_READY(statusUpdate);
+  AWAIT_READY(executorLib);
 
   // Only subscribe needs to 'Accept' JSON or protobuf.
   Call call;
@@ -649,6 +646,34 @@ TEST_P(ExecutorHttpApiTest, StatusUpdateCallFailedValidation)
     AWAIT_EXPECT_RESPONSE_STATUS_EQ(BadRequest().status, response);
   }
 
+  // We send a Call Update message with an invalid UUID.
+  // This should result in failed validation.
+  {
+    Call call;
+    call.set_type(Call::UPDATE);
+    call.mutable_framework_id()->set_value("dummy_framework_id");
+    call.mutable_executor_id()->set_value("call_level_executor_id");
+
+    v1::TaskStatus* status = call.mutable_update()->mutable_status();
+
+    status->set_uuid("dummy_uuid");
+    status->mutable_task_id()->set_value("dummy_task_id");
+    status->set_state(mesos::v1::TaskState::TASK_STARTING);
+    status->set_source(mesos::v1::TaskStatus::SOURCE_EXECUTOR);
+
+    process::http::Headers headers;
+    headers["Accept"] = APPLICATION_JSON;
+
+    Future<Response> response = process::http::post(
+        slave.get()->pid,
+        "api/v1/executor",
+        headers,
+        serialize(ContentType::PROTOBUF, call),
+        APPLICATION_PROTOBUF);
+
+    AWAIT_EXPECT_RESPONSE_STATUS_EQ(BadRequest().status, response);
+  }
+
   // We send a Call Update message with a TASK_STAGING
   // status update. This should fail validation.
   {
@@ -706,6 +731,58 @@ TEST_P(ExecutorHttpApiTest, StatusUpdateCallFailedValidation)
 }
 
 
+// This test verifies that the executor cannot subscribe with the agent
+// before it recovers the containerizer.
+TEST_F(ExecutorHttpApiTest, SubscribeBeforeContainerizerRecovery)
+{
+  Try<Owned<cluster::Master>> master = StartMaster();
+  ASSERT_SOME(master);
+
+  MockContainerizer mockContainerizer;
+  StandaloneMasterDetector detector;
+
+  Future<Nothing> recover = FUTURE_DISPATCH(_, &Slave::recover);
+
+  Promise<Nothing> recoveryPromise;
+  EXPECT_CALL(mockContainerizer, recover(_))
+    .WillOnce(Return(recoveryPromise.future()));
+
+  Try<Owned<cluster::Slave>> slave = StartSlave(&detector, &mockContainerizer);
+  ASSERT_SOME(slave);
+
+  // Ensure that the agent has atleast set up HTTP routes upon startup.
+  AWAIT_READY(recover);
+
+  // Send a subscribe call. This should fail with a '503 Service Unavailable'
+  // since the agent hasn't finished recovering the containerizer.
+
+  Call call;
+  call.mutable_framework_id()->CopyFrom(v1::DEFAULT_FRAMEWORK_INFO.id());
+  call.mutable_executor_id()->CopyFrom(v1::DEFAULT_EXECUTOR_ID);
+
+  call.set_type(Call::SUBSCRIBE);
+
+  call.mutable_subscribe();
+
+  process::http::Headers headers;
+  headers["Accept"] = APPLICATION_JSON;
+
+  Future<Response> response = process::http::post(
+        slave.get()->pid,
+        "api/v1/executor",
+        headers,
+        serialize(ContentType::JSON, call),
+        APPLICATION_JSON);
+
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(ServiceUnavailable().status, response);
+
+  // The destructor of `cluster::Slave` will try to clean up any
+  // remaining containers by inspecting the result of `containers()`.
+  EXPECT_CALL(mockContainerizer, containers())
+    .WillRepeatedly(Return(hashset<ContainerID>()));
+}
+
+
 // This test verifies if the executor is able to receive a Subscribed
 // event in response to a Subscribe call request.
 TEST_P(ExecutorHttpApiTest, Subscribe)
@@ -738,7 +815,7 @@ TEST_P(ExecutorHttpApiTest, Subscribe)
   AWAIT_READY(frameworkId);
   AWAIT_READY(offers);
 
-  ASSERT_EQ(1u, offers.get().size());
+  ASSERT_EQ(1u, offers->size());
 
   Future<Message> registerExecutorMessage =
     DROP_MESSAGE(Eq(RegisterExecutorMessage().GetTypeName()), _, _);
@@ -776,9 +853,9 @@ TEST_P(ExecutorHttpApiTest, Subscribe)
   AWAIT_EXPECT_RESPONSE_HEADER_EQ("chunked", "Transfer-Encoding", response);
   AWAIT_EXPECT_RESPONSE_HEADER_EQ(contentTypeString, "Content-Type", response);
 
-  ASSERT_EQ(Response::PIPE, response.get().type);
+  ASSERT_EQ(Response::PIPE, response->type);
 
-  Option<Pipe::Reader> reader = response.get().reader;
+  Option<Pipe::Reader> reader = response->reader;
   ASSERT_SOME(reader);
 
   auto deserializer =
@@ -793,11 +870,12 @@ TEST_P(ExecutorHttpApiTest, Subscribe)
   ASSERT_SOME(event.get());
 
   // Check event type is subscribed and if the ExecutorID matches.
-  ASSERT_EQ(Event::SUBSCRIBED, event.get().get().type());
-  ASSERT_EQ(event.get().get().subscribed().executor_info().executor_id(),
+  ASSERT_EQ(Event::SUBSCRIBED, event->get().type());
+  ASSERT_EQ(event->get().subscribed().executor_info().executor_id(),
             call.executor_id());
+  ASSERT_TRUE(event->get().subscribed().has_container_id());
 
-  reader.get().close();
+  reader->close();
 
   driver.stop();
   driver.join();

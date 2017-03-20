@@ -102,7 +102,7 @@ TEST_F(MetricsTest, Master)
   AWAIT_EXPECT_RESPONSE_STATUS_EQ(process::http::OK().status, response);
   AWAIT_EXPECT_RESPONSE_HEADER_EQ(APPLICATION_JSON, "Content-Type", response);
 
-  Try<JSON::Object> parse = JSON::parse<JSON::Object>(response.get().body);
+  Try<JSON::Object> parse = JSON::parse<JSON::Object>(response->body);
   ASSERT_SOME(parse);
 
   JSON::Object stats = parse.get();
@@ -220,7 +220,7 @@ TEST_F(MetricsTest, Slave)
   AWAIT_EXPECT_RESPONSE_STATUS_EQ(process::http::OK().status, response);
   AWAIT_EXPECT_RESPONSE_HEADER_EQ(APPLICATION_JSON, "Content-Type", response);
 
-  Try<JSON::Object> parse = JSON::parse<JSON::Object>(response.get().body);
+  Try<JSON::Object> parse = JSON::parse<JSON::Object>(response->body);
   ASSERT_SOME(parse);
 
   JSON::Object stats = parse.get();
@@ -276,8 +276,8 @@ TEST_F(MetricsTest, MasterAuthenticationEnabled)
   credentials.add_credentials()->CopyFrom(DEFAULT_CREDENTIAL);
 
   // Create a basic HTTP authenticator with the specified credentials and set it
-  // as the authenticator for `DEFAULT_HTTP_AUTHENTICATION_REALM`.
-  setBasicHttpAuthenticator(DEFAULT_HTTP_AUTHENTICATION_REALM, credentials);
+  // as the authenticator for `READONLY_HTTP_AUTHENTICATION_REALM`.
+  setBasicHttpAuthenticator(READONLY_HTTP_AUTHENTICATION_REALM, credentials);
 
   Try<Owned<cluster::Master>> master = StartMaster();
   ASSERT_SOME(master);
@@ -301,8 +301,8 @@ TEST_F(MetricsTest, AgentAuthenticationEnabled)
   credentials.add_credentials()->CopyFrom(DEFAULT_CREDENTIAL);
 
   // Create a basic HTTP authenticator with the specified credentials and set it
-  // as the authenticator for `DEFAULT_HTTP_AUTHENTICATION_REALM`.
-  setBasicHttpAuthenticator(DEFAULT_HTTP_AUTHENTICATION_REALM, credentials);
+  // as the authenticator for `READONLY_HTTP_AUTHENTICATION_REALM`.
+  setBasicHttpAuthenticator(READONLY_HTTP_AUTHENTICATION_REALM, credentials);
 
   Try<Owned<cluster::Master>> master = StartMaster();
   ASSERT_SOME(master);
@@ -330,8 +330,8 @@ TEST_F(MetricsTest, MasterAuthorizationEnabled)
   credentials.add_credentials()->CopyFrom(DEFAULT_CREDENTIAL);
 
   // Create a basic HTTP authenticator with the specified credentials and set it
-  // as the authenticator for `DEFAULT_HTTP_AUTHENTICATION_REALM`.
-  setBasicHttpAuthenticator(DEFAULT_HTTP_AUTHENTICATION_REALM, credentials);
+  // as the authenticator for `READONLY_HTTP_AUTHENTICATION_REALM`.
+  setBasicHttpAuthenticator(READONLY_HTTP_AUTHENTICATION_REALM, credentials);
 
   ACLs acls;
 
@@ -370,8 +370,8 @@ TEST_F(MetricsTest, AgentAuthorizationEnabled)
   credentials.add_credentials()->CopyFrom(DEFAULT_CREDENTIAL);
 
   // Create a basic HTTP authenticator with the specified credentials and set it
-  // as the authenticator for `DEFAULT_HTTP_AUTHENTICATION_REALM`.
-  setBasicHttpAuthenticator(DEFAULT_HTTP_AUTHENTICATION_REALM, credentials);
+  // as the authenticator for `READONLY_HTTP_AUTHENTICATION_REALM`.
+  setBasicHttpAuthenticator(READONLY_HTTP_AUTHENTICATION_REALM, credentials);
 
   ACLs acls;
 

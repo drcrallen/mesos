@@ -16,10 +16,15 @@
 
 #include <mesos/roles.hpp>
 
-#include <stout/foreach.hpp>
-#include <stout/strings.hpp>
+#include <vector>
+#include <string>
 
-using std::initializer_list;
+#include <stout/error.hpp>
+#include <stout/foreach.hpp>
+#include <stout/option.hpp>
+#include <stout/strings.hpp>
+#include <stout/try.hpp>
+
 using std::string;
 using std::vector;
 
@@ -57,15 +62,23 @@ static const string* INVALID_CHARACTERS =
 
 Option<Error> validate(const string& role)
 {
-  static const string* dot = new string(".");
-  static const string* dotdot = new string("..");
+  // We check * explicitly first as a performance improvement.
+  static const string* star = new string("*");
+  if (role == *star) {
+    return None();
+  }
+
   if (role.empty()) {
     return Error("Empty role name is invalid");
-  } else if (role == *dot) {
+  }
+
+  static const string* dot = new string(".");
+  static const string* dotdot = new string("..");
+  if (role == *dot) {
     return Error("Role name '.' is invalid");
   } else if (role == *dotdot) {
     return Error("Role name '..' is invalid");
-  } else if (role[0] == '-') {
+  } else if (strings::startsWith(role, '-')) {
     return Error("Role name '" + role + "' is invalid "
                  "because it starts with a dash");
   }

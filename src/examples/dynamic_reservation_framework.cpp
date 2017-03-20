@@ -61,7 +61,17 @@ public:
       principal(_principal)
   {
     reservationInfo.set_principal(principal);
-    taskResources = TASK_RESOURCES.flatten(role, reservationInfo);
+
+    taskResources = Resources::parse(
+        "cpus:" + stringify(CPUS_PER_TASK) +
+        ";mem:" + stringify(MEM_PER_TASK)).get();
+
+    taskResources.allocate(role);
+
+    // The task will run on reserved resources.
+    Try<Resources> flattened = taskResources.flatten(role, reservationInfo);
+    CHECK_SOME(flattened);
+    taskResources = flattened.get();
   }
 
   virtual ~DynamicReservationScheduler() {}
@@ -108,13 +118,16 @@ public:
           // the task'll be dispatched when reserved resources are re-offered
           // to this framework.
           Resources resources = offer.resources();
-          Resources unreserved = resources.unreserved();
-          if (!unreserved.contains(TASK_RESOURCES)) {
+          Offer::Operation reserve = RESERVE(taskResources);
+
+          Try<Resources> apply = resources.apply(reserve);
+          if (apply.isError()) {
             LOG(INFO) << "Failed to reserve resources for task in offer "
-                      << stringify(offer.id());
+                      << stringify(offer.id()) << ": " << apply.error();
             break;
           }
-          driver->acceptOffers({offer.id()}, {RESERVE(taskResources)}, filters);
+
+          driver->acceptOffers({offer.id()}, {reserve}, filters);
           states[offer.slave_id()] = State::RESERVING;
           break;
         }
@@ -290,8 +303,6 @@ private:
   Resource::ReservationInfo reservationInfo;
   Resources taskResources;
 
-  static const Resources TASK_RESOURCES;
-
   Offer::Operation RESERVE(Resources resources)
   {
     Offer::Operation operation;
@@ -310,17 +321,12 @@ private:
 };
 
 
-const Resources DynamicReservationScheduler::TASK_RESOURCES = Resources::parse(
-    "cpus:" + stringify(CPUS_PER_TASK) +
-    ";mem:" + stringify(MEM_PER_TASK)).get();
-
-
 class Flags : public virtual flags::FlagsBase
 {
 public:
   Flags()
   {
-    add(&master,
+    add(&Flags::master,
         "master",
         "The master to connect to. May be one of:\n"
         "  master@addr:port (The PID of the master)\n"
@@ -328,16 +334,16 @@ public:
         "  zk://username:password@host1:port1,host2:port2,.../path\n"
         "  file://path/to/file (where file contains one of the above)");
 
-    add(&role,
+    add(&Flags::role,
         "role",
         "Role to use when registering");
 
-    add(&principal,
+    add(&Flags::principal,
         "principal",
         "The principal used to identify this framework",
         "test");
 
-    add(&command,
+    add(&Flags::command,
         "command",
         "The command to run for each task.",
         "echo hello");

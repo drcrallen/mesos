@@ -46,7 +46,6 @@ namespace mesos {
 namespace internal {
 namespace slave {
 
-
 Try<Launcher*> PosixLauncher::create(const Flags& flags)
 {
   return new PosixLauncher();
@@ -86,11 +85,19 @@ Try<pid_t> PosixLauncher::fork(
     const Subprocess::IO& in,
     const Subprocess::IO& out,
     const Subprocess::IO& err,
-    const Option<flags::FlagsBase>& flags,
+    const flags::FlagsBase* flags,
     const Option<map<string, string>>& environment,
-    const Option<int>& namespaces,
-    vector<process::Subprocess::Hook> parentHooks)
+    const Option<int>& enterNamespaces,
+    const Option<int>& cloneNamespaces)
 {
+  if (enterNamespaces.isSome() && enterNamespaces.get() != 0) {
+    return Error("Posix launcher does not support entering namespaces");
+  }
+
+  if (cloneNamespaces.isSome() && cloneNamespaces.get() != 0) {
+    return Error("Posix launcher does not support cloning namespaces");
+  }
+
   if (pids.contains(containerId)) {
     return Error("Process has already been forked for container " +
                  stringify(containerId));
@@ -98,10 +105,15 @@ Try<pid_t> PosixLauncher::fork(
 
   // If we are on systemd, then extend the life of the child. Any
   // grandchildren's lives will also be extended.
+  vector<process::Subprocess::ParentHook> parentHooks;
+
 #ifdef __linux__
   if (systemd::enabled()) {
-    parentHooks.emplace_back(Subprocess::Hook(&systemd::mesos::extendLifetime));
+    parentHooks.emplace_back(Subprocess::ParentHook(
+        &systemd::mesos::extendLifetime));
   }
+#elif defined(__WINDOWS__)
+  parentHooks.emplace_back(Subprocess::ParentHook::CREATE_JOB());
 #endif // __linux__
 
   Try<Subprocess> child = subprocess(
@@ -110,11 +122,11 @@ Try<pid_t> PosixLauncher::fork(
       in,
       out,
       err,
-      SETSID,
       flags,
       environment,
       None(),
-      parentHooks);
+      parentHooks,
+      {Subprocess::ChildHook::SETSID()});
 
   if (child.isError()) {
     return Error("Failed to fork a child process: " + child.error());
@@ -136,8 +148,11 @@ Future<Nothing> _destroy(const Future<Option<int>>& future);
 
 Future<Nothing> PosixLauncher::destroy(const ContainerID& containerId)
 {
+  LOG(INFO) << "Asked to destroy container " << containerId;
+
   if (!pids.contains(containerId)) {
-    return Failure("Unknown container " + containerId.value());
+    LOG(WARNING) << "Ignored destroy for unknown container " << containerId;
+    return Nothing();
   }
 
   pid_t pid = pids.get(containerId).get();
@@ -162,6 +177,19 @@ Future<Nothing> _destroy(const Future<Option<int>>& future)
     return Failure("Failed to kill all processes: " +
                    (future.isFailed() ? future.failure() : "unknown error"));
   }
+}
+
+
+Future<ContainerStatus> PosixLauncher::status(const ContainerID& containerId)
+{
+  if (!pids.contains(containerId)) {
+    return Failure("Container does not exist!");
+  }
+
+  ContainerStatus status;
+  status.set_executor_pid(pids[containerId]);
+
+  return status;
 }
 
 

@@ -17,7 +17,16 @@
 #ifndef __STOUT_OS_POSIX_MKDTEMP_HPP__
 #define __STOUT_OS_POSIX_MKDTEMP_HPP__
 
+#include <stdlib.h>
+#include <string.h>
+
+#include <string>
+
+#include <stout/error.hpp>
+#include <stout/path.hpp>
 #include <stout/try.hpp>
+
+#include <stout/os/temp.hpp>
 
 
 namespace os {
@@ -26,10 +35,13 @@ namespace os {
 // template. The template may be any path with _6_ `Xs' appended to
 // it, for example /tmp/temp.XXXXXX. The trailing `Xs' are replaced
 // with a unique alphanumeric combination.
-inline Try<std::string> mkdtemp(const std::string& path = "/tmp/XXXXXX")
+inline Try<std::string> mkdtemp(
+    const std::string& path = path::join(os::temp(), "XXXXXX"))
 {
   char* temp = new char[path.size() + 1];
-  if (::mkdtemp(::strcpy(temp, path.c_str())) != nullptr) {
+  ::memcpy(temp, path.c_str(), path.size() + 1);
+
+  if (::mkdtemp(temp) != nullptr) {
     std::string result(temp);
     delete[] temp;
     return result;

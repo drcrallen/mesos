@@ -17,6 +17,7 @@
 #ifndef __MASTER_ALLOCATOR_MESOS_HIERARCHICAL_HPP__
 #define __MASTER_ALLOCATOR_MESOS_HIERARCHICAL_HPP__
 
+#include <set>
 #include <string>
 
 #include <mesos/mesos.hpp>
@@ -30,6 +31,8 @@
 #include <stout/hashset.hpp>
 #include <stout/lambda.hpp>
 #include <stout/option.hpp>
+
+#include "common/protobuf_utils.hpp"
 
 #include "master/allocator/mesos/allocator.hpp"
 #include "master/allocator/mesos/metrics.hpp"
@@ -71,18 +74,15 @@ class HierarchicalAllocatorProcess : public MesosAllocatorProcess
 {
 public:
   HierarchicalAllocatorProcess(
-      const std::function<Sorter*()>& _roleSorterFactory,
+      const std::function<Sorter*()>& roleSorterFactory,
       const std::function<Sorter*()>& _frameworkSorterFactory,
-      const std::function<Sorter*()>& _quotaRoleSorterFactory)
-    : ProcessBase(process::ID::generate("hierarchical-allocator")),
-      initialized(false),
+      const std::function<Sorter*()>& quotaRoleSorterFactory)
+    : initialized(false),
       paused(true),
       metrics(*this),
-      roleSorter(nullptr),
-      quotaRoleSorter(nullptr),
-      roleSorterFactory(_roleSorterFactory),
-      frameworkSorterFactory(_frameworkSorterFactory),
-      quotaRoleSorterFactory(_quotaRoleSorterFactory) {}
+      roleSorter(roleSorterFactory()),
+      quotaRoleSorter(quotaRoleSorterFactory()),
+      frameworkSorterFactory(_frameworkSorterFactory) {}
 
   virtual ~HierarchicalAllocatorProcess() {}
 
@@ -95,12 +95,14 @@ public:
       const Duration& allocationInterval,
       const lambda::function<
           void(const FrameworkID&,
-               const hashmap<SlaveID, Resources>&)>& offerCallback,
+               const hashmap<std::string, hashmap<SlaveID, Resources>>&)>&
+        offerCallback,
       const lambda::function<
           void(const FrameworkID&,
                const hashmap<SlaveID, UnavailableResources>&)>&
         inverseOfferCallback,
-      const hashmap<std::string, double>& weights);
+      const Option<std::set<std::string>>&
+        fairnessExcludeResourceNames = None());
 
   void recover(
       const int _expectedAgentCount,
@@ -109,7 +111,8 @@ public:
   void addFramework(
       const FrameworkID& frameworkId,
       const FrameworkInfo& frameworkInfo,
-      const hashmap<SlaveID, Resources>& used);
+      const hashmap<SlaveID, Resources>& used,
+      bool active);
 
   void removeFramework(
       const FrameworkID& frameworkId);
@@ -127,6 +130,7 @@ public:
   void addSlave(
       const SlaveID& slaveId,
       const SlaveInfo& slaveInfo,
+      const std::vector<SlaveInfo::Capability>& capabilities,
       const Option<Unavailability>& unavailability,
       const Resources& total,
       const hashmap<FrameworkID, Resources>& used);
@@ -136,7 +140,8 @@ public:
 
   void updateSlave(
       const SlaveID& slave,
-      const Resources& oversubscribed);
+      const Option<Resources>& oversubscribed = None(),
+      const Option<std::vector<SlaveInfo::Capability>>& capabilities = None());
 
   void deactivateSlave(
       const SlaveID& slaveId);
@@ -154,6 +159,7 @@ public:
   void updateAllocation(
       const FrameworkID& frameworkId,
       const SlaveID& slaveId,
+      const Resources& offeredResources,
       const std::vector<Offer::Operation>& operations);
 
   process::Future<Nothing> updateAvailable(
@@ -168,11 +174,12 @@ public:
       const SlaveID& slaveId,
       const FrameworkID& frameworkId,
       const Option<UnavailableResources>& unavailableResources,
-      const Option<mesos::master::InverseOfferStatus>& status,
+      const Option<mesos::allocator::InverseOfferStatus>& status,
       const Option<Filters>& filters);
 
   process::Future<
-      hashmap<SlaveID, hashmap<FrameworkID, mesos::master::InverseOfferStatus>>>
+      hashmap<SlaveID,
+      hashmap<FrameworkID, mesos::allocator::InverseOfferStatus>>>
     getInverseOfferStatuses();
 
   void recoverResources(
@@ -182,10 +189,12 @@ public:
       const Option<Filters>& filters);
 
   void suppressOffers(
-      const FrameworkID& frameworkId);
+      const FrameworkID& frameworkId,
+      const Option<std::string>& role);
 
   void reviveOffers(
-      const FrameworkID& frameworkId);
+      const FrameworkID& frameworkId,
+      const Option<std::string>& role);
 
   void setQuota(
       const std::string& role,
@@ -209,21 +218,35 @@ protected:
   // Callback for doing batch allocations.
   void batch();
 
-  // Allocate any allocatable resources.
-  void allocate();
+  // Allocate any allocatable resources from all known agents.
+  process::Future<Nothing> allocate();
 
-  // Allocate resources just from the specified slave.
-  void allocate(const SlaveID& slaveId);
+  // Allocate resources from the specified agent.
+  process::Future<Nothing> allocate(const SlaveID& slaveId);
 
-  // Allocate resources from the specified slaves.
-  void allocate(const hashset<SlaveID>& slaveIds);
+  // Allocate resources from the specified agents. The allocation
+  // is deferred and batched with other allocation requests.
+  process::Future<Nothing> allocate(const hashset<SlaveID>& slaveIds);
 
-  // Send inverse offers from the specified slaves.
-  void deallocate(const hashset<SlaveID>& slaveIds);
+  // Method that performs allocation work.
+  Nothing _allocate();
 
-  // Remove an offer filter for the specified framework.
+  // Helper for `_allocate()` that allocates resources for offers.
+  void __allocate();
+
+  // Helper for `_allocate()` that deallocates resources for inverse offers.
+  void deallocate();
+
+  // Remove an offer filter for the specified role of the framework.
   void expire(
       const FrameworkID& frameworkId,
+      const std::string& role,
+      const SlaveID& slaveId,
+      OfferFilter* offerFilter);
+
+  void _expire(
+      const FrameworkID& frameworkId,
+      const std::string& role,
       const SlaveID& slaveId,
       OfferFilter* offerFilter);
 
@@ -234,25 +257,26 @@ protected:
       InverseOfferFilter* inverseOfferFilter);
 
   // Returns the weight of the specified role name.
-  double roleWeight(const std::string& name);
+  double roleWeight(const std::string& name) const;
 
   // Checks whether the slave is whitelisted.
-  bool isWhitelisted(const SlaveID& slaveId);
+  bool isWhitelisted(const SlaveID& slaveId) const;
 
-  // Returns true if there is a resource offer filter for this framework
-  // on this slave.
+  // Returns true if there is a resource offer filter for the
+  // specified role of this framework on this slave.
   bool isFiltered(
       const FrameworkID& frameworkId,
+      const std::string& role,
       const SlaveID& slaveId,
-      const Resources& resources);
+      const Resources& resources) const;
 
   // Returns true if there is an inverse offer filter for this framework
   // on this slave.
   bool isFiltered(
       const FrameworkID& frameworkID,
-      const SlaveID& slaveID);
+      const SlaveID& slaveID) const;
 
-  bool allocatable(const Resources& resources);
+  static bool allocatable(const Resources& resources);
 
   bool initialized;
   bool paused;
@@ -264,27 +288,32 @@ protected:
 
   lambda::function<
       void(const FrameworkID&,
-           const hashmap<SlaveID, Resources>&)> offerCallback;
+           const hashmap<std::string, hashmap<SlaveID, Resources>>&)>
+    offerCallback;
 
   lambda::function<
       void(const FrameworkID&,
-           const hashmap<SlaveID, UnavailableResources>&)> inverseOfferCallback;
+           const hashmap<SlaveID, UnavailableResources>&)>
+    inverseOfferCallback;
 
   friend Metrics;
   Metrics metrics;
 
   struct Framework
   {
-    std::string role;
+    explicit Framework(const FrameworkInfo& frameworkInfo);
+
+    std::set<std::string> roles;
 
     // Whether the framework suppresses offers.
     bool suppressed;
 
-    // Whether the framework desires revocable resources.
-    bool revocable;
+    protobuf::framework::Capabilities capabilities;
 
     // Active offer and inverse offer filters for the framework.
-    hashmap<SlaveID, hashset<OfferFilter*>> offerFilters;
+    // Offer filters are tied to the role the filtered resources
+    // were allocated to.
+    hashmap<std::string, hashmap<SlaveID, hashset<OfferFilter*>>> offerFilters;
     hashmap<SlaveID, hashset<InverseOfferFilter*>> inverseOfferFilters;
   };
 
@@ -315,6 +344,11 @@ protected:
 
     // Regular *and* oversubscribed resources that are allocated.
     //
+    // NOTE: We maintain multiple copies of each shared resource allocated
+    // to a slave, where the number of copies represents the number of times
+    // this shared resource has been allocated to (and has not been recovered
+    // from) a specific framework.
+    //
     // NOTE: We keep track of slave's allocated resources despite
     // having that information in sorters. This is because the
     // information in sorters is not accurate if some framework
@@ -328,10 +362,21 @@ protected:
     //
     // Note that it's possible for the slave to be over-allocated!
     // In this case, allocated > total.
+    Resources available() const
+    {
+      // In order to subtract from the total,
+      // we strip the allocation information.
+      Resources allocated_ = allocated;
+      allocated_.unallocate();
+
+      return total - allocated_;
+    }
 
     bool activated;  // Whether to offer resources.
 
     std::string hostname;
+
+    protobuf::slave::Capabilities capabilities;
 
     // Represents a scheduled unavailability due to maintenance for a specific
     // slave, and the responses from frameworks as to whether they will be able
@@ -355,7 +400,7 @@ protected:
       // allocator will send out new inverse offers and re-collect the
       // information. This is similar to all the outstanding offers from an old
       // master being invalidated, and new offers being sent out.
-      hashmap<FrameworkID, mesos::master::InverseOfferStatus> statuses;
+      hashmap<FrameworkID, mesos::allocator::InverseOfferStatus> statuses;
 
       // Represents the "unit of accounting" for maintenance. When a
       // `FrameworkID` is present in the hashset it means an inverse offer has
@@ -372,10 +417,20 @@ protected:
 
   hashmap<SlaveID, Slave> slaves;
 
-  // Number of registered frameworks for each role. When a role's active
-  // count drops to zero, it is removed from this map; the role is also
-  // removed from `roleSorter` and its `frameworkSorter` is deleted.
-  hashmap<std::string, size_t> activeRoles;
+  // A set of agents that are kept as allocation candidates. Events
+  // may add or remove candidates to the set. When an allocation is
+  // processed, the set of candidates is cleared.
+  hashset<SlaveID> allocationCandidates;
+
+  // Future for the dispatched allocation that becomes
+  // ready after the allocation run is complete.
+  Option<process::Future<Nothing>> allocation;
+
+  // We track information about roles that we're aware of in the system.
+  // Specifically, we keep track of the roles when a framework subscribes to
+  // the role, and/or when there are resources allocated to the role
+  // (e.g. some tasks and/or executors are consuming resources under the role).
+  hashmap<std::string, hashset<FrameworkID>> roles;
 
   // Configured weight for each role, if any; if a role does not
   // appear here, it has the default weight of 1.
@@ -392,6 +447,9 @@ protected:
 
   // Slaves to send offers for.
   Option<hashset<std::string>> whitelist;
+
+  // Resources (by name) that will be excluded from a role's fair share.
+  Option<std::set<std::string>> fairnessExcludeResourceNames;
 
   // There are two stages of allocation. During the first stage resources
   // are allocated only to frameworks in roles with quota set. During the
@@ -452,10 +510,26 @@ protected:
   // for both the first and the second stages.
   hashmap<std::string, process::Owned<Sorter>> frameworkSorters;
 
-  // Factory functions for sorters.
-  const std::function<Sorter*()> roleSorterFactory;
+  // Factory function for framework sorters.
   const std::function<Sorter*()> frameworkSorterFactory;
-  const std::function<Sorter*()> quotaRoleSorterFactory;
+
+private:
+  bool isFrameworkTrackedUnderRole(
+      const FrameworkID& frameworkId,
+      const std::string& role) const;
+
+  void trackFrameworkUnderRole(
+      const FrameworkID& frameworkId,
+      const std::string& role);
+
+  void untrackFrameworkUnderRole(
+      const FrameworkID& frameworkId,
+      const std::string& role);
+
+  // Helper to update the agent's total resources maintained in the allocator
+  // and the role and quota sorters (whose total resources match the agent's
+  // total resources).
+  void updateSlaveTotal(const SlaveID& slaveId, const Resources& total);
 };
 
 
@@ -464,7 +538,7 @@ protected:
 
 // We map the templatized version of the `HierarchicalAllocatorProcess` to one
 // that relies on sorter factories in the internal namespace. This allows us
-// to keep the implemention of the allocator in the implementation file.
+// to keep the implementation of the allocator in the implementation file.
 template <
     typename RoleSorter,
     typename FrameworkSorter,
@@ -474,7 +548,8 @@ class HierarchicalAllocatorProcess
 {
 public:
   HierarchicalAllocatorProcess()
-    : internal::HierarchicalAllocatorProcess(
+    : ProcessBase(process::ID::generate("hierarchical-allocator")),
+      internal::HierarchicalAllocatorProcess(
           [this]() -> Sorter* {
             return new RoleSorter(this->self(), "allocator/mesos/roles/");
           },

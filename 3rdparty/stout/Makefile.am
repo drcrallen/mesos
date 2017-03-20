@@ -12,32 +12,75 @@
 
 # Makefile for stout.
 
+# Enable common (and some language specific) warnings.
+AM_CXXFLAGS = -Wall
+# Warn when a comparison is made between signed and unsigned values.
+AM_CXXFLAGS += -Wsign-compare
+# Warn about use of format functions that can produce security issues.
+AM_CXXFLAGS += -Wformat-security
+
+# We will also have much more hardened/secured binaries and libraries.
+if ENABLE_HARDENING
+# Protect many of the functions with stack guards
+# (either -fstack-protector-strong or -fstack-protector depending on compiler support).
+AM_CXXFLAGS += @STACK_PROTECTOR@
+# Produce position independent code when appropriate.
+AM_CXXFLAGS += -fPIC -fPIE
+endif
+
 AUTOMAKE_OPTIONS = foreign
+
+if STANDALONE_STOUT
+MAYBE_3RDPARTY = 3rdparty
+BUNDLED_DIR = 3rdparty
+else
+MAYBE_3RDPARTY =
+BUNDLED_DIR = ..
+endif
 
 # NOTE: The stout headers were moved to the Makefile in "include"
 # subdirectory to make it easy to preserve the directory structure of
 # the header files during installation.
-SUBDIRS = . include
+SUBDIRS = $(MAYBE_3RDPARTY) . include
+
+PHONY_TARGETS =
 
 include ../versions.am
 
-BOOST = ../boost-$(BOOST_VERSION)
-GLOG = ../glog-$(GLOG_VERSION)
-GMOCK = ../gmock-$(GMOCK_VERSION)
+BOOST = $(BUNDLED_DIR)/boost-$(BOOST_VERSION)
+ELFIO = $(BUNDLED_DIR)/elfio-$(ELFIO_VERSION)
+GLOG = $(BUNDLED_DIR)/glog-$(GLOG_VERSION)
+GMOCK = $(BUNDLED_DIR)/gmock-$(GMOCK_VERSION)
 GTEST = $(GMOCK)/gtest
-PROTOBUF = ../protobuf-$(PROTOBUF_VERSION)
-PICOJSON = ../picojson-$(PICOJSON_VERSION)
+PROTOBUF = $(BUNDLED_DIR)/protobuf-$(PROTOBUF_VERSION)
+PICOJSON = $(BUNDLED_DIR)/picojson-$(PICOJSON_VERSION)
+
+# Dependencies for all-local.
+BUNDLED_DEPS = # Initialize BUNDLED_DEPS so we can add to it.
+
+
+# Ensure bundled software is build properly.
+%-stamp:
+	@cd $(BUNDLED_DIR) && $(MAKE) $(AM_MAKEFLAGS) $(@F)
 
 # We use "-isystem" instead of "-I" to add Boost to the include search
 # path. This disables compiler warnings inside Boost headers since we
 # can't easily fix them. See MESOS-3799.
 if WITH_BUNDLED_BOOST
 BOOST_INCLUDE_FLAGS = -isystem $(BOOST)
+BUNDLED_DEPS += $(BOOST)-stamp
+endif
+
+if WITH_BUNDLED_ELFIO
+ELFIO_INCLUDE_FLAGS = -I$(ELFIO)
+BUNDLED_DEPS += $(ELFIO)-stamp
 endif
 
 if WITH_BUNDLED_GLOG
 GLOG_INCLUDE_FLAGS = -I$(GLOG)/src
 LIB_GLOG = $(GLOG)/libglog.la
+$(LIB_GLOG): $(GLOG)-build-stamp
+BUNDLED_DEPS += $(GLOG)-build-stamp
 else
 LIB_GLOG = -lglog
 endif
@@ -46,7 +89,9 @@ endif
 if WITH_BUNDLED_GMOCK
 GMOCK_INCLUDE_FLAGS = -I$(GMOCK)/include
 GTEST_INCLUDE_FLAGS = -I$(GTEST)/include
-LIB_GMOCK = ../libgmock.la
+LIB_GMOCK = $(BUNDLED_DIR)/libgmock.la
+$(LIB_GMOCK): $(GMOCK)-build-stamp
+BUNDLED_DEPS += $(GMOCK)-build-stamp
 endif
 
 # Enable the INT64 support for PicoJSON.
@@ -56,11 +101,14 @@ PICOJSON_INCLUDE_FLAGS =	\
 
 if WITH_BUNDLED_PICOJSON
 PICOJSON_INCLUDE_FLAGS += -I$(PICOJSON)
+BUNDLED_DEPS += $(PICOJSON)-stamp
 endif
 
 if WITH_BUNDLED_PROTOBUF
 PROTOBUF_INCLUDE_FLAGS = -I$(PROTOBUF)/src
 LIB_PROTOBUF = $(PROTOBUF)/src/libprotobuf.la
+$(LIB_PROTOBUF): $(PROTOBUF)-build-stamp
+BUNDLED_DEPS += $(PROTOBUF)-build-stamp
 else
 LIB_PROTOBUF = -lprotobuf
 endif
@@ -72,6 +120,7 @@ stout_tests_SOURCES =			\
   tests/adaptor_tests.cpp		\
   tests/base64_tests.cpp		\
   tests/bits_tests.cpp			\
+  tests/boundedhashmap_tests.cpp	\
   tests/bytes_tests.cpp			\
   tests/cache_tests.cpp			\
   tests/duration_tests.cpp		\
@@ -109,7 +158,6 @@ stout_tests_SOURCES =			\
   tests/protobuf_tests.proto		\
   tests/recordio_tests.cpp		\
   tests/result_tests.cpp		\
-  tests/set_tests.cpp			\
   tests/some_tests.cpp			\
   tests/strings_tests.cpp		\
   tests/subcommand_tests.cpp		\
@@ -128,6 +176,7 @@ endif
 stout_tests_CPPFLAGS =			\
   -I$(srcdir)/include			\
   $(BOOST_INCLUDE_FLAGS)		\
+  $(ELFIO_INCLUDE_FLAGS)		\
   $(GLOG_INCLUDE_FLAGS)			\
   $(GMOCK_INCLUDE_FLAGS)		\
   $(GTEST_INCLUDE_FLAGS)		\
@@ -151,18 +200,19 @@ if !OS_FREEBSD
   stout_tests_LDADD += -ldl
 endif
 
-# Both libprocess-tests and benchmarks have a dependency on libgmock.la.
-$(LIB_GMOCK):
-	@cd .. && $(MAKE) $(AM_MAKEFLAGS) libgmock.la
+BUILT_SOURCES = $(BUNDLED_DEPS)
 
 # We use a check-local target for now to avoid the parallel test
 # runner that ships with newer versions of autotools.
 # See the following discussion for the workaround:
 # http://lists.gnu.org/archive/html/automake/2013-01/msg00051.html
 check-local: tests
-	./stout-tests
+	$(TEST_DRIVER) ./stout-tests
 
-tests: stout-tests
+tests: $(BUNDLED_DEPS)
+	$(MAKE) $(AM_MAKEFLAGS) stout-tests
+
+PHONY_TARGETS += tests
 
 all-local: Makefile
 
@@ -170,3 +220,19 @@ EXTRA_DIST = $(stout_tests_SOURCES)
 if !OS_LINUX
 EXTRA_DIST += tests/proc_tests.cpp
 endif
+
+# Make sure we don't recurse into 3rdparty when creating the distribution
+# tarball.
+# When recursing into 3rdparty, it tries to distribute the bundled dependencies
+# such as boost and glog even though they have already been included as part of
+# top-level 3rdparty.
+DIST_SUBDIRS=$(SUBDIRS)
+
+# Explicitly include 3rdparty directory in the distribution tarball since we
+# exclude it from DIST_SUBDIRS (when building it as part of Mesos).
+dist-hook:
+if !STANDALONE_STOUT
+	cp -r $(srcdir)/3rdparty $(distdir)/
+endif
+
+.PHONY: $(PHONY_TARGETS)
