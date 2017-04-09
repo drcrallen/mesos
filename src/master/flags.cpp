@@ -516,18 +516,18 @@ mesos::internal::master::Flags::Flags()
       "http_authenticators",
       "HTTP authenticator implementation to use when handling requests to\n"
       "authenticated endpoints. Use the default\n"
-      "`" + string(DEFAULT_HTTP_AUTHENTICATOR) + "`, or load an alternate\n"
-      "HTTP authenticator module using `--modules`.\n"
+      "`" + string(DEFAULT_BASIC_HTTP_AUTHENTICATOR) + "`, or load an\n"
+      "alternate HTTP authenticator module using `--modules`.\n"
       "\n"
       "Currently there is no support for multiple HTTP authenticators.",
-      DEFAULT_HTTP_AUTHENTICATOR);
+      DEFAULT_BASIC_HTTP_AUTHENTICATOR);
 
   add(&Flags::http_framework_authenticators,
       "http_framework_authenticators",
       "HTTP authenticator implementation to use when authenticating HTTP\n"
       "frameworks. Use the \n"
-      "`" + string(DEFAULT_HTTP_AUTHENTICATOR) + "` authenticator or load an\n"
-      "alternate authenticator module using `--modules`.\n"
+      "`" + string(DEFAULT_BASIC_HTTP_AUTHENTICATOR) + "` authenticator or\n"
+      "load an alternate authenticator module using `--modules`.\n"
       "Must be used in conjunction with `--http_authenticate_frameworks`.\n"
       "\n"
       "Currently there is no support for multiple HTTP framework\n"
@@ -587,9 +587,44 @@ mesos::internal::master::Flags::Flags()
   add(&Flags::registry_max_agent_count,
       "registry_max_agent_count",
       "Maximum number of disconnected agents to store in the registry.\n"
-      "This informtion allows frameworks to determine the status of\n"
+      "This information allows frameworks to determine the status of\n"
       "disconnected agents. Note that the registry always stores\n"
       "information about all connected agents. See also the\n"
       "`registry_max_agent_age` flag.",
       DEFAULT_REGISTRY_MAX_AGENT_COUNT);
+
+  add(&Flags::ip,
+      "ip",
+      "IP address to listen on. This cannot be used in conjunction\n"
+      "with `--ip_discovery_command`.");
+
+  add(&Flags::port, "port", "Port to listen on.", MasterInfo().port());
+
+  add(&Flags::advertise_ip,
+      "advertise_ip",
+      "IP address advertised to reach this Mesos master.\n"
+      "The master does not bind using this IP address.\n"
+      "However, this IP address may be used to access this master.");
+
+  add(&Flags::advertise_port,
+      "advertise_port",
+      "Port advertised to reach Mesos master (along with\n"
+      "`advertise_ip`). The master does not bind to this port.\n"
+      "However, this port (along with `advertise_ip`) may be used to\n"
+      "access this master.");
+
+  add(&Flags::zk,
+      "zk",
+      "ZooKeeper URL (used for leader election amongst masters)\n"
+      "May be one of:\n"
+      "  `zk://host1:port1,host2:port2,.../path`\n"
+      "  `zk://username:password@host1:port1,host2:port2,.../path`\n"
+      "  `file:///path/to/file` (where file contains one of the above)\n"
+      "NOTE: Not required if master is run in standalone mode (non-HA).");
+
+  add(&Flags::ip_discovery_command,
+      "ip_discovery_command",
+      "Optional IP discovery binary: if set, it is expected to emit\n"
+      "the IP address which the master will try to bind to.\n"
+      "Cannot be used in conjunction with `--ip`.");
 }

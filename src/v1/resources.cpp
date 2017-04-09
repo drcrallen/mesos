@@ -338,6 +338,15 @@ static bool addable(const Resource& left, const Resource& right)
     return false;
   }
 
+  // Check ResourceProvider.
+  if (left.has_provider_id() != right.has_provider_id()) {
+    return false;
+  }
+
+  if (left.has_provider_id() && left.provider_id() != right.provider_id()) {
+    return false;
+  }
+
   return true;
 }
 
@@ -412,6 +421,15 @@ static bool subtractable(const Resource& left, const Resource& right)
 
   // Check RevocableInfo.
   if (left.has_revocable() != right.has_revocable()) {
+    return false;
+  }
+
+  // Check ResourceProvider.
+  if (left.has_provider_id() != right.has_provider_id()) {
+    return false;
+  }
+
+  if (left.has_provider_id() && left.provider_id() != right.provider_id()) {
     return false;
   }
 
@@ -779,16 +797,25 @@ Option<Error> Resources::validate(const Resource& resource)
     if (disk.has_source()) {
       const Resource::DiskInfo::Source& source = disk.source();
 
-      if (source.type() == Resource::DiskInfo::Source::PATH &&
-          !source.has_path()) {
-        return Error(
-            "DiskInfo::Source 'type' set to 'PATH' but missing 'path' data");
-      }
-
-      if (source.type() == Resource::DiskInfo::Source::MOUNT &&
-          !source.has_mount()) {
-        return Error(
-            "DiskInfo::Source 'type' set to 'MOUNT' but missing 'mount' data");
+      switch (source.type()) {
+        case Resource::DiskInfo::Source::PATH:
+          if (!source.has_path()) {
+            return Error(
+                "DiskInfo::Source 'type' set to 'PATH' but missing 'path' "
+                "data");
+          }
+          break;
+        case Resource::DiskInfo::Source::MOUNT:
+          if (!source.has_mount()) {
+            return Error(
+                "DiskInfo::Source 'type' set to 'MOUNT' but missing 'mount' "
+                "data");
+          }
+          break;
+        case Resource::DiskInfo::Source::UNKNOWN:
+          return Error(
+              "Unsupported 'DiskInfo.Source.Type' in "
+              "'" + stringify(source) + "'");
       }
     }
   }
@@ -840,7 +867,9 @@ Option<Error> Resources::validate(const RepeatedPtrField<Resource>& resources)
 bool Resources::isEmpty(const Resource& resource)
 {
   if (resource.type() == Value::SCALAR) {
-    return resource.scalar().value() == 0;
+    Value::Scalar zero;
+    zero.set_value(0);
+    return resource.scalar() == zero;
   } else if (resource.type() == Value::RANGES) {
     return resource.ranges().range_size() == 0;
   } else if (resource.type() == Value::SET) {
@@ -1849,6 +1878,8 @@ ostream& operator<<(ostream& stream, const Resource::DiskInfo::Source& source)
       return stream << "MOUNT:" + source.mount().root();
     case Resource::DiskInfo::Source::PATH:
       return stream << "PATH:" + source.path().root();
+    case Resource::DiskInfo::Source::UNKNOWN:
+      return stream << "UNKNOWN";
   }
 
   UNREACHABLE();

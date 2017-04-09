@@ -323,24 +323,6 @@ struct FrameworkWriter
 };
 
 
-void Slave::Http::log(const Request& request)
-{
-  Option<string> userAgent = request.headers.get("User-Agent");
-  Option<string> forwardedFor = request.headers.get("X-Forwarded-For");
-
-  LOG(INFO) << "HTTP " << request.method << " for " << request.url.path
-            << (request.client.isSome()
-                ? " from " + stringify(request.client.get())
-                : "")
-            << (userAgent.isSome()
-                ? " with User-Agent='" + userAgent.get() + "'"
-                : "")
-            << (forwardedFor.isSome()
-                ? " with X-Forwarded-For='" + forwardedFor.get() + "'"
-                : "");
-}
-
-
 string Slave::Http::API_HELP()
 {
   return HELP(
@@ -635,7 +617,9 @@ string Slave::Http::EXECUTOR_HELP() {
 }
 
 
-Future<Response> Slave::Http::executor(const Request& request) const
+Future<Response> Slave::Http::executor(
+    const Request& request,
+    const Option<Principal>& principal) const
 {
   if (!slave->recoveryInfo.reconnect) {
     CHECK(slave->state == RECOVERING);

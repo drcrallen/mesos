@@ -390,6 +390,34 @@ ostream& operator<<(ostream& stream, const CapabilityInfo& capabilityInfo)
 }
 
 
+ostream& operator<<(ostream& stream, const CheckStatusInfo& checkStatusInfo)
+{
+  switch (checkStatusInfo.type()) {
+    case CheckInfo::COMMAND:
+      if (checkStatusInfo.has_command()) {
+        stream << "COMMAND";
+        if (checkStatusInfo.command().has_exit_code()) {
+          stream << " exit code " << checkStatusInfo.command().exit_code();
+        }
+      }
+      break;
+    case CheckInfo::HTTP:
+      if (checkStatusInfo.has_http()) {
+        stream << "HTTP";
+        if (checkStatusInfo.http().has_status_code()) {
+          stream << " status code " << checkStatusInfo.http().status_code();
+        }
+      }
+      break;
+    case CheckInfo::UNKNOWN:
+      stream << "UNKNOWN";
+      break;
+  }
+
+  return stream;
+}
+
+
 ostream& operator<<(ostream& stream, const ContainerID& containerId)
 {
   return stream << containerId.value();
@@ -435,6 +463,14 @@ ostream& operator<<(ostream& stream, const OfferID& offerId)
 ostream& operator<<(ostream& stream, const RateLimits& limits)
 {
   return stream << limits.DebugString();
+}
+
+
+ostream& operator<<(
+    ostream& stream,
+    const ResourceProviderID& resourceProviderId)
+{
+  return stream << resourceProviderId.value();
 }
 
 
@@ -526,6 +562,12 @@ ostream& operator<<(
 ostream& operator<<(ostream& stream, const Image::Type& imageType)
 {
   return stream << Image::Type_Name(imageType);
+}
+
+
+ostream& operator<<(ostream& stream, const Secret::Type& secretType)
+{
+  return stream << Secret::Type_Name(secretType);
 }
 
 

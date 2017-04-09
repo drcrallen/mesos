@@ -41,14 +41,14 @@ namespace process {
 // this mechanism for varying numbers of function types and arguments
 // requires support for variadic templates, slated to be released in
 // C++11. Until then, we use the Boost preprocessor macros to
-// accomplish the same thing (all be it less cleanly). See below for
+// accomplish the same thing (albeit less cleanly). See below for
 // those definitions.
 //
 // Dispatching is done via a level of indirection. The dispatch
 // routine itself creates a promise that is passed as an argument to a
 // partially applied 'dispatcher' function (defined below). The
 // dispatcher routines get passed to the actual process via an
-// internal routine called, not suprisingly, 'dispatch', defined
+// internal routine called, not surprisingly, 'dispatch', defined
 // below:
 
 namespace internal {

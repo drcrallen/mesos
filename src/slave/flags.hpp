@@ -17,6 +17,7 @@
 #ifndef __SLAVE_FLAGS_HPP__
 #define __SLAVE_FLAGS_HPP__
 
+#include <cstdint>
 #include <string>
 
 #include <stout/bytes.hpp>
@@ -77,6 +78,9 @@ public:
   Option<JSON::Object> executor_environment_variables;
   Duration executor_registration_timeout;
   Duration executor_shutdown_grace_period;
+#ifdef USE_SSL_SOCKET
+  Option<std::string> executor_secret_key;
+#endif // USE_SSL_SOCKET
   Duration gc_delay;
   double gc_disk_headroom;
   Duration disk_watch_interval;
@@ -141,9 +145,12 @@ public:
   Option<std::string> modulesDir;
   std::string authenticatee;
   std::string authorizer;
-  std::string http_authenticators;
+  Option<std::string> http_authenticators;
   bool authenticate_http_readonly;
   bool authenticate_http_readwrite;
+#ifdef USE_SSL_SOCKET
+  bool authenticate_http_executors;
+#endif // USE_SSL_SOCKET
   Option<Path> http_credentials;
   Option<std::string> hooks;
   Option<std::string> resource_estimator;
@@ -155,6 +162,20 @@ public:
   std::string xfs_project_range;
 #endif
   bool http_command_executor;
+
+  // The following flags are executable specific (e.g., since we only
+  // have one instance of libprocess per execution, we only want to
+  // advertise the IP and port option once, here).
+
+  Option<std::string> ip;
+  uint16_t port;
+  Option<std::string> advertise_ip;
+  Option<std::string> advertise_port;
+  Option<std::string> master;
+
+  // Optional IP discover script that will set the slave's IP.
+  // If set, its output is expected to be a valid parseable IP string.
+  Option<std::string> ip_discovery_command;
 };
 
 } // namespace slave {

@@ -653,6 +653,10 @@ int MesosContainerizerLaunch::execute()
   // specified, inherit the environment of the current process.
   Option<os::raw::Envp> envp;
   if (launchInfo.has_environment()) {
+    // TODO(tillt): `Environment::Variable` is not a string anymore,
+    // consider cleaning this up with the complete rollout of `Secrets`.
+    // This entire merging should be handled by the solution introduced
+    // by MESOS-7299.
     hashmap<string, string> environment;
 
     foreach (const Environment::Variable& variable,
@@ -660,10 +664,10 @@ int MesosContainerizerLaunch::execute()
       const string& name = variable.name();
       const string& value = variable.value();
 
-      if (environment.contains(name)) {
-        cout << "Overwriting environment variable '" << name
-             << "', original: '" << environment[name]
-             << "', new: '" << value << "'" << endl;
+      // TODO(tillt): Once we have a solution for MESOS-7292, allow
+      // logging of values.
+      if (environment.contains(name) && environment[name] != value) {
+        cout << "Overwriting environment variable '" << name << "'" << endl;
       }
 
       environment[name] = value;
@@ -678,11 +682,12 @@ int MesosContainerizerLaunch::execute()
     // to be overwritten if they are specified by the framework.  This might
     // cause applications to not work, but upon overriding system defaults, it
     // becomes the overidder's problem.
-    Option<std::map<string, string>> systemEnvironment =
+    Option<std::map<std::wstring, std::wstring>> systemEnvironment =
       process::internal::getSystemEnvironment();
-    foreachpair (
-        const string& key, const string& value, systemEnvironment.get()) {
-      environment[key] = value;
+    foreachpair (const std::wstring& key,
+                 const std::wstring& value,
+                 systemEnvironment.get()) {
+      environment[stringify(key)] = stringify(value);
     }
 #endif // __WINDOWS__
 
@@ -723,7 +728,7 @@ int MesosContainerizerLaunch::execute()
       int status = 0;
       Result<pid_t> waitpid = None();
 
-      // Reap all decendants, but only continue once we reap the
+      // Reap all descendants, but only continue once we reap the
       // process we just launched.
       while (true) {
         waitpid = os::waitpid(-1, &status, 0);

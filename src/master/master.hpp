@@ -122,9 +122,9 @@ struct Slave
         const std::vector<SlaveInfo::Capability>& _capabilites,
         const process::Time& _registeredTime,
         const Resources& _checkpointedResources,
-        const std::vector<ExecutorInfo> executorInfos =
+        const std::vector<ExecutorInfo>& executorInfos =
           std::vector<ExecutorInfo>(),
-        const std::vector<Task> tasks =
+        const std::vector<Task>& tasks =
           std::vector<Task>());
 
   ~Slave();
@@ -1057,15 +1057,7 @@ private:
         const Option<process::http::authentication::Principal>& principal,
         const mesos::quota::QuotaInfo& quotaInfo) const;
 
-    // TODO(mpark): The following functions `authorizeSetQuota` and
-    // `authorizeRemoveQuota` should be replaced with `authorizeUpdateQuota` at
-    // the end of deprecation cycle which started with 1.0.
-
-    process::Future<bool> authorizeSetQuota(
-        const Option<process::http::authentication::Principal>& principal,
-        const mesos::quota::QuotaInfo& quotaInfo) const;
-
-    process::Future<bool> authorizeRemoveQuota(
+    process::Future<bool> authorizeUpdateQuota(
         const Option<process::http::authentication::Principal>& principal,
         const mesos::quota::QuotaInfo& quotaInfo) const;
 
@@ -1171,10 +1163,6 @@ private:
     explicit Http(Master* _master) : master(_master),
                                      quotaHandler(_master),
                                      weightsHandler(_master) {}
-
-    // Logs the request, route handlers can compose this with the
-    // desired request handler to get consistent request logging.
-    static void log(const process::http::Request& request);
 
     // /api/v1
     process::Future<process::http::Response> api(

@@ -47,7 +47,7 @@ Following are the instructions for stock Ubuntu 14.04. If you are using a differ
     $ sudo apt-get install -y autoconf libtool
 
     # Install other Mesos dependencies.
-    $ sudo apt-get -y install build-essential python-dev libcurl4-nss-dev libsasl2-dev libsasl2-modules maven libapr1-dev libsvn-dev
+    $ sudo apt-get -y install build-essential python-dev python-virtualenv libcurl4-nss-dev libsasl2-dev libsasl2-modules maven libapr1-dev libsvn-dev
 
 ### Ubuntu 16.04
 
@@ -66,7 +66,7 @@ Following are the instructions for stock Ubuntu 16.04. If you are using a differ
     $ sudo apt-get install -y autoconf libtool
 
     # Install other Mesos dependencies.
-    $ sudo apt-get -y install build-essential python-dev libcurl4-nss-dev libsasl2-dev libsasl2-modules maven libapr1-dev libsvn-dev zlib1g-dev
+    $ sudo apt-get -y install build-essential python-dev python-virtualenv libcurl4-nss-dev libsasl2-dev libsasl2-modules maven libapr1-dev libsvn-dev zlib1g-dev
 
 ### Mac OS X 10.10 (Yosemite), Mac OS X 10.11 (El Capitan), macOS 10.12 (Sierra)
 
@@ -83,6 +83,10 @@ Following are the instructions for stock Mac OS X Yosemite and El Capitan. If yo
 
     # Install libraries.
     $ brew install wget git autoconf automake libtool subversion maven
+
+    # Install Python dependencies.
+    $ sudo easy_install pip
+    $ pip install virtualenv
 
 When compiling on macOS 10.12, the following is needed:
 
@@ -153,7 +157,7 @@ Following are the instructions for stock CentOS 6.6. If you are using a differen
     $ sudo yum install -y devtoolset-2-toolchain
 
     # Install other Mesos dependencies.
-    $ sudo yum install -y apache-maven python-devel java-1.7.0-openjdk-devel zlib-devel libcurl-devel openssl-devel cyrus-sasl-devel cyrus-sasl-md5 apr-devel subversion-devel apr-util-devel
+    $ sudo yum install -y apache-maven python-devel python-virtualenv java-1.7.0-openjdk-devel zlib-devel libcurl-devel openssl-devel cyrus-sasl-devel cyrus-sasl-md5 apr-devel subversion-devel apr-util-devel
 
     # Enter a shell with 'devtoolset-2' enabled.
     $ scl enable devtoolset-2 bash
@@ -204,7 +208,7 @@ Following are the instructions for stock CentOS 7.1. If you are using a differen
     $ sudo yum groupinstall -y "Development Tools"
 
     # Install other Mesos dependencies.
-    $ sudo yum install -y apache-maven python-devel java-1.8.0-openjdk-devel zlib-devel libcurl-devel openssl-devel cyrus-sasl-devel cyrus-sasl-md5 apr-devel subversion-devel apr-util-devel
+    $ sudo yum install -y apache-maven python-devel python-virtualenv java-1.8.0-openjdk-devel zlib-devel libcurl-devel openssl-devel cyrus-sasl-devel cyrus-sasl-md5 apr-devel subversion-devel apr-util-devel
 
 ### Windows
 
@@ -241,22 +245,22 @@ described in the ***Building Mesos*** section above.
     # Change into build directory.
     $ cd build
 
-    # Start mesos master (Ensure work directory exists and has proper permissions).
+    # Start Mesos master (ensure work directory exists and has proper permissions).
     $ ./bin/mesos-master.sh --ip=127.0.0.1 --work_dir=/var/lib/mesos
 
-    # Start mesos agent (Ensure work directory exists and has proper permissions).
+    # Start Mesos agent (ensure work directory exists and has proper permissions).
     $ ./bin/mesos-agent.sh --master=127.0.0.1:5050 --work_dir=/var/lib/mesos
 
-    # Visit the mesos web page.
+    # Visit the Mesos web page.
     $ http://127.0.0.1:5050
 
-    # Run C++ framework (Exits after successfully running some tasks.).
+    # Run C++ framework (exits after successfully running some tasks).
     $ ./src/test-framework --master=127.0.0.1:5050
 
-    # Run Java framework (Exits after successfully running some tasks.).
+    # Run Java framework (exits after successfully running some tasks).
     $ ./src/examples/java/test-framework 127.0.0.1:5050
 
-    # Run Python framework (Exits after successfully running some tasks.).
+    # Run Python framework (exits after successfully running some tasks).
     $ ./src/examples/python/test-framework 127.0.0.1:5050
 
 *Note: These examples assume you are running Mesos on your local machine.

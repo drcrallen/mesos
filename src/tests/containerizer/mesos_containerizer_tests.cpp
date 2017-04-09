@@ -35,6 +35,7 @@
 #include <stout/uuid.hpp>
 
 #include "slave/flags.hpp"
+#include "slave/slave.hpp"
 
 #include "slave/containerizer/fetcher.hpp"
 
@@ -56,13 +57,14 @@ using namespace process;
 
 using mesos::internal::master::Master;
 
+using mesos::internal::slave::executorEnvironment;
 using mesos::internal::slave::Fetcher;
 using mesos::internal::slave::FetcherProcess;
 using mesos::internal::slave::Launcher;
 using mesos::internal::slave::MesosContainerizer;
 using mesos::internal::slave::MesosContainerizerProcess;
 using mesos::internal::slave::MESOS_CONTAINERIZER;
-using mesos::internal::slave::PosixLauncher;
+using mesos::internal::slave::SubprocessLauncher;
 using mesos::internal::slave::Provisioner;
 using mesos::internal::slave::ProvisionInfo;
 using mesos::internal::slave::Slave;
@@ -279,7 +281,7 @@ public:
     slave::Flags flags = CreateSlaveFlags();
     flags.launcher = "posix";
 
-    Try<Launcher*> launcher_ = PosixLauncher::create(flags);
+    Try<Launcher*> launcher_ = SubprocessLauncher::create(flags);
     if (launcher_.isError()) {
       return Error(launcher_.error());
     }
@@ -535,6 +537,7 @@ TEST_F(MesosContainerizerIsolatorPreparationTest, ExecutorEnvironmentVariable)
       directory,
       slaveId,
       PID<Slave>(),
+      None(),
       false);
 
   Future<bool> launch = containerizer->launch(
@@ -712,7 +715,7 @@ TEST_F(MesosContainerizerDestroyTest, DestroyWhileFetching)
   slave::Flags flags = CreateSlaveFlags();
   flags.launcher = "posix";
 
-  Try<Launcher*> launcher_ = PosixLauncher::create(flags);
+  Try<Launcher*> launcher_ = SubprocessLauncher::create(flags);
   ASSERT_SOME(launcher_);
 
   Owned<Launcher> launcher(launcher_.get());
@@ -781,7 +784,7 @@ TEST_F(MesosContainerizerDestroyTest, DestroyWhilePreparing)
   slave::Flags flags = CreateSlaveFlags();
   flags.launcher = "posix";
 
-  Try<Launcher*> launcher_ = PosixLauncher::create(flags);
+  Try<Launcher*> launcher_ = SubprocessLauncher::create(flags);
   ASSERT_SOME(launcher_);
 
   Owned<Launcher> launcher(launcher_.get());
@@ -905,7 +908,7 @@ TEST_F(MesosContainerizerProvisionerTest, ProvisionFailed)
   slave::Flags flags = CreateSlaveFlags();
   flags.launcher = "posix";
 
-  Try<Launcher*> launcher_ = PosixLauncher::create(flags);
+  Try<Launcher*> launcher_ = SubprocessLauncher::create(flags);
   ASSERT_SOME(launcher_);
 
   Owned<Launcher> launcher(new TestLauncher(Owned<Launcher>(launcher_.get())));
@@ -993,7 +996,7 @@ TEST_F(MesosContainerizerProvisionerTest, DestroyWhileProvisioning)
   slave::Flags flags = CreateSlaveFlags();
   flags.launcher = "posix";
 
-  Try<Launcher*> launcher_ = PosixLauncher::create(flags);
+  Try<Launcher*> launcher_ = SubprocessLauncher::create(flags);
   ASSERT_SOME(launcher_);
 
   Owned<Launcher> launcher(new TestLauncher(Owned<Launcher>(launcher_.get())));
@@ -1083,7 +1086,7 @@ TEST_F(MesosContainerizerProvisionerTest, IsolatorCleanupBeforePrepare)
   slave::Flags flags = CreateSlaveFlags();
   flags.launcher = "posix";
 
-  Try<Launcher*> launcher_ = PosixLauncher::create(flags);
+  Try<Launcher*> launcher_ = SubprocessLauncher::create(flags);
   ASSERT_SOME(launcher_);
 
   Owned<Launcher> launcher(new TestLauncher(Owned<Launcher>(launcher_.get())));
@@ -1183,11 +1186,11 @@ ACTION_P(InvokeDestroyAndWait, launcher)
 // 'container_destroy_errors' metric is updated.
 TEST_F(MesosContainerizerDestroyTest, LauncherDestroyFailure)
 {
-  // Create a TestLauncher backed by PosixLauncher.
+  // Create a TestLauncher backed by SubprocessLauncher.
   slave::Flags flags = CreateSlaveFlags();
   flags.launcher = "posix";
 
-  Try<Launcher*> launcher_ = PosixLauncher::create(flags);
+  Try<Launcher*> launcher_ = SubprocessLauncher::create(flags);
   ASSERT_SOME(launcher_);
 
   TestLauncher* testLauncher =
@@ -1217,7 +1220,7 @@ TEST_F(MesosContainerizerDestroyTest, LauncherDestroyFailure)
   CommandInfo commandInfo;
   taskInfo.mutable_command()->MergeFrom(commandInfo);
 
-  // Destroy the container using the PosixLauncher but return a failed
+  // Destroy the container using the SubprocessLauncher but return a failed
   // future to the containerizer.
   EXPECT_CALL(*testLauncher, destroy(_))
     .WillOnce(DoAll(InvokeDestroyAndWait(testLauncher),
@@ -1323,7 +1326,7 @@ TEST_F(MesosLauncherStatusTest, ExecutorPIDTest)
   slave::Flags flags = CreateSlaveFlags();
   flags.launcher = "posix";
 
-  Try<Launcher*> launcher = PosixLauncher::create(flags);
+  Try<Launcher*> launcher = SubprocessLauncher::create(flags);
   ASSERT_SOME(launcher);
 
   ContainerID containerId;

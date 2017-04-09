@@ -14,8 +14,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "launcher/executor.hpp"
-
 #include <signal.h>
 #include <stdio.h>
 
@@ -43,6 +41,9 @@
 #include <process/subprocess.hpp>
 #include <process/time.hpp>
 #include <process/timer.hpp>
+#ifdef __WINDOWS__
+#include <process/windows/jobobject.hpp>
+#endif // __WINDOWS__
 
 #include <stout/duration.hpp>
 #include <stout/flags.hpp>
@@ -80,6 +81,8 @@
 #include "messages/messages.hpp"
 
 #include "slave/constants.hpp"
+#include "slave/containerizer/mesos/constants.hpp"
+#include "slave/containerizer/mesos/launch.hpp"
 
 using namespace mesos::internal::slave;
 
@@ -145,21 +148,9 @@ public:
       capabilities(_capabilities),
       frameworkId(_frameworkId),
       executorId(_executorId),
-      lastTaskStatus(None())
-  {
-#ifdef __WINDOWS__
-    processHandle = INVALID_HANDLE_VALUE;
-#endif
-  }
+      lastTaskStatus(None()) {}
 
-  virtual ~CommandExecutor()
-  {
-#ifdef __WINDOWS__
-    if (processHandle != INVALID_HANDLE_VALUE) {
-      ::CloseHandle(processHandle);
-    }
-#endif // __WINDOWS__
-  }
+  virtual ~CommandExecutor() = default;
 
   void connected()
   {
@@ -309,7 +300,7 @@ protected:
       return;
     }
 
-    cout << "Received check update" << endl;
+    cout << "Received check update '" << checkStatus << "'" << endl;
 
     // Use the previous task status to preserve all attached information.
     CHECK_SOME(lastTaskStatus);
@@ -396,6 +387,115 @@ protected:
     delay(Seconds(1), self(), &Self::doReliableRegistration);
   }
 
+  static pid_t launchTaskSubprocess(
+      const CommandInfo& command,
+      const string& launcherDir,
+      const Environment& environment,
+      const Option<string>& user,
+      const Option<string>& rootfs,
+      const Option<string>& sandboxDirectory,
+      const Option<string>& workingDirectory,
+      const Option<CapabilityInfo>& capabilities)
+  {
+    // Prepare the flags to pass to the launch process.
+    slave::MesosContainerizerLaunch::Flags launchFlags;
+
+    ::mesos::slave::ContainerLaunchInfo launchInfo;
+    launchInfo.mutable_command()->CopyFrom(command);
+
+#ifndef __WINDOWS__
+    if (rootfs.isSome()) {
+      // The command executor is responsible for chrooting into the
+      // root filesystem and changing the user before exec-ing the
+      // user process.
+#ifdef __linux__
+      if (geteuid() != 0) {
+        ABORT("The command executor requires root with rootfs");
+      }
+
+      // Ensure that mount namespace of the executor is not affected by
+      // changes in its task's namespace induced by calling `pivot_root`
+      // as part of the task setup in mesos-containerizer binary.
+      launchFlags.unshare_namespace_mnt = true;
+#else
+      ABORT("Not expecting root volume with non-linux platform");
+#endif // __linux__
+
+      launchInfo.set_rootfs(rootfs.get());
+
+      CHECK_SOME(sandboxDirectory);
+
+      launchInfo.set_working_directory(workingDirectory.isSome()
+        ? workingDirectory.get()
+        : sandboxDirectory.get());
+
+      // TODO(jieyu): If the task has a rootfs, the executor itself will
+      // be running as root. Its sandbox is owned by root as well. In
+      // order for the task to be able to access to its sandbox, we need
+      // to make sure the owner of the sandbox is 'user'. However, this
+      // is still a workaround. The owner of the files downloaded by the
+      // fetcher is still not correct (i.e., root).
+      if (user.isSome()) {
+        // NOTE: We only chown the sandbox directory (non-recursively).
+        Try<Nothing> chown = os::chown(user.get(), os::getcwd(), false);
+        if (chown.isError()) {
+          ABORT("Failed to chown sandbox to user " +
+                user.get() + ": " + chown.error());
+        }
+      }
+    }
+#endif // __WINDOWS__
+
+    launchInfo.mutable_environment()->CopyFrom(environment);
+
+    if (user.isSome()) {
+      launchInfo.set_user(user.get());
+    }
+
+    if (capabilities.isSome()) {
+      launchInfo.mutable_capabilities()->CopyFrom(capabilities.get());
+    }
+
+    launchFlags.launch_info = JSON::protobuf(launchInfo);
+
+    // TODO(tillt): Consider using a flag allowing / disallowing the
+    // log output of possibly sensitive data. See MESOS-7292.
+    string commandString = strings::format(
+        "%s %s <POSSIBLY-SENSITIVE-DATA>",
+        path::join(launcherDir, MESOS_CONTAINERIZER),
+        MesosContainerizerLaunch::NAME).get();
+
+    cout << "Running '" << commandString << "'" << endl;
+
+    // Fork the child using launcher.
+    vector<string> argv(2);
+    argv[0] = MESOS_CONTAINERIZER;
+    argv[1] = MesosContainerizerLaunch::NAME;
+
+    vector<process::Subprocess::ParentHook> parentHooks;
+#ifdef __WINDOWS__
+    parentHooks.emplace_back(Subprocess::ParentHook::CREATE_JOB());
+#endif // __WINDOWS__
+
+    Try<Subprocess> s = subprocess(
+        path::join(launcherDir, MESOS_CONTAINERIZER),
+        argv,
+        Subprocess::FD(STDIN_FILENO),
+        Subprocess::FD(STDOUT_FILENO),
+        Subprocess::FD(STDERR_FILENO),
+        &launchFlags,
+        None(),
+        None(),
+        parentHooks,
+        {Subprocess::ChildHook::SETSID()});
+
+    if (s.isError()) {
+      ABORT("Failed to launch '" + commandString + "': " + s.error());
+    }
+
+    return s->pid();
+  }
+
   void launch(const TaskInfo& task)
   {
     CHECK_EQ(SUBSCRIBED, state);
@@ -465,26 +565,57 @@ protected:
     // TODO(josephw): Windows tasks will inherit the environment
     // from the executor for now. Change this if a Windows isolator
     // ever uses the `--task_environment` flag.
-    Environment launchEnvironment;
+    //
+    // TODO(tillt): Consider logging in detail the original environment
+    // variable source and overwriting source.
+    //
+    // TODO(tillt): Consider implementing a generic, reusable solution
+    // for merging these environments. See MESOS-7299.
+    //
+    // Note that we can not use protobuf message merging as that could
+    // cause duplicate keys in the resulting environment.
+    hashmap<string, Environment::Variable> environment;
 
     foreachpair (const string& name, const string& value, os::environment()) {
-      Environment::Variable* variable = launchEnvironment.add_variables();
-      variable->set_name(name);
-      variable->set_value(value);
+      Environment::Variable variable;
+      variable.set_name(name);
+      variable.set_type(Environment::Variable::VALUE);
+      variable.set_value(value);
+      environment[name] = variable;
     }
 
     if (taskEnvironment.isSome()) {
-      launchEnvironment.MergeFrom(taskEnvironment.get());
+      foreach (const Environment::Variable& variable,
+               taskEnvironment->variables()) {
+        const string& name = variable.name();
+        if (environment.contains(name) &&
+            environment[name].value() != variable.value()) {
+          cout << "Overwriting environment variable '" << name << "'" << endl;
+        }
+        environment[name] = variable;
+      }
     }
 
     if (command.has_environment()) {
-      launchEnvironment.MergeFrom(command.environment());
+      foreach (const Environment::Variable& variable,
+               command.environment().variables()) {
+        const string& name = variable.name();
+        if (environment.contains(name) &&
+            environment[name].value() != variable.value()) {
+          cout << "Overwriting environment variable '" << name << "'" << endl;
+        }
+        environment[name] = variable;
+      }
+    }
+
+    Environment launchEnvironment;
+    foreachvalue (const Environment::Variable& variable, environment) {
+      launchEnvironment.add_variables()->CopyFrom(variable);
     }
 
     cout << "Starting task " << taskId.get() << endl;
 
-#ifndef __WINDOWS__
-    pid = launchTaskPosix(
+    pid = launchTaskSubprocess(
         command,
         launcherDir,
         launchEnvironment,
@@ -493,19 +624,6 @@ protected:
         sandboxDirectory,
         workingDirectory,
         capabilities);
-#else
-    // A Windows process is started using the `CREATE_SUSPENDED` flag
-    // and is part of a job object. While the process handle is kept
-    // open the reap function will work.
-    PROCESS_INFORMATION processInformation = launchTaskWindows(
-        command,
-        rootfs);
-
-    pid = processInformation.dwProcessId;
-    ::ResumeThread(processInformation.hThread);
-    CloseHandle(processInformation.hThread);
-    processHandle = processInformation.hProcess;
-#endif
 
     cout << "Forked command at " << pid << endl;
 
@@ -699,12 +817,12 @@ private:
 
       // Stop checking the task.
       if (checker.get() != nullptr) {
-        checker->stop();
+        checker->pause();
       }
 
       // Stop health checking the task.
       if (healthChecker.get() != nullptr) {
-        healthChecker->stop();
+        healthChecker->pause();
       }
 
       // Now perform signal escalation to begin killing the task.
@@ -744,12 +862,12 @@ private:
 
     // Stop checking the task.
     if (checker.get() != nullptr) {
-      checker->stop();
+      checker->pause();
     }
 
     // Stop health checking the task.
     if (healthChecker.get() != nullptr) {
-      healthChecker->stop();
+      healthChecker->pause();
     }
 
     TaskState taskState;
@@ -795,7 +913,7 @@ private:
         None(),
         message);
 
-    // Indicate that a kill occured due to a failing health check.
+    // Indicate that a kill occurred due to a failing health check.
     if (killed && killedByHealthCheck) {
       status.set_healthy(false);
     }
@@ -893,7 +1011,7 @@ private:
         }
 
         case CheckInfo::UNKNOWN: {
-          CHECK_NE(CheckInfo::UNKNOWN, taskData->taskInfo.check().type());
+          LOG(FATAL) << "UNKNOWN check type is invalid";
           break;
         }
       }
@@ -973,9 +1091,6 @@ private:
   Option<Timer> killGracePeriodTimer;
 
   pid_t pid;
-#ifdef __WINDOWS__
-  HANDLE processHandle;
-#endif
   Duration shutdownGracePeriod;
   Option<KillPolicy> killPolicy;
   Option<FrameworkInfo> frameworkInfo;

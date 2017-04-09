@@ -24,6 +24,8 @@
 
 #include <mesos/authorizer/authorizer.hpp>
 
+#include <mesos/quota/quota.hpp>
+
 #include <process/future.hpp>
 #include <process/http.hpp>
 #include <process/owned.hpp>
@@ -44,7 +46,10 @@ class Task;
 namespace internal {
 
 // Name of the default, basic authenticator.
-constexpr char DEFAULT_HTTP_AUTHENTICATOR[] = "basic";
+constexpr char DEFAULT_BASIC_HTTP_AUTHENTICATOR[] = "basic";
+
+// Name of the default, JWT authenticator.
+constexpr char DEFAULT_JWT_HTTP_AUTHENTICATOR[] = "jwt";
 
 extern hashset<std::string> AUTHORIZABLE_ENDPOINTS;
 
@@ -115,6 +120,7 @@ JSON::Object model(const ExecutorInfo& executorInfo);
 JSON::Array model(const Labels& labels);
 JSON::Object model(const Task& task);
 JSON::Object model(const FileInfo& fileInfo);
+JSON::Object model(const quota::QuotaInfo& quotaInfo);
 
 void json(JSON::ObjectWriter* writer, const Task& task);
 
@@ -206,6 +212,7 @@ bool approveViewRole(
  * @param realm name of the realm.
  * @param authenticatorNames a vector of authenticator names.
  * @param credentials optional credentials for BasicAuthenticator only.
+ * @param secretKey optional secret key for the JWTAuthenticator only.
  * @return nothing if authenticators are initialized and registered to
  *         libprocess successfully, or error if authenticators cannot
  *         be initialized.
@@ -213,7 +220,13 @@ bool approveViewRole(
 Try<Nothing> initializeHttpAuthenticators(
     const std::string& realm,
     const std::vector<std::string>& httpAuthenticatorNames,
-    const Option<Credentials>& credentials);
+    const Option<Credentials>& credentials = None(),
+    const Option<std::string>& secretKey = None());
+
+
+// Logs the request. Route handlers can compose this with the
+// desired request handler to get consistent request logging.
+void logRequest(const process::http::Request& request);
 
 } // namespace mesos {
 

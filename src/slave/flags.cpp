@@ -342,6 +342,13 @@ mesos::internal::slave::Flags::Flags()
       "terminations may occur.",
       DEFAULT_EXECUTOR_SHUTDOWN_GRACE_PERIOD);
 
+#ifdef USE_SSL_SOCKET
+  add(&Flags::executor_secret_key,
+      "executor_secret_key",
+      "The key used when generating executor secrets. This flag is only\n"
+      "available when Mesos is built with SSL support.");
+#endif // USE_SSL_SOCKET
+
   add(&Flags::gc_delay,
       "gc_delay",
       "Maximum amount of time to wait before cleaning up\n"
@@ -632,7 +639,7 @@ mesos::internal::slave::Flags::Flags()
 
   add(&Flags::docker_socket,
       "docker_socket",
-      "Resource used by the agent and the executor to provice CLI access\n"
+      "Resource used by the agent and the executor to provide CLI access\n"
       "to the Docker daemon. On Unix, this is typically a path to a\n"
       "socket, such as '/var/run/docker.sock'. On Windows this must be a\n"
       "named pipe, such as '//./pipe/docker_engine'. NOTE: This must be\n"
@@ -869,11 +876,8 @@ mesos::internal::slave::Flags::Flags()
       "http_authenticators",
       "HTTP authenticator implementation to use when handling requests to\n"
       "authenticated endpoints. Use the default\n"
-      "`" + string(DEFAULT_HTTP_AUTHENTICATOR) + "`, or load an alternate\n"
-      "HTTP authenticator module using `--modules`.\n"
-      "\n"
-      "Currently there is no support for multiple HTTP authenticators.",
-      DEFAULT_HTTP_AUTHENTICATOR);
+      "`" + string(DEFAULT_BASIC_HTTP_AUTHENTICATOR) + "`, or load an\n"
+      "alternate HTTP authenticator module using `--modules`.");
 
   add(&Flags::authenticate_http_readwrite,
       "authenticate_http_readwrite",
@@ -888,6 +892,15 @@ mesos::internal::slave::Flags::Flags()
       "supporting authentication are allowed. If `false`, unauthenticated\n"
       "requests to such HTTP endpoints are also allowed.",
       false);
+
+#ifdef USE_SSL_SOCKET
+  add(&Flags::authenticate_http_executors,
+      "authenticate_http_executors",
+      "If `true`, only authenticated requests for the HTTP executor API are\n"
+      "allowed. If `false`, unauthenticated requests are also allowed. This\n"
+      "flag is only available when Mesos is built with SSL support.",
+      false);
+#endif // USE_SSL_SOCKET
 
   add(&Flags::http_credentials,
       "http_credentials",
@@ -955,4 +968,38 @@ mesos::internal::slave::Flags::Flags()
       "NOTE: This flag is *experimental* and should not be used in\n"
       "production yet.",
       false);
+
+  add(&Flags::ip,
+      "ip",
+      "IP address to listen on. This cannot be used in conjunction\n"
+      "with `--ip_discovery_command`.");
+
+  add(&Flags::port, "port", "Port to listen on.", SlaveInfo().port());
+
+  add(&Flags::advertise_ip,
+      "advertise_ip",
+      "IP address advertised to reach this Mesos slave.\n"
+      "The slave does not bind to this IP address.\n"
+      "However, this IP address may be used to access this slave.");
+
+  add(&Flags::advertise_port,
+      "advertise_port",
+      "Port advertised to reach this Mesos slave (along with\n"
+      "`advertise_ip`). The slave does not bind to this port.\n"
+      "However, this port (along with `advertise_ip`) may be used to\n"
+      "access this slave.");
+
+  add(&Flags::master,
+      "master",
+      "May be one of:\n"
+      "  `host:port`\n"
+      "  `zk://host1:port1,host2:port2,.../path`\n"
+      "  `zk://username:password@host1:port1,host2:port2,.../path`\n"
+      "  `file:///path/to/file` (where file contains one of the above)");
+
+  add(&Flags::ip_discovery_command,
+      "ip_discovery_command",
+      "Optional IP discovery binary: if set, it is expected to emit\n"
+      "the IP address which the slave will try to bind to.\n"
+      "Cannot be used in conjunction with `--ip`.");
 }

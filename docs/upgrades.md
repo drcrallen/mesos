@@ -43,6 +43,34 @@ We categorize the changes as follows:
   </thead>
 <tr>
   <td style="word-wrap: break-word; overflow-wrap: break-word;"><!--Version-->
+  1.3.x
+  </td>
+  <td style="word-wrap: break-word; overflow-wrap: break-word;"><!--Mesos Core-->
+  </td>
+  <td style="word-wrap: break-word; overflow-wrap: break-word;"><!--Flags-->
+    <ul style="padding-left:10px;">
+      <li>R <a href="1-3-x-setquota-removequota-acl">--acls (set_quotas and remove_quotas)</a></li>
+    </ul>
+  </td>
+  <td style="word-wrap: break-word; overflow-wrap: break-word;"><!--Framework API-->
+    <ul style="padding-left:10px;">
+      <li>A <a href="#1-3-x-multi-role-support">MULTI_ROLE support</a></li>
+      <li>D <a href="#1-3-x-framework-info-role">FrameworkInfo.roles deprecates FrameworkInfo.role</a></li>
+    </ul>
+  </td>
+  <td style="word-wrap: break-word; overflow-wrap: break-word;"><!--Module API-->
+    <ul style="padding-left:10px;">
+      <li>C <a href="#1-3-x-allocator-interface-change">Allocator MULTI_ROLE interface changes</a></li>
+    </ul>
+  </td>
+  <td style="word-wrap: break-word; overflow-wrap: break-word;"><!--Endpoints-->
+    <ul style="padding-left:10px;">
+      <li>D <a href="#1-3-x-endpoints-roles">MULTI_ROLE deprecates 'role' field in endpoints</a></li>
+    </ul>
+  </td>
+</tr>
+<tr>
+  <td style="word-wrap: break-word; overflow-wrap: break-word;"><!--Version-->
   1.2.x
   </td>
   <td style="word-wrap: break-word; overflow-wrap: break-word;"><!--Mesos Core-->
@@ -237,6 +265,20 @@ We categorize the changes as follows:
   </td>
 </tr>
 </table>
+
+## Upgrading from 1.2.x to 1.3.x ##
+
+<a name="1-3-x-setquota-removequota-acl"></a>
+* Support for deprecated ACLs `set_quotas` and `remove_quotas` has been removed from the local authorizer. Before upgrading the Mesos binaries, consolidate the ACLs used under `set_quotas` and `remove_quotes` under their replacemente ACL `update_quotas`. After consolidation of the ACLs, the binaries could be safely replaced.
+
+<a name="1-3-x-framework-info-role"></a>
+* Support for multi-role frameworks deprecates the `FrameworkInfo.role` field in favor of `FrameworkInfo.roles` and the `MULTI_ROLE` capability. Frameworks using the new field can continue to use a single role.
+
+<a name="1-3-x-endpoints-roles"></a>
+* Support for multi-role frameworks means that the framework `role` field in the master and agent endpoints is deprecated in favor of `roles`. Any tooling parsing endpoint information and relying on the role field needs to be updated before multi-role frameworks can be safely run in the cluster.
+
+<a name="1-3-x-allocator-interface-change"></a>
+* Implementors of allocator modules have to provide new implementation functionality to satisfy the `MULTI_ROLE` framework capability. Also, the interface has changed.
 
 ## Upgrading from 1.1.x to 1.2.x ##
 
@@ -526,8 +568,8 @@ In order to upgrade a running cluster:
 
   For agent endpoints:
 
-  * /state.json becomes /stateπ
-  * /monitor/statistics.json becomes /monitor/statisticsπ
+  * /state.json becomes /state
+  * /monitor/statistics.json becomes /monitor/statistics
 
   For both master and agent:
 

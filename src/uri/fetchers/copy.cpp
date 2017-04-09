@@ -95,10 +95,17 @@ Future<Nothing> CopyFetcherPlugin::fetch(
 
   VLOG(1) << "Copying '" << uri.path() << "' to '" << directory << "'";
 
+#ifndef __WINDOWS__
+  const char* copyCommand = "cp";
   const vector<string> argv = {"cp", "-a", uri.path(), directory};
+#else // __WINDOWS__
+  const char* copyCommand = os::Shell::name;
+  const vector<string> argv =
+    {os::Shell::arg0, os::Shell::arg1, "copy", "/Y", uri.path(), directory};
+#endif // __WINDOWS__
 
   Try<Subprocess> s = subprocess(
-      "cp",
+      copyCommand,
       argv,
       Subprocess::PATH(os::DEV_NULL),
       Subprocess::PIPE(),
@@ -116,7 +123,7 @@ Future<Nothing> CopyFetcherPlugin::fetch(
         Future<Option<int>>,
         Future<string>,
         Future<string>>& t) -> Future<Nothing> {
-      Future<Option<int>> status = std::get<0>(t);
+      const Future<Option<int>>& status = std::get<0>(t);
       if (!status.isReady()) {
         return Failure(
             "Failed to get the exit status of the copy subprocess: " +
@@ -128,7 +135,7 @@ Future<Nothing> CopyFetcherPlugin::fetch(
       }
 
       if (status->get() != 0) {
-        Future<string> error = std::get<2>(t);
+        const Future<string>& error = std::get<2>(t);
         if (!error.isReady()) {
           return Failure(
               "Failed to perform 'copy'. Reading stderr failed: " +
